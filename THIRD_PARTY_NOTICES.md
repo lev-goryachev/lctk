@@ -2,9 +2,9 @@
 
 LCTK's current direct Go dependencies are:
 
-- `github.com/modelcontextprotocol/go-sdk v1.4.1`;
-- `github.com/fsnotify/fsnotify v1.9.0`;
-- `github.com/moby/moby/client v0.3.0`.
+- `github.com/modelcontextprotocol/go-sdk v1.6.1`;
+- `github.com/fsnotify/fsnotify v1.10.1`;
+- `github.com/moby/moby/client v0.5.0`.
 
 Their transitive versions and module checksums are recorded in `go.mod` and `go.sum`.
 
