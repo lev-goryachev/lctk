@@ -1,6 +1,7 @@
 # Local research and temporary task artifacts
 /.research/
 /.artifacts/
+/spikes/gateway-evaluation/bin/
 
 # Rust build output
 /target/

@@ -2,12 +2,6 @@
 
 This document contains only decisions that have not yet been made. Once a decision is made, the item is moved to the relevant topic document and, if necessary, to an ADR.
 
-## Gateway/control plane
-
-No selection has been made among ContextForge, Docker MCP Gateway, MCPJungle, and a thin custom gateway. The repositories, licenses, and actual Streamable HTTP behavior must be checked as of the decision date.
-
-The criteria are in [`roadmap.md`](roadmap.md#slice-02-mcpgateway-spike).
-
 ## Exact search backend
 
 No persistent indexed search engine has been selected. Zoekt is a candidate, but the following must be verified:

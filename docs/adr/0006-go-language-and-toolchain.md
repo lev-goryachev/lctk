@@ -14,8 +14,8 @@ Use Go for LCTK-owned daemon, CLI, control-plane, adapter, and supporting-librar
 
 - Use Go modules and the Go 1.25 toolchain line.
 - Ship one `lctk` executable with command families rather than separate daemon and CLI binaries.
-- Use the official MCP Go SDK v1.4.1 for MCP protocol boundaries.
-- Use `fsnotify v1.9.0` for the native watcher adapter and Moby client v0.3.0 for Docker API integration.
+- Use the official MCP Go SDK v1.6.1 for MCP protocol boundaries.
+- Use `fsnotify v1.10.1` for the native watcher adapter and Moby client v0.5.0 for Docker API integration.
 - Prefer the Go standard library for HTTP, JSON, context, concurrency, signals, and process lifecycle.
 - Keep watcher, Docker, gateway, and backend integrations behind LCTK-owned contracts.
 - Allow external engines to remain in their native implementation languages and integrate them as pinned binaries or images.

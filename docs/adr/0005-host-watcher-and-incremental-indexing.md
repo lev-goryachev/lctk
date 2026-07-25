@@ -40,7 +40,7 @@ A new change to an indexed file counts as user activity, resets the on-demand id
 
 ### Follow-up
 
-- Use `fsnotify v1.9.0` for the Go watcher adapter. The Slice 0.1 proof verifies basic event delivery; NTFS/APFS rename, coalescing, overflow, normalization, debounce, and reconciliation behavior remain to be validated.
+- Use `fsnotify v1.10.1` for the Go watcher adapter. The Slice 0.1 proof verifies basic event delivery; NTFS/APFS rename, coalescing, overflow, normalization, debounce, and reconciliation behavior remain to be validated.
 - Measure rename and coalescing semantics on NTFS and APFS.
 - Accept a default debounce and configuration scope.
 - Define bulk-change thresholds and the excluded-path activity policy.
