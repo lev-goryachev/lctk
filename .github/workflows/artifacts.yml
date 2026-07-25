@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: tar -C dist/package -czf "dist/lctk-${VERSION}-darwin-arm64.tar.gz" .
       - name: Upload platform archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lctk-${{ inputs.version }}-${{ matrix.artifact }}
           path: dist/lctk-${{ inputs.version }}-${{ matrix.artifact }}.${{ matrix.archive }}
@@ -84,7 +84,7 @@ jobs:
         working-directory: dist
         run: sha256sum lctk-* > SHA256SUMS
       - name: Upload checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lctk-${{ inputs.version }}-checksums
           path: dist/SHA256SUMS
