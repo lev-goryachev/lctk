@@ -20,18 +20,22 @@ Delivered:
 
 - Apache-2.0 repository, documentation, policy, and ADR baseline;
 - Go 1.25 module and one `lctk` executable;
-- official MCP Go SDK v1.4.1 Streamable HTTP compatibility tool;
+- official MCP Go SDK v1.6.1 Streamable HTTP compatibility tool;
 - health endpoint, `fsnotify` watcher proof, and read-only Moby Docker diagnostic;
 - automated tests and hosted Windows/macOS CI;
 - non-publishing Windows amd64 and Darwin arm64 dry-run archives plus checksums.
 
 Verification: clean-checkout checks run on hosted Windows and macOS runner environments. The workflows provide build, test, and artifact-construction evidence but do not certify Windows 10 22H2, macOS 13, Docker Desktop behavior, or native archive execution on those targets.
 
-The current `/mcp` endpoint and `foundation_info` tool are foundation compatibility evidence only. They do not settle the Slice 0.2 gateway decision or implement project scope.
+The current `/mcp` endpoint and `foundation_info` tool are foundation compatibility evidence only. They do not implement the ADR-0009 project-scoped gateway.
 
 ### Slice 0.2: MCP/gateway spike
 
-Evaluate current versions of ContextForge, Docker MCP Gateway, MCPJungle, and a minimal custom gateway against the same scenario:
+The reproducible scenario, hard gates, measurements, and scoring rules are defined in the [gateway evaluation contract](spikes/gateway-evaluation.md).
+
+**Status:** complete; the [measured results](spikes/gateway-evaluation-results.md) support the accepted LCTK-owned Go gateway in [ADR-0009](adr/0009-embedded-go-gateway-and-project-runtime.md).
+
+Evaluated ContextForge, Docker MCP Gateway, MCPJungle, and a minimal custom gateway against the same scenario:
 
 - Streamable HTTP;
 - virtual `/projects/{id}/mcp` routes;
@@ -42,7 +46,7 @@ Evaluate current versions of ContextForge, Docker MCP Gateway, MCPJungle, and a 
 - local Docker deployment;
 - license, maintenance, protocol compliance, and overhead.
 
-Outcome: an ADR with measurements and a build-or-buy decision. Spike code does not automatically become a production dependency.
+Outcome: ADR-0009 selects an LCTK-owned Go gateway embedded in the host daemon. Spike code remains evidence and does not become a production dependency.
 
 ### Slice 0.3: Search backend spike
 

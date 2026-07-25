@@ -2,13 +2,13 @@
 
 ## Status
 
-Slice 0.2 measured result and proposed recommendation. The recommendation is **not accepted architecture** until the maintainer approves it. No gateway ADR has been created.
+Slice 0.2 measured result and accepted recommendation. The maintainer accepted the LCTK-owned Go gateway on 2026-07-25; [ADR-0009](../adr/0009-embedded-go-gateway-and-project-runtime.md) records the architecture decision.
 
 Evaluation date: 2026-07-25.
 
 The test and scoring rules are defined in the [gateway evaluation contract](gateway-evaluation.md). The tracked comparison harness is under [`../../spikes/gateway-evaluation/`](../../spikes/gateway-evaluation/README.md). It is evidence code, not a production package.
 
-## Proposed recommendation
+## Accepted recommendation
 
 Build the shared project gateway as an LCTK-owned Go component inside the single `lctk` executable. Keep the host registry authoritative, expose `/projects/{project_id}/mcp`, validate the route and project grant before dispatch, and proxy to the project-local aggregated MCP service. Do not adopt ContextForge, Docker MCP Gateway, or MCPJungle as an additional production control plane for the first product architecture.
 
@@ -177,12 +177,13 @@ Score rationale:
 - **ContextForge:** broad and capable, with dynamic virtual servers and verified server-scoped JWT enforcement; loses operational and API-fit points because its footprint, setup, generated route identifiers, tool naming, readiness, and administration model substantially exceed LCTK's gateway boundary.
 - **Docker MCP Gateway:** static mode removes the Docker-socket objection for remote-only catalogs, but good forwarding latency and active maintenance do not compensate for the shared route and lack of project-grant semantics.
 
-## Decision boundary
+## Decision record
 
-Maintainer approval is required before the following actions:
+The maintainer accepted the recommendation on 2026-07-25. ADR-0009 therefore selects the LCTK-owned Go gateway and its stable route/grant authority boundary.
 
-1. recording an ADR that selects the LCTK-owned Go gateway;
-2. implementing the production gateway in `internal/`;
-3. treating the proposed route, grant, and failure envelope as accepted public contracts.
+Production implementation is now authorized, subject to these boundaries:
 
-If approved, the next implementation step is not to import the spike package. It is to define production interfaces around the daemon registry, grant validator, project health resolver, and MCP upstream transport, then deliver Slice 1.3 through tested vertical behavior.
+1. do not import the spike package as production code;
+2. define production interfaces around the daemon registry, grant validator, project health resolver, error translator, and MCP upstream transport;
+3. preserve the accepted `/projects/{project_id}/mcp` route and route/grant agreement;
+4. finalize the provisional failure envelope through Slice 1.3 tests and documentation before treating every field as a stable public schema.

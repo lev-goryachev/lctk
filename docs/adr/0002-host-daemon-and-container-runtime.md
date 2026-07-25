@@ -1,8 +1,9 @@
 # ADR-0002: Host daemon and containerized project runtime
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-07-24
 - Deciders: project maintainers
+- Superseded by: [ADR-0009](0009-embedded-go-gateway-and-project-runtime.md)
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code; gateway, registry, and persistent search-engine implementations remain open.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. Registry and persistent search-engine implementations remain open.
 
 ## Current Slice 0.1 foundation
 
@@ -33,7 +33,7 @@ VS Code + Codex                  Other explicitly granted clients
        │                                      │
        └──────────── Streamable HTTP MCP ─────┘
                               │
-                    127.0.0.1 LCTK gateway
+              127.0.0.1 embedded LCTK gateway
                     auth, routing, tool policy
                               │ project_id
              ┌────────────────┴────────────────┐
@@ -47,6 +47,7 @@ VS Code + Codex                  Other explicitly granted clients
 
 Host-side LCTK daemon
 ├── local registry and secrets
+├── shared MCP gateway and grant enforcement
 ├── host path canonicalization
 ├── Docker Desktop lifecycle
 ├── filesystem watcher and change journal
@@ -63,15 +64,16 @@ A small daemon is installed on Windows and macOS and can optionally start when t
 - canonicalizes paths using host OS facilities;
 - manages the Docker Desktop/Compose lifecycle;
 - stores the local registry and client grants;
+- serves the shared project-scoped MCP gateway;
 - watches for file changes;
 - serves the Admin UI and `lctk` CLI;
 - starts on-demand stacks and enforces the idle policy.
 
-The gateway and project services do not receive the Docker socket. Coding MCP tools do not control the daemon or Docker directly.
+The embedded gateway does not expose the daemon's Docker client or administrative handlers to coding MCP requests. Project services do not receive the Docker socket. Coding MCP tools do not control the daemon or Docker directly.
 
 ## Shared control plane
 
-The shared control plane continuously provides a stable localhost endpoint. Its responsibilities are:
+The shared control plane is an LCTK-owned Go component inside the host daemon, as accepted in [ADR-0009](adr/0009-embedded-go-gateway-and-project-runtime.md). It continuously provides a stable localhost endpoint. Its responsibilities are:
 
 - Streamable HTTP MCP transport;
 - authentication and client grants;
@@ -83,13 +85,13 @@ The shared control plane continuously provides a stable localhost endpoint. Its 
 - typed errors;
 - local audit logs and trace context.
 
-Candidate external route:
+Accepted public route:
 
 ```text
 http://127.0.0.1:4444/projects/{project_id}/mcp
 ```
 
-The internal gateway technology has not been selected. Compatibility of route, authentication, and tool contracts must not depend on a specific gateway product.
+The gateway uses the official MCP Go SDK and LCTK-owned registry, grant-validation, health-resolution, error-translation, and upstream-transport interfaces. Compatibility of route, authentication, and tool contracts does not depend on an external gateway product.
 
 ## Project runtime
 
