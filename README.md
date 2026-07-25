@@ -46,6 +46,7 @@ The source of truth is under [`docs/`](docs/index.md):
 - [development workflow](docs/development.md);
 - [versioning](docs/versioning.md) and [release process](docs/releasing.md);
 - [delivery roadmap](docs/roadmap.md);
+- [search backend evaluation](docs/spikes/search-backend-evaluation.md) and [measured results](docs/spikes/search-backend-evaluation-results.md);
 - [open questions](docs/open-questions.md);
 - [architecture decisions](docs/adr/README.md).
 
