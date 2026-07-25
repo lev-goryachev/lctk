@@ -26,6 +26,8 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`versioning.md`](versioning.md) | Product, schema, image, and compatibility version rules |
 | [`releasing.md`](releasing.md) | Dry-run artifacts and future release gates |
 | [`roadmap.md`](roadmap.md) | Small, verifiable vertical slices |
+| [`spikes/gateway-evaluation.md`](spikes/gateway-evaluation.md) | Slice 0.2 gateway test and scoring contract |
+| [`spikes/gateway-evaluation-results.md`](spikes/gateway-evaluation-results.md) | Slice 0.2 measurements and proposed gateway recommendation |
 | [`open-questions.md`](open-questions.md) | Unresolved product and technical questions |
 | [`adr/`](adr/README.md) | Architecture decision log |
 
