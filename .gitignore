@@ -1,0 +1,23 @@
+# Local research and temporary task artifacts
+/.research/
+/.artifacts/
+
+# Rust build output
+/target/
+
+# Local LCTK and Codex state
+/.lctk/
+/.codex/
+*.local.toml
+*.local.yaml
+*.local.yml
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and coverage
+*.log
+/coverage/

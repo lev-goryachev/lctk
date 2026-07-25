@@ -1,0 +1,91 @@
+name: Dry-run release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version embedded in dry-run artifacts
+        required: true
+        default: 0.1.0-dev
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact: windows-x86_64
+            executable: lctk.exe
+            archive: zip
+          - os: macos-15
+            goos: darwin
+            goarch: arm64
+            artifact: darwin-arm64
+            executable: lctk
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "0"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      VERSION: ${{ inputs.version }}
+      COMMIT: ${{ github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Build executable
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=${VERSION} -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=${COMMIT} -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "dist/package/${{ matrix.executable }}" ./cmd/lctk
+          cp LICENSE NOTICE README.md THIRD_PARTY_NOTICES.md dist/package/
+      - name: Create Windows archive
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path dist/package/* -DestinationPath "dist/lctk-${env:VERSION}-windows-x86_64.zip"
+      - name: Create macOS archive
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: tar -C dist/package -czf "dist/lctk-${VERSION}-darwin-arm64.tar.gz" .
+      - name: Upload platform archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: lctk-${{ inputs.version }}-${{ matrix.artifact }}
+          path: dist/lctk-${{ inputs.version }}-${{ matrix.artifact }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  checksums:
+    name: Generate checksums
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lctk-${{ inputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: sha256sum lctk-* > SHA256SUMS
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: lctk-${{ inputs.version }}-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
