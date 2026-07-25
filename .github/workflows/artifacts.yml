@@ -40,9 +40,9 @@ jobs:
       COMMIT: ${{ github.sha }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.25.x"
           cache: true
@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: tar -C dist/package -czf "dist/lctk-${VERSION}-darwin-arm64.tar.gz" .
       - name: Upload platform archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lctk-${{ inputs.version }}-${{ matrix.artifact }}
           path: dist/lctk-${{ inputs.version }}-${{ matrix.artifact }}.${{ matrix.archive }}
@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download platform archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: lctk-${{ inputs.version }}-*
           path: dist
@@ -84,7 +84,7 @@ jobs:
         working-directory: dist
         run: sha256sum lctk-* > SHA256SUMS
       - name: Upload checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lctk-${{ inputs.version }}-checksums
           path: dist/SHA256SUMS
