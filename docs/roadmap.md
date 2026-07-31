@@ -10,6 +10,8 @@ Work proceeds in small, verifiable vertical slices. Each slice:
 - updates the documentation and ADRs;
 - is not claimed to work without reproducible verification.
 
+Codebase Memory MCP may be studied as architectural prior art, but it is not a roadmap backend or integration candidate. [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md) and the [comparative assessment](spikes/codebase-memory-mcp-assessment.md) record that boundary. Advanced graph, semantic, and repository-map work remains LCTK-owned and must be delivered through the same slice and verification policy.
+
 ## Stage 0 — Research and contracts
 
 ### Slice 0.1: Repository foundation
