@@ -50,6 +50,26 @@ The coding MCP endpoint does not receive these administrative operations automat
 
 The repository manifest never determines the authoritative host path.
 
+## Compose resource naming
+
+[ADR-0003](adr/0003-reusable-images-and-project-stacks.md) left resource naming to be specified. Every name is a pure function of `project_id`, so names are stable across restarts and reinstalls and are recomputed rather than stored:
+
+| Resource | Name |
+|---|---|
+| Compose project | `lctk-{project_id}` |
+| Network | `lctk-{project_id}-net` |
+| Volume | `lctk-{project_id}-state` |
+| Container | `lctk-{project_id}-code-intel` |
+| Image | `lctk/code-intel:{product_version}` |
+
+The image is shared by every project and its tag follows the unified product version from [ADR-0007](adr/0007-unified-versioning.md), so an upgraded LCTK requests a matching image instead of silently reusing an older one.
+
+Generated Compose configuration lives under the per-user LCTK home at `projects/{project_id}/compose.yaml`, never inside the repository. It is derived state, rewritten from the registry on every start, and it is not a source of truth for project identity or for the host path. Rendering is byte-reproducible: nothing time-based, random, or environment-dependent enters it.
+
+Mounts use Compose long syntax. Short syntax separates fields with colons, which is ambiguous for a Windows path such as `C:\work`, so long syntax is a correctness requirement on the primary host platform rather than a style preference.
+
+The source is mounted read-only into `code-intel` at `/workspace`. Per-project state lives in the named volume at `/var/lib/lctk`. A writable source mount belongs to the future runner boundary, not to `code-intel`.
+
 ## Runtime states
 
 Proposed state machine:

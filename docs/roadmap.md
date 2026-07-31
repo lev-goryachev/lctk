@@ -116,19 +116,24 @@ Verified:
 
 ### Slice 1.2: Reproducible project container
 
-Implement:
+**Status:** complete. Resource naming is specified in [project lifecycle](project-lifecycle.md#compose-resource-naming), closing the [ADR-0003](adr/0003-reusable-images-and-project-stacks.md) follow-up.
 
-- deterministic Compose generation;
-- reusable versioned demo image;
-- a project network and persistent volume;
-- `start/stop/restart`;
-- health and typed lifecycle state.
+Implemented:
 
-Tests:
+- deterministic Compose generation, byte-reproducible and stored under the per-user LCTK home rather than in the repository, using long mount syntax so a Windows drive letter is unambiguous;
+- a reusable versioned image built from a digest-pinned base, shared by every project, tagged with the product version per [ADR-0007](adr/0007-unified-versioning.md), plus `lctk image build/status`;
+- a per-project network and persistent volume, with the source mounted read-only at `/workspace` and project state at `/var/lib/lctk`;
+- `lctk project start/stop/restart`, where stop and remove release runtime resources but never delete the project volume;
+- typed lifecycle state — `stopped`, `starting`, `running`, `error`, `unknown` — with container health, a one-line explanation, and an explicit `retryable` flag, and with an unreachable container runtime distinguished from a failed project so registry information stays usable while Docker Desktop is closed.
 
-- two projects receive separate mounts, networks, and volumes;
-- stop/start preserves marker and index state;
-- generated configuration is reproducible.
+Verified:
+
+- two projects receive separate mounts, networks, and volumes, confirmed in the runtime and by each container being unable to read the other's source;
+- stop/start preserves marker state in the project volume, confirmed by a start counter and a creation timestamp surviving a full stop;
+- generated configuration is reproducible, byte-identical across a restart;
+- the source mount is genuinely read-only from inside the container.
+
+Container-dependent verification runs against real Docker on a developer machine and skips explicitly on hosted runners, which have no usable Linux Docker daemon. It is never simulated. See [compatibility](compatibility.md).
 
 ### Slice 1.3: Project-scoped MCP `project_info`
 
