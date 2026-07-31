@@ -33,6 +33,9 @@ Usage:
   lctk project remove [--json] PROJECT
   lctk image build [--context DIR] [--json]
   lctk image status [--json]
+  lctk grant show [--json] [--reveal] PROJECT
+  lctk grant list [--json]
+  lctk grant revoke [--json] GRANT_ID
 `
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -54,6 +57,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runProject(args[1:], stdout, stderr)
 	case "image":
 		return runImage(args[1:], stdout, stderr)
+	case "grant":
+		return runGrant(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil

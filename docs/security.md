@@ -67,6 +67,10 @@ A grant restricts:
 
 A grant can be revoked or replaced independently of other clients. One project's key does not open another project unless the grant policy explicitly permits it.
 
+As implemented in Slice 1.3, a grant is issued automatically when a project is registered and is revoked when its only project is removed; a grant covering several projects loses just the removed one. Grants live in the per-user LCTK home with owner-only permissions, never in a repository. The token is stored recoverably rather than hashed, because LCTK must be able to place it into the environment of an editor it configures, and because Slice 0.4 measured that Codex refuses an inline credential and reads one from a named environment variable. Commands withhold the token unless it is explicitly revealed, and it is never written to a log.
+
+The endpoint checks the credential before consulting the registry, so an unauthenticated caller cannot learn which projects exist. A valid credential scoped to another project receives a distinct refusal from an unknown credential, so a client can correct itself without being told what else is registered.
+
 ## Browser access
 
 An ordinary web page does not receive access merely because it knows the `127.0.0.1` address.
