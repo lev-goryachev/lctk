@@ -154,10 +154,19 @@ func TestResolveFollowsSymlinks(t *testing.T) {
 }
 
 func TestComparisonKeySeparatorsAndCase(t *testing.T) {
-	// Folding volume: spelling and separators must not matter.
-	if got, want := comparisonKey(`C:\Work\Repo`, true), "c:/work/repo"; got != want {
-		t.Errorf("got %q, want %q", got, want)
+	// Keys are always derived from host-native paths, because they come from
+	// Resolve. filepath.ToSlash converts only the host separator, so the
+	// separator case is built with filepath.Join rather than a hard-coded
+	// Windows path that would keep its backslashes on a POSIX host.
+	native := filepath.Join("Work", "Repo")
+	key := comparisonKey(native, true)
+	if strings.ContainsRune(key, '\\') {
+		t.Errorf("key %q still contains a host separator", key)
 	}
+	if key != "work/repo" {
+		t.Errorf("key = %q, want work/repo", key)
+	}
+
 	// Case-sensitive volume: case must be preserved so distinct folders stay distinct.
 	if got, want := comparisonKey("/work/Repo", false), "/work/Repo"; got != want {
 		t.Errorf("got %q, want %q", got, want)
