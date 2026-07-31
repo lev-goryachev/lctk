@@ -7,6 +7,7 @@ require (
 	github.com/moby/moby/client v0.5.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	golang.org/x/sys v0.41.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

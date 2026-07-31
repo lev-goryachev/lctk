@@ -25,6 +25,9 @@ Usage:
   lctk daemon [--listen ADDRESS]
   lctk doctor [--json]
   lctk watch-once [--timeout DURATION] DIRECTORY
+  lctk project add [--profile minimal|full] [--json] PATH
+  lctk project status [--json] [PROJECT]
+  lctk project remove [--json] PROJECT
 `
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -42,6 +45,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runDoctor(ctx, args[1:], stdout)
 	case "watch-once":
 		return runWatchOnce(ctx, args[1:], stdout)
+	case "project":
+		return runProject(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil

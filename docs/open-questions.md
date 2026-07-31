@@ -83,10 +83,15 @@ The principle of automatic local protection and explicit client grants has been 
 
 ## Manifest schema
 
-It has been accepted that a safe `.mcp-project.yaml` may be stored in Git, while the host path, secrets, and grants may not. The following must be formalized:
+It has been accepted that a safe `.mcp-project.yaml` may be stored in Git, while the host path, secrets, and grants may not. Slice 1.1 settled the mechanics:
 
-- schema versioning;
-- local override file/location;
-- the agent-generated command proposal and user confirmation flow;
-- environment/secret references;
-- migration and backward compatibility.
+- the manifest carries an explicit `schema_version`, and a newer version than the build understands is refused;
+- the untracked override is `.mcp-project.local.yaml` beside the tracked file, and it wins field by field;
+- unknown fields produce warnings rather than failing registration, so a manifest written for a newer LCTK still works;
+- a declaration of a path, mount, grant, secret, credential, or capability is rejected at any nesting depth, and the manifest type has no field capable of holding one.
+
+The following must still be formalized:
+
+- the agent-generated command proposal and user confirmation flow, since manifest commands are currently parsed as proposals and never executed;
+- environment and secret references, given that the manifest may not contain secrets;
+- migration and backward compatibility once a second manifest schema version exists.
