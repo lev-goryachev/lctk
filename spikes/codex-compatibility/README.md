@@ -44,4 +44,17 @@ go run ./spikes/codex-compatibility config --project lctk_alpha --base-url http:
 
 The unit tests cover the parts that do not need Codex: configuration generation and escaping, JSON-RPC method extraction, the route token guard, typed error codes, route-bound scope, and the journal's no-secret property. They run in hosted CI on Windows and macOS, where no Codex CLI is present.
 
-The `verify` path against the real Codex CLI has **not** been executed. See the [Unverified section of the results](../../docs/spikes/codex-compatibility-results.md#unverified) for exactly which claims that leaves unmeasured.
+The `verify` path was executed against the real Codex CLI on Windows 10 with Go 1.26.5 and `codex-cli 0.146.0-alpha.9.2`. All eight steps passed:
+
+```text
+PASS harness_server_healthy
+PASS codex_strict_config
+PASS codex_doctor_mcp_reachable
+PASS codex_mcp_handshake
+PASS codex_mcp_reload
+PASS codex_tool_call
+PASS codex_typed_error
+PASS route_bound_scope
+```
+
+The measured journal and the bounds of that claim are in the [results](../../docs/spikes/codex-compatibility-results.md), including [Limits of this evidence](../../docs/spikes/codex-compatibility-results.md#limits-of-this-evidence). One run on one host against one alpha Codex build is not a support claim.

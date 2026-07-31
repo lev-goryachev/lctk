@@ -6,7 +6,20 @@ Slice 0.4 measured result and **proposed** integration contract. Not yet reviewe
 
 Measurement date: 2026-07-31.
 
-Part of the scenario is **unverified**: the tracked harness has not been compiled or executed because no Go toolchain is installed on the measurement machine. The affected gates are listed in [Unverified](#unverified) and must not be treated as passing.
+The full scenario was executed. All six hard gates pass against the named artifacts. The tracked harness ran end to end on Windows with Go 1.26.5 and the real Codex CLI, and every step reported `PASS`:
+
+```text
+PASS harness_server_healthy
+PASS codex_strict_config
+PASS codex_doctor_mcp_reachable
+PASS codex_mcp_handshake
+PASS codex_mcp_reload
+PASS codex_tool_call
+PASS codex_typed_error
+PASS route_bound_scope
+```
+
+Scope of the claim: one host, one Codex version, one run of the harness. This is hosted-test-equivalent evidence for the named artifacts, not a certified support statement. See [Limits of this evidence](#limits-of-this-evidence).
 
 ## Artifacts measured
 
@@ -109,16 +122,43 @@ Consequences for LCTK:
 
 - there is no key-helper or credential-command mechanism for MCP servers in this version. The only secret-free paths are an environment variable or OAuth.
 - the variable is read by the Codex process, so it must be present in the environment that process inherits. The extension exposes no setting for `CODEX_HOME` or for MCP environment variables; the only related setting is `chatgpt.cliExecutable`. A per-workspace credential therefore cannot be injected through extension settings, and a newly created user-level variable is not visible to an already-running editor.
-- `codex doctor --json` detects a missing variable and emits the remediation "Set the missing MCP env vars or disable the affected server", which gives LCTK a usable local diagnostic.
+- `codex doctor --json` detects a missing variable and emits the remediation "Set the missing MCP env vars or disable the affected server". With both variables present and the endpoint live, the same check reported `status: "ok"` and "MCP configuration is locally consistent", so LCTK has a usable local diagnostic in both directions.
 - OAuth would avoid the environment-variable problem but would make LCTK an OAuth authorization server for a local endpoint. That is a larger decision than Slice 0.4 should settle; it is recorded as an open question.
 
 ## Q4. Required server behavior
 
-**Answer: partially unverified.** The client-side control surface is verified; the wire-level contract is not.
+**Answer: verified.** The real Codex MCP client completes a full handshake against a route-bound LCTK-shaped endpoint, calls tools, and tolerates a stateless JSON server.
 
-Verified: the Codex app server accepts `initialize` with no credentials present and returns `userAgent`, `codexHome`, `platformFamily`, and `platformOs`, followed by a `remoteControl/status/changed` notification. This establishes that the real client can be driven without an account, without quota, and without a model turn.
+The harness journaled every exchange. Token values were never recorded; only the scheme and whether the presented token matched the route.
 
-The experimental app-server protocol, obtained from `codex app-server generate-json-schema --experimental` (47 schema files), exposes exactly the control surface a harness needs:
+| # | Method | Status | Auth | Protocol version | Session | JSON-RPC |
+|---|---|---|---|---|---|---|
+| 1 | HEAD | 401 | none | – | no | – |
+| 2 | POST | 200 | Bearer, matched | – | no | `initialize` |
+| 3 | POST | 202 | Bearer, matched | `2025-06-18` | yes | `notifications/initialized` |
+| 4 | GET | 405 | Bearer, matched | `2025-06-18` | yes | – |
+| 5 | POST | 200 | Bearer, matched | `2025-06-18` | yes | `tools/list` |
+| 6 | POST | 200 | Bearer, matched | `2025-06-18` | yes | `resources/list` |
+| 7 | POST | 200 | Bearer, matched | `2025-06-18` | yes | `resources/templates/list` |
+| 8 | DELETE | 204 | Bearer, matched | `2025-06-18` | yes | – |
+| 9–14 | reconnect after reload | 200/202/405 | Bearer, matched | `2025-06-18` | new session | `initialize`, `notifications/initialized`, `tools/list`, `tools/call` ×2 |
+| 15 | POST with a foreign token | 401 | Bearer, not matched | – | no | `tools/list` |
+
+What this establishes:
+
+- **Protocol version is `2025-06-18`**, sent as `Mcp-Protocol-Version` on every request after `initialize`.
+- **`Authorization: Bearer` is derived from `bearer_token_env_var`.** The presented token matched the route's expected value exactly, so the environment variable reaches the wire unchanged.
+- **Sessions are honored.** The client echoes the server-issued `Mcp-Session-Id` on every subsequent request and terminates the session with `DELETE`, which the server answered `204`.
+- **Streaming is not required.** The client sends `Accept: text/event-stream, application/json`, but a stateless JSON server is sufficient: the `GET` stream attempt was answered `405` and the client continued normally through tool listing and tool calls.
+- **Both header mechanisms work.** The static `http_headers` entry arrived as `X-Lctk-Project: lctk_alpha`, and the `env_http_headers` entry arrived with the value resolved from the named environment variable.
+- **Route-bound scope holds through the real client.** `project_info` was invoked through `mcpServer/tool/call` with a model-supplied `project_id` of `lctk_beta`. The response contained only the `lctk_alpha` sentinel and no `lctk_beta` sentinel, so a model-supplied identifier does not change server-enforced scope. This satisfies [ADR-0001](../adr/0001-route-bound-project-scope.md) at the client boundary.
+- **Typed errors survive.** The `typed_error` tool's `PROJECT_STOPPED` code was visible to the client, distinguishable from a transport failure.
+
+Two user agents appear, which matters when writing local diagnostics: the reachability probe identifies as `codex_cli_rs/0.146.0-alpha.9.2`, while the MCP client identifies as `codex-mcp-client/0.146.0-alpha.9.2`.
+
+One behavior deserves emphasis. **The `doctor` reachability probe sends no `Authorization` header.** Observation 1 was an unauthenticated `HEAD` that the harness answered `401`, and `doctor` still reported `status: "ok"` with the summary "MCP configuration is locally consistent". A `401` therefore counts as reachable, so an LCTK endpoint must not need to accept anonymous requests in order to look healthy, and must not treat the probe as a failed grant attempt worth alerting on.
+
+The experimental app-server protocol, obtained from `codex app-server generate-json-schema --experimental` (47 schema files), provides the control surface the harness uses:
 
 | Method | Params | Use |
 |---|---|---|
@@ -128,17 +168,23 @@ The experimental app-server protocol, obtained from `codex app-server generate-j
 | `mcpServer/oauth/login` | login params | OAuth flow |
 | `mcpServer/resource/read` | resource params | resource reads |
 
-`codex doctor --json` independently probes each configured HTTP endpoint with HEAD and then GET and reports failures as, for example, `lctk_project: http://127.0.0.1:8123/projects/<redacted> (HEAD connect failed; GET connect failed)`. Values are redacted in JSON output. The MCP check took about 4.1 s against an unreachable endpoint.
+`initialize` succeeds with no credentials present and returns `userAgent`, `codexHome`, `platformFamily`, and `platformOs`. `thread/start` also works with no credentials; it returns the thread identifier at `thread.id` and reports the resolved `cwd`, workspace roots, and discovered instruction sources. A thread is required for `mcpServer/tool/call` but does not start a model turn, so the whole scenario runs without consuming quota.
 
-Not verified: what the client sends on the wire, whether a stateless JSON response is sufficient, whether typed errors survive, and whether route-bound refusal behaves correctly through the real client. See [Unverified](#unverified).
+A practical trap for anyone extending the harness: the `thread/start` result contains several unrelated `id` fields, including `activePermissionProfile.id` whose value is `":read-only"`. Searching the response generically for an `id` yields an invalid thread id and the tool call fails with `invalid thread id`. The identifier must be read from `thread.id`.
 
 ## Q5. Reload and reconnect UX
 
-**Answer: a reload mechanism exists and does not require restarting the editor, but its observable behavior is unverified.** Partially verified.
+**Answer: `config/mcpServer/reload` works without restarting the editor, and it performs a full reconnect rather than an in-place refresh.** Verified.
 
-`config/mcpServer/reload` is a first-class app-server method taking null parameters. The official documentation describes reconnection as automatic on configuration change and refers to an explicit **Restart** control in the desktop application. The extension exposes no MCP-specific command in its contributed settings.
+The method was accepted with null parameters while the app server stayed alive. The journal shows what reload actually does: observations 9 to 14 are a complete new connection, beginning with a fresh `initialize` and a **new** `Mcp-Session-Id`, followed again by `notifications/initialized`, the `GET` stream attempt, and `tools/list`. The previous session had been terminated with `DELETE` at observation 8.
 
-Whether reload picks up a newly added server, drops a removed one, and re-reads environment variables without restarting the process was not measured.
+Consequences for LCTK:
+
+- a server must tolerate repeated full handshakes and must not treat a new session as a new grant decision;
+- per-session server state is discarded on reload, so nothing durable may live only in an MCP session;
+- because reload re-runs `initialize`, a project that has become unreachable or stopped will surface at reconnect time, which is the natural place for a typed `PROJECT_STOPPED` response.
+
+The official documentation additionally describes reconnection as automatic on configuration change and refers to an explicit **Restart** control in the desktop application. Whether a newly added or removed server is picked up by reload, and whether changed environment variables are re-read without restarting the process, was not measured.
 
 ## Q6. Generation and trust surface
 
@@ -162,30 +208,32 @@ The manifest boundary from the open questions is unaffected: the token stays out
 
 | Gate | Outcome |
 |---|---|
-| 1. Streamable HTTP is usable | **partially verified.** The transport, schema, and client control surface are verified; a completed handshake against a live LCTK-shaped endpoint is not. |
+| 1. Streamable HTTP is usable | **pass.** The real client completed `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` against `/projects/{project_id}/mcp`. |
 | 2. No secret in a committed file | **pass.** Inline tokens are rejected outright, and both credential mechanisms reference environment-variable names. |
-| 3. Route-bound scope survives the client | **unverified.** Enforced by the harness server design, not yet exercised through the real client. |
-| 4. Typed errors survive | **unverified.** |
-| 5. Reload without restarting the editor | **partially verified.** The mechanism exists; its behavior was not observed. |
-| 6. Unreachable projects are diagnosable locally | **pass.** `codex doctor --json` probes reachability and validates credential variables with no model turn. |
+| 3. Route-bound scope survives the client | **pass.** A model-supplied `project_id` of `lctk_beta` did not change the answer, and a token issued for one project was refused on another project's route with a typed `GRANT_REQUIRED`. |
+| 4. Typed errors survive | **pass.** `PROJECT_STOPPED` reached the client and was distinguishable from a transport failure. |
+| 5. Reload without restarting the editor | **pass.** `config/mcpServer/reload` succeeded while the process stayed alive, performing a full reconnect with a new session. |
+| 6. Unreachable projects are diagnosable locally | **pass.** `codex doctor --json` probes reachability and validates credential variables with no model turn, and reported `ok` against the live endpoint. |
 
-No gate failed. Three gates are incompletely measured.
+No gate failed.
 
-## Unverified
+## Limits of this evidence
 
-The tracked harness in [`spikes/codex-compatibility/`](../../spikes/codex-compatibility/) has not been compiled or executed. No Go toolchain is installed on the measurement machine: `go` and `gofmt` are absent from `PATH`, and no installation was found under Program Files, `LOCALAPPDATA`, scoop, or chocolatey. The harness source is therefore committed as unvalidated code, and hosted CI has not yet run its tests.
+What was measured is bounded, and the contract must not be read more broadly than the run supports:
 
-Consequently the following are unmeasured and must not be claimed:
+- **one host**: Windows 10 Pro 19045, x86-64, Go 1.26.5. macOS was not exercised, and hosted CI runs only the harness unit tests, because no Codex CLI exists on the runners.
+- **one Codex version**: `codex-cli 0.146.0-alpha.9.2`, an alpha build bundled in extension `26.727.40816`. The app-server protocol used to drive it is explicitly experimental, so `mcpServerStatus/list`, `mcpServer/tool/call`, and `config/mcpServer/reload` may change shape without notice.
+- **the CLI, not the editor UI**: the extension's own reload affordances, error presentation, and grant prompts were not exercised. The verification drove the same binary the extension runs, which is stronger than documentation but is not the same as clicking through VS Code.
+- **one run, no repetition**: latency, flakiness under load, reconnect storms, and long-lived session behavior were not measured.
+- **fields accepted but not exercised**: `enabled_tools`, `disabled_tools`, `auth`, `oauth_resource`, `scopes`, `startup_timeout_ms`, `environment_id`, `required`, `supports_parallel_tool_calls`, and `default_tools_approval_mode`.
+- **timeout semantics not probed**: `startup_timeout_sec` and `tool_timeout_sec` were accepted by the loader, but no slow or hanging server was used to observe enforcement.
+- **not measured for reload**: whether a newly added or removed server is picked up, and whether changed environment variables are re-read without restarting the process.
 
-- the HTTP method, `Accept` header, protocol-version header, and session-id handling the real client uses;
-- that the `Authorization: Bearer` header is actually derived from `bearer_token_env_var`;
-- whether a stateless JSON response satisfies the client, or whether streaming and session support are required;
-- whether `mcpServerStatus/list` returns the tool inventory from a live server;
-- whether a typed server error is distinguishable from a transport failure;
-- `config/mcpServer/reload` behavior after a configuration change;
-- refusal of a foreign project token on another project's route as seen by the real client.
+The harness is reproducible, so re-measurement is cheap:
 
-Completing these requires a Go toolchain on a machine that also has the Codex extension installed, then running the harness and appending the measured journal to this document.
+```bash
+go run ./spikes/codex-compatibility verify --out .research/codex-compat/report.json
+```
 
 ## Proposed disposition
 
@@ -197,12 +245,21 @@ For the named artifacts, Codex is a suitable client for the LCTK project endpoin
 4. LCTK provides a local diagnostic path built on `codex doctor --json` semantics rather than inventing its own reachability story.
 5. The credential-delivery mechanism, specifically how a project token reaches the editor's environment, is the main remaining design problem and needs its own decision.
 
-This disposition should not be recorded as an accepted ADR until the harness has run and the unverified gates are measured.
+Additional contract items now supported by measurement:
+
+6. LCTK targets MCP protocol version `2025-06-18` and must tolerate repeated full handshakes, because reload reconnects rather than refreshes.
+7. LCTK does not need server-initiated streaming for Codex. A stateless JSON endpoint that answers `405` to the `GET` stream is sufficient, which keeps the Slice 1.3 gateway simpler.
+8. LCTK must answer an unauthenticated `HEAD` and `GET` on a project route with a typed `401` rather than a connection failure, so that `codex doctor` reports the project as reachable.
+9. No durable state may live only in an MCP session, because reload discards it.
+
+The remaining open item is credential delivery, not protocol compatibility.
 
 ## Follow-up
 
-- Install a Go toolchain and run the harness; append the wire-level journal to this document.
-- Decide how a project grant token reaches the editor environment, given that extension settings cannot inject it.
+- Review this document with the maintainer and, if accepted, record the contract as an ADR.
+- Decide how a project grant token reaches the editor environment, given that extension settings cannot inject it and a new user-level variable is invisible to a running editor.
 - Decide whether LCTK generates a user-global entry, a trusted project-local file, or both, in light of the project-local override finding.
 - Decide whether a local OAuth path is worth avoiding environment variables.
-- Re-measure when Codex changes materially; this contract is bound to `codex-cli 0.146.0-alpha.9.2`.
+- Exercise the extension UI itself before Slice 1.5 claims an end-to-end Codex scenario.
+- Measure `startup_timeout_sec` and `tool_timeout_sec` enforcement against a deliberately slow server when the real gateway exists.
+- Re-measure when Codex changes materially; this contract is bound to `codex-cli 0.146.0-alpha.9.2` and to an experimental app-server protocol.

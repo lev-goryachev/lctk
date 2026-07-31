@@ -259,6 +259,69 @@ func runVerify(ctx context.Context, codexPath, workDir string, keepConfig bool) 
 		report.step("codex_mcp_reload", true, "config/mcpServer/reload accepted with no restart of the extension host")
 	}
 
+	// Tool invocation needs a thread. A thread does not start a model turn, so
+	// this still costs no quota, but it may require account state; when it does
+	// not work the tool steps are reported as skipped rather than failed.
+	threadID := ""
+	threadCtx, cancelThread := context.WithTimeout(ctx, 90*time.Second)
+	defer cancelThread()
+	threadMsg, threadErr := client.call(threadCtx, "thread/start", map[string]any{"cwd": workDir})
+	switch {
+	case threadErr != nil:
+		report.skip("codex_tool_call", fmt.Sprintf("thread/start failed: %v", threadErr))
+		report.skip("codex_typed_error", "no thread available")
+	case len(threadMsg.Error) > 0:
+		report.skip("codex_tool_call", "thread/start returned an error: "+tail(string(threadMsg.Error), 300))
+		report.skip("codex_typed_error", "no thread available")
+	default:
+		threadID = extractThreadID(threadMsg.Result)
+		if threadID == "" {
+			report.skip("codex_tool_call", "thread/start returned no thread id")
+			report.skip("codex_typed_error", "no thread available")
+		}
+	}
+
+	if threadID != "" {
+		// A model-supplied project_id must not change the server-enforced scope.
+		callCtx, cancelCall := context.WithTimeout(ctx, 90*time.Second)
+		defer cancelCall()
+		callMsg, err := client.call(callCtx, "mcpServer/tool/call", map[string]any{
+			"server":    primaryProject,
+			"tool":      "project_info",
+			"threadId":  threadID,
+			"arguments": map[string]any{"project_id": secondaryProject},
+		})
+		switch {
+		case err != nil:
+			report.step("codex_tool_call", false, "mcpServer/tool/call failed: %v", err)
+		case len(callMsg.Error) > 0:
+			report.step("codex_tool_call", false, "mcpServer/tool/call returned an error: %s", tail(string(callMsg.Error), 300))
+		default:
+			body := string(callMsg.Result)
+			leaked := strings.Contains(body, "beta_only_sentinel")
+			scoped := strings.Contains(body, "alpha_only_sentinel")
+			report.step("codex_tool_call", scoped && !leaked,
+				"project_info answered from the route (route_scoped=%t, foreign_sentinel_leaked=%t)", scoped, leaked)
+		}
+
+		errCtx, cancelErr := context.WithTimeout(ctx, 90*time.Second)
+		defer cancelErr()
+		errMsg, err := client.call(errCtx, "mcpServer/tool/call", map[string]any{
+			"server":    primaryProject,
+			"tool":      "typed_error",
+			"threadId":  threadID,
+			"arguments": map[string]any{"code": "PROJECT_STOPPED"},
+		})
+		switch {
+		case err != nil:
+			report.step("codex_typed_error", false, "typed_error call failed: %v", err)
+		default:
+			combined := string(errMsg.Result) + string(errMsg.Error)
+			report.step("codex_typed_error", strings.Contains(combined, "PROJECT_STOPPED"),
+				"typed code visible to the client: %t", strings.Contains(combined, "PROJECT_STOPPED"))
+		}
+	}
+
 	report.Notifications = client.notifications()
 	report.AppServerStderr = tail(client.stderrTail(), 2000)
 	report.Observations = j.snapshot()
@@ -384,6 +447,31 @@ func extractToolNames(raw json.RawMessage) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// extractThreadID finds the thread identifier in a thread/start result without
+// depending on the exact experimental response shape.
+func extractThreadID(raw json.RawMessage) string {
+	var probe map[string]any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	// Observed shape is {"thread":{"id":"<uuid>",...},...}. Only named locations
+	// are consulted: a generic search picks up unrelated identifiers such as
+	// activePermissionProfile.id, whose value is not a thread id.
+	if thread, ok := probe["thread"].(map[string]any); ok {
+		for _, key := range []string{"id", "threadId", "sessionId"} {
+			if v, ok := thread[key].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	for _, key := range []string{"threadId", "thread_id"} {
+		if v, ok := probe[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func firstLine(out string, err error) string {
