@@ -29,8 +29,10 @@ func requireDocker(t *testing.T) (*Manager, string) {
 	manager := NewManager()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	// This covers both an absent daemon and a reachable one that cannot run Linux
+	// containers, which is what a hosted Windows runner provides.
 	if err := manager.RuntimeAvailable(ctx); err != nil {
-		t.Skipf("container runtime unavailable: %v", err)
+		t.Skipf("no runtime able to run Linux containers: %v", err)
 	}
 
 	names, err := DeriveNames("probe-00000000")

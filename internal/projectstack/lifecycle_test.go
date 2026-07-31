@@ -54,7 +54,7 @@ func (f *fakeRunner) callWith(fragments ...string) []string {
 
 func healthyRunner() *fakeRunner {
 	return &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3\n"},
+		{match: "version", stdout: "29.5.3 linux\n"},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		{match: "inspect", stdout: "running healthy\n"},
 	}}
@@ -91,9 +91,54 @@ func TestRuntimeUnavailableIsDistinguishable(t *testing.T) {
 	}
 }
 
+// TestWindowsContainerModeIsRejectedEarly covers a reachable runtime that cannot
+// run Linux containers. Without this check the failure appears much later as an
+// opaque image-manifest error, which is what a Windows CI runner produced.
+func TestWindowsContainerModeIsRejectedEarly(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{match: "version", stdout: "29.5.3 windows\n"},
+	}}
+	manager := NewManagerWithRunner(runner)
+
+	err := manager.RuntimeAvailable(context.Background())
+	if !errors.Is(err, ErrLinuxContainersRequired) {
+		t.Fatalf("got %v, want ErrLinuxContainersRequired", err)
+	}
+	// The two conditions must stay distinguishable: one means Docker is closed,
+	// the other means it is running in the wrong mode.
+	if errors.Is(err, ErrRuntimeUnavailable) {
+		t.Error("Windows container mode was conflated with an unreachable runtime")
+	}
+	if !strings.Contains(err.Error(), "Linux containers") {
+		t.Errorf("error should say how to fix it: %v", err)
+	}
+
+	// The check must run before anything tries to pull or build an image.
+	if _, err := manager.Start(context.Background(), testProject("alpha-abcd1234", absPath("work", "alpha")), 0); !errors.Is(err, ErrLinuxContainersRequired) {
+		t.Errorf("Start: got %v, want ErrLinuxContainersRequired", err)
+	}
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "build") || strings.Contains(joined, "compose") {
+			t.Errorf("work was attempted despite an unusable runtime: %v", call)
+		}
+	}
+}
+
+func TestRuntimeWithoutAnOSFieldIsAccepted(t *testing.T) {
+	// An older runtime that does not report its OS must not be refused: letting
+	// the image step report the real problem is better than a false negative.
+	runner := &fakeRunner{responses: []fakeResponse{
+		{match: "version", stdout: "20.10.0\n"},
+	}}
+	if err := NewManagerWithRunner(runner).RuntimeAvailable(context.Background()); err != nil {
+		t.Errorf("got %v, want the runtime to be accepted", err)
+	}
+}
+
 func TestMissingImageIsDistinguishable(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3\n"},
+		{match: "version", stdout: "29.5.3 linux\n"},
 		{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	}}
 	manager := NewManagerWithRunner(runner)
@@ -144,7 +189,7 @@ func TestInspectMapsRuntimeStateToLifecycleState(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			runner := &fakeRunner{responses: []fakeResponse{
-				{match: "version", stdout: "29.5.3\n"},
+				{match: "version", stdout: "29.5.3 linux\n"},
 				{match: "inspect", stdout: testCase.stdout, stderr: testCase.stderr, err: testCase.err},
 			}}
 			manager := NewManagerWithRunner(runner)
@@ -263,7 +308,7 @@ func TestRestartStopsThenStarts(t *testing.T) {
 func TestWaitForHealthTimesOutWithTheLastObservedState(t *testing.T) {
 	isolate(t)
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3\n"},
+		{match: "version", stdout: "29.5.3 linux\n"},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		// Never becomes healthy.
 		{match: "inspect", stdout: "running starting\n"},
@@ -290,7 +335,7 @@ func TestWaitForHealthTimesOutWithTheLastObservedState(t *testing.T) {
 func TestWaitForHealthFailsFastOnUnhealthy(t *testing.T) {
 	isolate(t)
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3\n"},
+		{match: "version", stdout: "29.5.3 linux\n"},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		{match: "inspect", stdout: "running unhealthy\n"},
 	}}

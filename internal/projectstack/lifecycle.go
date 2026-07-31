@@ -42,6 +42,14 @@ var (
 	// It is separate from a project failure so a caller does not blame the
 	// project for Docker Desktop being closed.
 	ErrRuntimeUnavailable = errors.New("container runtime is unavailable")
+	// ErrLinuxContainersRequired reports a reachable runtime that cannot run
+	// Linux containers, which Docker Desktop on Windows does when switched to
+	// Windows container mode.
+	//
+	// LCTK project stacks are Linux containers by design: ADR-0011 requires a
+	// Linux boundary for the search backend. Without this check the failure
+	// surfaces much later as an opaque image-manifest error.
+	ErrLinuxContainersRequired = errors.New("container runtime must be able to run Linux containers")
 	// ErrImageMissing reports that the reusable image has not been built.
 	ErrImageMissing = errors.New("reusable code-intel image is not available")
 )
@@ -94,13 +102,30 @@ func NewManager() *Manager { return &Manager{runner: dockerRunner{}} }
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
 func NewManagerWithRunner(runner Runner) *Manager { return &Manager{runner: runner} }
 
-// RuntimeAvailable reports whether the container runtime answers.
+// RuntimeAvailable reports whether the container runtime answers and can run the
+// Linux containers LCTK needs.
 //
-// Callers use this to skip rather than fail when Docker is absent, which matters
-// because hosted CI runners have no usable Linux Docker daemon.
+// Reachability alone is not enough. A Windows host can have a running daemon in
+// Windows container mode, which answers every query and then rejects a Linux
+// image with an opaque manifest error. Reporting that here turns a confusing
+// late failure into an actionable one, and lets callers skip rather than fail
+// where no suitable runtime exists.
 func (m *Manager) RuntimeAvailable(ctx context.Context) error {
-	if _, stderr, err := m.runner.Run(ctx, "version", "--format", "{{.Server.Version}}"); err != nil {
+	stdout, stderr, err := m.runner.Run(ctx, "version", "--format", "{{.Server.Version}} {{.Server.Os}}")
+	if err != nil {
 		return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, firstLine(stderr, err))
+	}
+
+	fields := strings.Fields(strings.TrimSpace(stdout))
+	if len(fields) < 2 {
+		// An older or unusual runtime that does not report its OS is accepted:
+		// refusing on a parse failure would be worse than letting the image pull
+		// report the real problem.
+		return nil
+	}
+	if serverOS := strings.ToLower(fields[1]); serverOS != "linux" {
+		return fmt.Errorf("%w: the runtime reports %q; switch Docker Desktop to Linux containers",
+			ErrLinuxContainersRequired, serverOS)
 	}
 	return nil
 }

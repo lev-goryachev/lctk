@@ -70,7 +70,7 @@ func useRuntime(t *testing.T, replies ...scriptedReply) *scriptedRuntime {
 func healthyRuntime(t *testing.T) *scriptedRuntime {
 	t.Helper()
 	return useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 		scriptedReply{match: "inspect", stdout: "running healthy\n"},
 	)
@@ -192,7 +192,7 @@ func TestProjectStartWithoutRuntimeIsDistinguishable(t *testing.T) {
 func TestProjectStartWithoutTheImageSaysSo(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	)
 	id := addProject(t, "alpha")
@@ -261,7 +261,7 @@ func TestProjectStatusSurvivesAnUnavailableRuntime(t *testing.T) {
 func TestProjectStatusMarksAStartingProjectRetryable(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "inspect", stdout: "running starting\n"},
 	)
 	id := addProject(t, "alpha")
@@ -354,7 +354,7 @@ func imageCommand(t *testing.T, args ...string) (string, string, error) {
 func TestImageStatusReportsAvailability(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 	)
 
@@ -377,7 +377,7 @@ func TestImageStatusReportsAvailability(t *testing.T) {
 func TestImageStatusExplainsAMissingImage(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	)
 
@@ -399,7 +399,7 @@ func TestImageStatusExplainsAMissingImage(t *testing.T) {
 
 func TestImageBuildPassesTheContextDirectory(t *testing.T) {
 	isolateHome(t)
-	runtime := useRuntime(t, scriptedReply{match: "version", stdout: "29.5.3\n"})
+	runtime := useRuntime(t, scriptedReply{match: "version", stdout: "29.5.3 linux\n"})
 
 	contextDir := t.TempDir()
 	if _, _, err := imageCommand(t, "build", "--context", contextDir, "--json"); err != nil {
@@ -436,7 +436,7 @@ func TestImageUsageErrors(t *testing.T) {
 func TestImageCommandIsReachableFromRun(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3\n"},
+		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 	)
 
