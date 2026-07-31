@@ -25,5 +25,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0010](0010-codebase-memory-mcp-reference-only.md) | Codebase Memory MCP is reference-only prior art | accepted |
 | [0011](0011-zoekt-exact-search-backend.md) | Zoekt exact-search backend behind an LCTK adapter | accepted |
 | [0012](0012-codex-integration-contract.md) | Codex integration contract measured against the real client | accepted |
+| [0013](0013-registry-persistence.md) | Versioned JSON document for the local project registry | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.

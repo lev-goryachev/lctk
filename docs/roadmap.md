@@ -97,20 +97,22 @@ Outcome: a verified integration contract, not an assumption. Credential delivery
 
 ### Slice 1.1: Local registry
 
-Implement:
+**Status:** complete. Persistence is recorded in [ADR-0013](adr/0013-registry-persistence.md).
 
-- a typed project model and migrations;
-- native path canonicalization;
-- stable local project ID;
-- `lctk project add/status/remove` without starting services;
-- a manifest parser, schema validation, and local overrides.
+Implemented:
 
-Tests:
+- a typed project model and migrations, stored as a versioned JSON document in a per-user LCTK home with atomic replacement, refusal to reset on corruption, and a typed error for a newer schema;
+- native path canonicalization: absolute resolution, symlinks, junctions, macOS firmlinks, Windows 8.3 short-name expansion, drive-letter case, and a measured rather than assumed case-sensitivity probe;
+- a stable local project ID derived from the canonical path, identical for every alias of one folder and constrained to a charset safe in a route segment and a container name;
+- `lctk project add/status/remove`, which start no containers, networks, volumes, or indexing;
+- a manifest parser for `.mcp-project.yaml` with an untracked `.mcp-project.local.yaml` override, strict validation, warnings for unknown fields, and rejection of any attempt to declare a path, mount, grant, secret, or capability.
 
-- different Windows drives;
-- macOS paths;
-- duplicate/case/path-alias handling;
-- the manifest cannot replace the authoritative host path.
+Verified:
+
+- different Windows drives produce distinct identities;
+- Windows and macOS path handling through hosted CI on both platforms;
+- duplicate, case, and path-alias handling, with `os.SameFile` as the authority and the comparison key as the fallback for an unavailable volume;
+- the manifest cannot replace the authoritative host path, both because such a declaration is rejected and because the manifest type has no field able to hold one.
 
 ### Slice 1.2: Reproducible project container
 

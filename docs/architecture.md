@@ -2,9 +2,9 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. Registry and persistent search-engine implementations remain open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). Storage for the change journal, index metadata, and semantic and graph state remains open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
-## Current Slice 0.1 foundation
+## Current implementation
 
 The current implementation is deliberately narrower than the target architecture:
 
@@ -12,9 +12,10 @@ The current implementation is deliberately narrower than the target architecture
 - a standard-library HTTP daemon with `GET /health`;
 - the official MCP Go SDK Streamable HTTP handler at `/mcp` with temporary tool `foundation_info`;
 - an `fsnotify` basic event-delivery proof;
-- a read-only Moby API diagnostic for Docker Desktop availability.
+- a read-only Moby API diagnostic for Docker Desktop availability;
+- the local project registry from Slice 1.1: canonical host paths, stable project identities, `lctk project add/status/remove`, and manifest parsing, none of which start a service.
 
-There is no project registry, project-scoped route, container stack, persistent search index, durable change journal, or client grant implementation yet. The current MCP endpoint validates a protocol boundary but is not the future project endpoint.
+There is no project-scoped route, container stack, persistent search index, durable change journal, or client grant implementation yet. The current MCP endpoint validates a protocol boundary but is not the future project endpoint, and a registration is a record rather than a running project.
 
 ## Principles
 
