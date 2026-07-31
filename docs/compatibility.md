@@ -8,6 +8,7 @@
 | macOS host | macOS 13, arm64 | Go build and tests on `macos-15`; Darwin arm64 archive construction | Execution on macOS 13, launch service, APFS edge cases, Docker Desktop lifecycle and file sharing, notarization |
 | Docker Desktop | Current supported Docker Desktop line at release time | Moby API diagnostic compiles and reports daemon availability | Container lifecycle, Compose, mount isolation, project persistence, and resource behavior |
 | MCP | Streamable HTTP through official Go SDK v1.6.1 | In-process client/server transport test calls `foundation_info`; Slice 0.2 harness verifies route/grant/reconnect behavior against candidate gateways | Codex extension integration and persistent production tools |
+| Codex client | Streamable HTTP with `url` plus `bearer_token_env_var` | Slice 0.4 measured the configuration schema, discovery and precedence, credential constraints, and local diagnostics against extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2` | Wire-level handshake, session and streaming requirements, typed-error surfacing, reload behavior, and route-bound refusal through the real client |
 
 The initial resource goal is a 16 GB RAM, CPU-only machine. No project-count, latency, or million-file performance guarantee exists yet.
 

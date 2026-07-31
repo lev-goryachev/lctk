@@ -70,6 +70,8 @@ Outcome: ADR-0011 selects pinned Zoekt behind a narrow LCTK-owned working-tree a
 
 ### Slice 0.4: Codex compatibility spike
 
+**Status:** in progress. The [verification contract](spikes/codex-compatibility.md) is accepted and the [measured results](spikes/codex-compatibility-results.md) record a proposed integration contract. Three hard gates remain incompletely measured, so no ADR is accepted yet.
+
 Using the current official documentation and the actual extension, verify:
 
 - project-local config path/schema;
@@ -79,7 +81,15 @@ Using the current official documentation and the actual extension, verify:
 - required server behavior;
 - reload and reconnect UX.
 
-Outcome: a verified integration contract, not an assumption.
+Measured against Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`:
+
+- project-local `.codex/config.toml` works, but only in a trusted project, and it overrides same-named user-global entries;
+- Streamable HTTP is first class, with `url`, `bearer_token_env_var`, `http_headers`, `env_http_headers`, `enabled`, and timeout fields;
+- an inline `bearer_token` is rejected, so a token must come from an environment variable or OAuth, and no key-helper mechanism exists;
+- `codex doctor --json` gives a local reachability and credential diagnostic with no model turn;
+- `config/mcpServer/reload` is the reload mechanism.
+
+Outcome: a verified integration contract, not an assumption. The wire-level server contract stays unverified until the tracked harness runs.
 
 ## Stage 1 — First end-to-end lifecycle
 
