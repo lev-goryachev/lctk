@@ -70,6 +70,8 @@ Outcome: ADR-0011 selects pinned Zoekt behind a narrow LCTK-owned working-tree a
 
 ### Slice 0.4: Codex compatibility spike
 
+**Status:** complete; the [measured results](spikes/codex-compatibility-results.md) support the accepted integration contract in [ADR-0012](adr/0012-codex-integration-contract.md). All six hard gates of the [verification contract](spikes/codex-compatibility.md) pass against Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`.
+
 Using the current official documentation and the actual extension, verify:
 
 - project-local config path/schema;
@@ -79,7 +81,17 @@ Using the current official documentation and the actual extension, verify:
 - required server behavior;
 - reload and reconnect UX.
 
-Outcome: a verified integration contract, not an assumption.
+Measured against Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`:
+
+- project-local `.codex/config.toml` works, but only in a trusted project, and it overrides same-named user-global entries;
+- Streamable HTTP is first class, with `url`, `bearer_token_env_var`, `http_headers`, `env_http_headers`, `enabled`, and timeout fields;
+- an inline `bearer_token` is rejected, so a token must come from an environment variable or OAuth, and no key-helper mechanism exists;
+- `codex doctor --json` gives a local reachability and credential diagnostic with no model turn, and its reachability probe is unauthenticated, so a typed `401` still counts as reachable;
+- `config/mcpServer/reload` is the reload mechanism, and it performs a full reconnect with a new session rather than an in-place refresh;
+- the client speaks MCP protocol version `2025-06-18`, honors the server-issued session id, and works against a stateless JSON endpoint, so server-initiated streaming is not required;
+- a model-supplied `project_id` does not change server-enforced scope, and a token issued for one project is refused on another project's route.
+
+Outcome: a verified integration contract, not an assumption. Credential delivery to the editor environment is the remaining design problem, not protocol compatibility.
 
 ## Stage 1 — First end-to-end lifecycle
 

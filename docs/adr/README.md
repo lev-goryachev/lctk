@@ -24,5 +24,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0009](0009-embedded-go-gateway-and-project-runtime.md) | LCTK-owned Go gateway embedded in the host daemon with containerized project services | accepted |
 | [0010](0010-codebase-memory-mcp-reference-only.md) | Codebase Memory MCP is reference-only prior art | accepted |
 | [0011](0011-zoekt-exact-search-backend.md) | Zoekt exact-search backend behind an LCTK adapter | accepted |
+| [0012](0012-codex-integration-contract.md) | Codex integration contract measured against the real client | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.
