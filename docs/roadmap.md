@@ -70,7 +70,7 @@ Outcome: ADR-0011 selects pinned Zoekt behind a narrow LCTK-owned working-tree a
 
 ### Slice 0.4: Codex compatibility spike
 
-**Status:** measured; awaiting maintainer review. The [verification contract](spikes/codex-compatibility.md) is accepted and the [measured results](spikes/codex-compatibility-results.md) record a proposed integration contract. All six hard gates pass against Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`. No ADR is accepted yet.
+**Status:** complete; the [measured results](spikes/codex-compatibility-results.md) support the accepted integration contract in [ADR-0012](adr/0012-codex-integration-contract.md). All six hard gates of the [verification contract](spikes/codex-compatibility.md) pass against Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`.
 
 Using the current official documentation and the actual extension, verify:
 

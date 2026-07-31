@@ -2,7 +2,7 @@
 
 ## Status
 
-Slice 0.4 measured result and **proposed** integration contract. Not yet reviewed with the maintainer, and therefore not an accepted decision.
+Slice 0.4 measured result and accepted integration contract. The maintainer reviewed the findings and accepted the disposition on 2026-07-31; [ADR-0012](../adr/0012-codex-integration-contract.md) records the decision.
 
 Measurement date: 2026-07-31.
 
@@ -235,9 +235,9 @@ The harness is reproducible, so re-measurement is cheap:
 go run ./spikes/codex-compatibility verify --out .research/codex-compat/report.json
 ```
 
-## Proposed disposition
+## Accepted disposition
 
-For the named artifacts, Codex is a suitable client for the LCTK project endpoint, and the integration is buildable without weakening route-bound scope or putting secrets in committed files. The proposed contract is:
+For the named artifacts, Codex is a suitable client for the LCTK project endpoint, and the integration is buildable without weakening route-bound scope or putting secrets in committed files. The contract accepted in [ADR-0012](../adr/0012-codex-integration-contract.md) is:
 
 1. LCTK targets Streamable HTTP with `url` plus `bearer_token_env_var`, and does not use inline credentials.
 2. LCTK owns the generated `mcp_servers` entry and treats Codex configuration as a generated artifact, never a source of truth for project identity.
@@ -256,7 +256,6 @@ The remaining open item is credential delivery, not protocol compatibility.
 
 ## Follow-up
 
-- Review this document with the maintainer and, if accepted, record the contract as an ADR.
 - Decide how a project grant token reaches the editor environment, given that extension settings cannot inject it and a new user-level variable is invisible to a running editor.
 - Decide whether LCTK generates a user-global entry, a trusted project-local file, or both, in light of the project-local override finding.
 - Decide whether a local OAuth path is worth avoiding environment variables.
