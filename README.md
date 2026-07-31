@@ -47,6 +47,7 @@ The source of truth is under [`docs/`](docs/index.md):
 - [versioning](docs/versioning.md) and [release process](docs/releasing.md);
 - [delivery roadmap](docs/roadmap.md);
 - [Codebase Memory MCP comparative assessment](docs/spikes/codebase-memory-mcp-assessment.md);
+- [Codex verification contract](docs/spikes/codex-compatibility.md) and [measured results](docs/spikes/codex-compatibility-results.md);
 - [search backend evaluation](docs/spikes/search-backend-evaluation.md) and [measured results](docs/spikes/search-backend-evaluation-results.md);
 - [open questions](docs/open-questions.md);
 - [architecture decisions](docs/adr/README.md).

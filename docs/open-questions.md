@@ -4,13 +4,20 @@ This document contains only decisions that have not yet been made. Once a decisi
 
 ## Codex configuration and credentials
 
-The current official Codex configuration schema must be checked to answer:
+Slice 0.4 measured the schema itself; see the [results](spikes/codex-compatibility-results.md). Resolved for Codex extension `26.727.40816` and bundled `codex-cli 0.146.0-alpha.9.2`:
 
-- where project-local configuration can be generated safely;
-- whether a bearer token can be supplied without manual environment variables;
-- whether a local proxy or helper is required;
-- whether secret-free configuration is committed or always remains local;
-- how extension reload and reconnect detect changes.
+- project-local configuration is possible at `.codex/config.toml`, but only in a trusted project, and it overrides same-named user-global entries;
+- a bearer token cannot be supplied without an environment variable, because an inline `bearer_token` is rejected for a Streamable HTTP server;
+- no key helper or credential command exists for MCP servers; the alternatives are an environment variable or OAuth;
+- secret-free configuration is committable, because both credential mechanisms reference environment-variable names rather than values;
+- `config/mcpServer/reload` is the reload mechanism and does not require restarting the editor.
+
+What remains undecided:
+
+- how a per-project grant token reaches the environment the editor inherits, given that extension settings cannot inject it and a newly created user-level variable is invisible to a running editor;
+- whether LCTK generates a user-global `mcp_servers` entry, a trusted project-local file, or both, given that a repository-local file can override the URL of a same-named global entry;
+- whether LCTK should offer a local OAuth path to avoid environment variables entirely, and what that would mean for a local-first product;
+- how LCTK reacts when a repository ships its own `.codex/config.toml` that shadows a generated project endpoint.
 
 ## Daemon management API
 
