@@ -62,9 +62,9 @@ func TestTomlEscapeHandlesWindowsPathsAndQuotes(t *testing.T) {
 	// A single unescaped backslash aborts the whole Codex config load, which
 	// silently removes every MCP server. Escaping is a correctness requirement.
 	cases := map[string]string{
-		`D:\Projets\lctk`: `"D:\\Projets\\lctk"`,
-		`say "hi"`:        `"say \"hi\""`,
-		"tab\there":       `"tab\there"`,
+		`C:\work\example-repo`: `"C:\\work\\example-repo"`,
+		`say "hi"`:             `"say \"hi\""`,
+		"tab\there":            `"tab\there"`,
 	}
 	for in, want := range cases {
 		if got := tomlEscape(in); got != want {

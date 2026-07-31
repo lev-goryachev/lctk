@@ -2,7 +2,7 @@
 
 ## Status
 
-Slice 0.4 measured result and accepted integration contract. The maintainer reviewed the findings and accepted the disposition on 2026-07-31; [ADR-0012](../adr/0012-codex-integration-contract.md) records the decision.
+Slice 0.4 measured result and accepted integration contract. The disposition was accepted on 2026-07-31; [ADR-0012](../adr/0012-codex-integration-contract.md) records the decision.
 
 Measurement date: 2026-07-31.
 
@@ -51,7 +51,7 @@ Measured discovery behavior:
 The trust record is itself user-global:
 
 ```toml
-[projects.'D:\Projets\lctk\.research\codex-compat\repo-b']
+[projects.'C:\work\example-repo']
 trust_level = "trusted"
 ```
 
@@ -59,7 +59,7 @@ This resolves a documentation conflict. The official documentation states that p
 
 Rejection behavior is unforgiving and matters for generation:
 
-- a single malformed key aborts the entire configuration load. A Windows path written as `[projects."D:\Projets\..."]` produced `missing escaped value` and **every** MCP server disappeared. Windows paths require a TOML literal string or escaped backslashes.
+- a single malformed key aborts the entire configuration load. A Windows path written as `[projects."C:\work\..."]` produced `missing escaped value` and **every** MCP server disappeared. Windows paths require a TOML literal string or escaped backslashes.
 - when configuration fails to load, `codex doctor --json` drops the `mcp.config` check from the report entirely instead of reporting a failing MCP check. An operator diagnosing a missing server must read `config.load` first.
 - `--strict-config` exists at the top level but is rejected for `codex mcp` subcommands: "`--strict-config` is not supported for `codex mcp`".
 

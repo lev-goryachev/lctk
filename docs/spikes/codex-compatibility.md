@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted Slice 0.4 verification contract. The integration contract itself remains open until the [measured results](codex-compatibility-results.md) and the proposed disposition are reviewed with the maintainer.
+Accepted Slice 0.4 verification contract. The resulting integration contract is recorded in [ADR-0012](../adr/0012-codex-integration-contract.md), supported by the [measured results](codex-compatibility-results.md).
 
 Contract date: 2026-07-31.
 
