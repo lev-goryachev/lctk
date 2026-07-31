@@ -137,20 +137,25 @@ Container-dependent verification runs against real Docker on a developer machine
 
 ### Slice 1.3: Project-scoped MCP `project_info`
 
-Implement:
+**Status:** complete. This is the first slice an agent can actually connect to.
 
-- shared localhost gateway;
-- route `/projects/{project_id}/mcp`;
-- automatic project grant;
-- one tool, `project_info`;
-- `PROJECT_NOT_FOUND`, `PROJECT_STOPPED`, `PROJECT_STARTING`;
-- request and project IDs in local logs.
+Implemented:
 
-Tests:
+- the shared localhost gateway inside the host daemon, serving `/projects/{project_id}/mcp`, with the registry and grants read per request so a project registered while the daemon runs becomes reachable without a restart;
+- an automatic project grant issued on registration, stored owner-only outside any repository, revoked when its only project is removed, and surfaced through `lctk grant show/list/revoke` with the token withheld unless `--reveal` is given;
+- one tool, `project_info`, answering from the route and the server-side registry, and reporting `scope_source` so a caller can verify that its own arguments did not influence the answer;
+- typed errors `PROJECT_NOT_FOUND`, `PROJECT_STOPPED`, `PROJECT_STARTING`, `SERVICE_UNAVAILABLE`, `AUTH_REQUIRED`, `AUTH_FORBIDDEN`, `RUNTIME_UNAVAILABLE`, and `RUNTIME_UNSUITABLE`, each carrying `retryable`, `recommended_action`, `project_id`, and `request_id`;
+- request, project, grant, and client identifiers in local logs, with the token never written.
 
-- the credential and route must agree;
-- a different model-supplied `project_id` does not change scope;
-- a stopped project returns a typed error.
+Verified:
+
+- the credential and route must agree: a token issued for one project is refused on another with `AUTH_FORBIDDEN`, while each token still works on its own route;
+- a model-supplied `project_id`, `repository_root`, or `path` does not change scope;
+- a stopped project returns a typed `PROJECT_STOPPED` rather than empty data, and a starting one returns a retryable `PROJECT_STARTING`;
+- an unauthenticated caller cannot learn whether a project exists, because the credential is checked before the registry;
+- the host path is never exposed to the client; `project_info` reports the in-container workspace.
+
+Confirmed by hand against a running daemon with a real container: `initialize` succeeded on the routed project, a foreign token was refused with 403, a `project_info` call carrying a deliberately wrong `project_id` still answered for the routed project, and a stopped project returned the full typed error envelope with 503.
 
 ### Slice 1.4: Persistent `exact_search`
 

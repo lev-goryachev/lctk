@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/gateway"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
 )
 
@@ -20,7 +21,19 @@ type Health struct {
 	Version string `json:"version"`
 }
 
+// NewHandler builds the daemon's HTTP surface with production defaults.
 func NewHandler() http.Handler {
+	// The project-scoped endpoint from ADR-0001. Registry and grants are read per
+	// request, so a project registered while the daemon runs becomes reachable
+	// without a restart. Lifecycle gating is on, because a request served by a
+	// stopped project would be answering about a stack that is not there.
+	return NewHandlerWithGateway(gateway.Options{RequireRunning: true})
+}
+
+// NewHandlerWithGateway builds the daemon's HTTP surface with explicit gateway
+// options. It exists so tests can supply an in-memory registry, grants, and
+// status probe instead of requiring a container runtime.
+func NewHandlerWithGateway(options gateway.Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -30,6 +43,7 @@ func NewHandler() http.Handler {
 		})
 	})
 	mux.Handle("/mcp", mcpserver.NewHTTPHandler())
+	gateway.New(options).Register(mux)
 	return mux
 }
 

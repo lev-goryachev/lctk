@@ -14,9 +14,10 @@ The current implementation is deliberately narrower than the target architecture
 - an `fsnotify` basic event-delivery proof;
 - a read-only Moby API diagnostic for Docker Desktop availability;
 - the local project registry from Slice 1.1: canonical host paths, stable project identities, `lctk project add/status/remove`, and manifest parsing, none of which start a service;
-- the per-project container stack from Slice 1.2: deterministic Compose generation, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, `lctk project start/stop/restart`, and typed lifecycle state with health.
+- the per-project container stack from Slice 1.2: deterministic Compose generation, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, `lctk project start/stop/restart`, and typed lifecycle state with health;
+- the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs.
 
-There is no project-scoped route, persistent search index, durable change journal, or client grant implementation yet. The current MCP endpoint validates a protocol boundary but is not the future project endpoint, and a running stack carries no code-intelligence capability: the image exists to prove the runtime boundary, and backends arrive in later slices.
+There is no persistent search index or durable change journal yet, and a running stack carries no code-intelligence capability: the image exists to prove the runtime boundary, and backends arrive in later slices. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
 
 ## Principles
 

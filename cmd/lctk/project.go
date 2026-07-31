@@ -11,6 +11,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/daemon"
+	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectmanifest"
 	"github.com/lev-goryachev/lctk/internal/projectpath"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
@@ -56,6 +58,7 @@ type projectView struct {
 	Container string   `json:"container,omitempty"`
 	Network   string   `json:"network,omitempty"`
 	Volume    string   `json:"volume,omitempty"`
+	Endpoint  string   `json:"endpoint,omitempty"`
 	Detail    string   `json:"detail,omitempty"`
 	Warnings  []string `json:"warnings,omitempty"`
 }
@@ -189,9 +192,23 @@ func runProjectAdd(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// The automatic project grant of roadmap Slice 1.3: registering a folder is
+	// enough to reach it locally, with no credential to copy by hand.
+	grants, err := projectgrant.Load()
+	if err != nil {
+		return err
+	}
+	if _, err := grants.EnsureForProject(project.ID, projectgrant.DefaultClient, time.Now()); err != nil {
+		return err
+	}
+	if err := grants.Save(); err != nil {
+		return err
+	}
+
 	view := viewOf(project)
 	view.ManifestLocal = manifest.LocalPresent
 	view.Warnings = manifest.Warnings
+	view.Endpoint = fmt.Sprintf("http://%s/projects/%s/mcp", daemon.DefaultAddress, project.ID)
 
 	if *asJSON {
 		return writeJSON(stdout, view)
@@ -201,7 +218,9 @@ func runProjectAdd(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "  path:     %s\n", view.Path)
 	fmt.Fprintf(stdout, "  profile:  %s\n", view.Profile)
 	fmt.Fprintf(stdout, "  manifest: %s\n", manifestSummary(manifest))
-	fmt.Fprint(stdout, "No services were started. Use lctk project status to inspect it.\n")
+	fmt.Fprintf(stdout, "  endpoint: %s\n", view.Endpoint)
+	fmt.Fprint(stdout, "A project grant was issued. See lctk grant show.\n")
+	fmt.Fprint(stdout, "No services were started. Use lctk project start to run it.\n")
 	for _, warning := range view.Warnings {
 		fmt.Fprintf(stderr, "warning: %s\n", warning)
 	}
@@ -388,10 +407,26 @@ func runProjectRemove(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	// A credential must not outlive the project it covers. Grants that also cover
+	// other projects keep working for those, so removing one project never
+	// silently disables a client's access to the rest.
+	grants, grantErr := projectgrant.Load()
+	if grantErr == nil {
+		if grants.RevokeForProject(project.ID) > 0 {
+			grantErr = grants.Save()
+		}
+	}
+	if grantErr != nil {
+		view.Warnings = append(view.Warnings, "grants could not be updated: "+grantErr.Error())
+	}
+
 	if *asJSON {
 		return writeJSON(stdout, view)
 	}
 	fmt.Fprintf(stdout, "Removed %s (%s)\n", project.ID, project.Path)
+	for _, warning := range view.Warnings {
+		fmt.Fprintf(stdout, "  warning:  %s\n", warning)
+	}
 	if stopDetail != "" {
 		fmt.Fprintf(stdout, "  warning:  %s\n", stopDetail)
 	}
