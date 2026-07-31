@@ -10,6 +10,8 @@ Work proceeds in small, verifiable vertical slices. Each slice:
 - updates the documentation and ADRs;
 - is not claimed to work without reproducible verification.
 
+Codebase Memory MCP may be studied as architectural prior art, but it is not a roadmap backend or integration candidate. [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md) and the [comparative assessment](spikes/codebase-memory-mcp-assessment.md) record that boundary. Advanced graph, semantic, and repository-map work remains LCTK-owned and must be delivered through the same slice and verification policy.
+
 ## Stage 0 — Research and contracts
 
 ### Slice 0.1: Repository foundation
@@ -50,7 +52,9 @@ Outcome: ADR-0009 selects an LCTK-owned Go gateway embedded in the host daemon. 
 
 ### Slice 0.3: Search backend spike
 
-Compare Zoekt with other actual indexed-search backends. `ripgrep` may be used as a test oracle or diagnostic fallback, but must not replace the persistent-search requirement without an ADR.
+**Status:** complete; the [measured results](spikes/search-backend-evaluation-results.md) support the accepted Zoekt backend in [ADR-0011](adr/0011-zoekt-exact-search-backend.md).
+
+The [evaluation contract](spikes/search-backend-evaluation.md) and [measured results](spikes/search-backend-evaluation-results.md) compare Zoekt, Livegrep, and OpenGrok. `ripgrep` is the correctness oracle and diagnostic baseline, not a persistent backend.
 
 Verify:
 
@@ -62,7 +66,7 @@ Verify:
 - latency and disk use;
 - license and arm64 images.
 
-Outcome: an adapter contract and backend ADR.
+Outcome: ADR-0011 selects pinned Zoekt behind a narrow LCTK-owned working-tree adapter. Livegrep and OpenGrok fail required incremental/correctness or packaging hard gates. Spike code remains evidence and does not become production code.
 
 ### Slice 0.4: Codex compatibility spike
 

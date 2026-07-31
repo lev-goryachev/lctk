@@ -28,6 +28,9 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`roadmap.md`](roadmap.md) | Small, verifiable vertical slices |
 | [`spikes/gateway-evaluation.md`](spikes/gateway-evaluation.md) | Slice 0.2 gateway test and scoring contract |
 | [`spikes/gateway-evaluation-results.md`](spikes/gateway-evaluation-results.md) | Slice 0.2 measurements and accepted gateway recommendation |
+| [`spikes/search-backend-evaluation.md`](spikes/search-backend-evaluation.md) | Slice 0.3 persistent search backend test contract |
+| [`spikes/search-backend-evaluation-results.md`](spikes/search-backend-evaluation-results.md) | Slice 0.3 measurements and accepted Zoekt recommendation |
+| [`spikes/codebase-memory-mcp-assessment.md`](spikes/codebase-memory-mcp-assessment.md) | Comparative assessment of Codebase Memory MCP and the accepted reference-only disposition |
 | [`open-questions.md`](open-questions.md) | Unresolved product and technical questions |
 | [`adr/`](adr/README.md) | Architecture decision log |
 

@@ -2,16 +2,6 @@
 
 This document contains only decisions that have not yet been made. Once a decision is made, the item is moved to the relevant topic document and, if necessary, to an ADR.
 
-## Exact search backend
-
-No persistent indexed search engine has been selected. Zoekt is a candidate, but the following must be verified:
-
-- Docker Desktop/macOS arm64 support;
-- incremental update semantics;
-- a single working tree and dirty files, not only indexed remote branches;
-- path/language filtering;
-- resource cost and license.
-
 ## Codex configuration and credentials
 
 The current official Codex configuration schema must be checked to answer:

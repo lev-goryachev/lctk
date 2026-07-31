@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. Registry and persistent search-engine implementations remain open.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. Registry and persistent search-engine implementations remain open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
 ## Current Slice 0.1 foundation
 
@@ -25,6 +25,7 @@ There is no project registry, project-scoped route, container stack, persistent 
 5. **Modular monolith before microservices.** A component becomes a separate service only when a genuine operational or dependency boundary exists.
 6. **Persistent and incremental by default.** A restart must not imply a full rebuild.
 7. **Local-first.** Core intelligence works after installation without an external backend.
+8. **LCTK owns the product boundary.** External libraries and specialized tools may remain replaceable implementation details, but the project registry, grants, public MCP API, lifecycle, policy, orchestration, freshness model, and control plane are LCTK-owned. Complete external code-intelligence products do not become a second core behind an LCTK façade.
 
 ## Logical architecture
 
