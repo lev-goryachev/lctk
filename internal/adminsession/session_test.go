@@ -145,6 +145,11 @@ func TestTheCookieCannotBeReadOrSentCrossSite(t *testing.T) {
 	if cookie.Path != "/admin" {
 		t.Errorf("cookie path = %q, want it confined to the admin surface", cookie.Path)
 	}
+	// A loopback origin counts as potentially trustworthy, so the attribute is
+	// accepted here and guards against this surface ever moving off loopback.
+	if !cookie.Secure {
+		t.Error("the session cookie would be sent over a plaintext non-loopback connection")
+	}
 }
 
 func TestASessionExpires(t *testing.T) {

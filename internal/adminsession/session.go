@@ -218,7 +218,13 @@ func Cookie(token string) *http.Cookie {
 		// the property that makes a loopback admin surface tenable at all.
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(SessionLifetime / time.Second),
+		// Secure over plain HTTP looks contradictory and is not. A loopback origin
+		// is a potentially trustworthy origin under the secure-contexts rules, so
+		// browsers accept the attribute here, and setting it means a future
+		// misconfiguration that moved this surface onto a real interface would drop
+		// the cookie rather than send it in the clear.
+		Secure: true,
+		MaxAge: int(SessionLifetime / time.Second),
 	}
 }
 
