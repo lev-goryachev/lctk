@@ -39,3 +39,38 @@ jobs:
         run: go test -cover ./...
       - name: Build
         run: go build -trimpath ./cmd/lctk
+
+  code-intel:
+    # The per-project search service is a separate module that links Zoekt, whose
+    # low-level index package is Unix-specific. It is excluded from the root
+    # module's build on purpose, per ADR-0011, which also means the jobs above
+    # never compile it. This job is what keeps it from rotting unnoticed.
+    name: Code-intel service (linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: images/code-intel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: images/code-intel/go.sum
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -cover ./...
+      - name: Build for both target architectures
+        run: |
+          CGO_ENABLED=0 GOARCH=amd64 go build -trimpath -o /dev/null ./
+          CGO_ENABLED=0 GOARCH=arm64 go build -trimpath -o /dev/null ./

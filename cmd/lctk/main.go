@@ -31,6 +31,7 @@ Usage:
   lctk project stop [--json] PROJECT
   lctk project restart [--wait DURATION] [--json] PROJECT
   lctk project remove [--json] PROJECT
+  lctk project reindex [--full] [--json] PROJECT
   lctk image build [--context DIR] [--json]
   lctk image status [--json]
   lctk grant show [--json] [--reveal] PROJECT

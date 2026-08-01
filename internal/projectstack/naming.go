@@ -27,6 +27,11 @@ const (
 	WorkspaceMount = "/workspace"
 	// StateMount is where per-project persistent state lives inside the container.
 	StateMount = "/var/lib/lctk"
+	// ServicePort is the port the code-intel service listens on inside the
+	// container. It is fixed because each project has its own network namespace;
+	// the host side is published on an ephemeral loopback port instead, so two
+	// projects can never contend for one number.
+	ServicePort = 8080
 	// ImageRepository is the reusable image every project shares.
 	ImageRepository = "lctk/code-intel"
 	// resourcePrefix keeps every Docker resource LCTK creates identifiable and

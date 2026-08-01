@@ -26,6 +26,7 @@ const projectUsage = `Usage:
   lctk project stop [--json] PROJECT
   lctk project restart [--wait DURATION] [--json] PROJECT
   lctk project remove [--json] PROJECT
+  lctk project reindex [--full] [--json] PROJECT
 
 PROJECT accepts a project id, a project name, an unambiguous id prefix, or the
 path of a registered folder.
@@ -52,15 +53,19 @@ type projectView struct {
 	// State is the runtime lifecycle state. It is reported as unknown with a
 	// detail rather than failing when the container runtime cannot be reached, so
 	// that registry information stays available while Docker Desktop is closed.
-	State     string   `json:"state"`
-	Health    string   `json:"health,omitempty"`
-	Retryable bool     `json:"retryable"`
-	Container string   `json:"container,omitempty"`
-	Network   string   `json:"network,omitempty"`
-	Volume    string   `json:"volume,omitempty"`
-	Endpoint  string   `json:"endpoint,omitempty"`
-	Detail    string   `json:"detail,omitempty"`
-	Warnings  []string `json:"warnings,omitempty"`
+	State     string `json:"state"`
+	Health    string `json:"health,omitempty"`
+	Retryable bool   `json:"retryable"`
+	Container string `json:"container,omitempty"`
+	Network   string `json:"network,omitempty"`
+	Volume    string `json:"volume,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	// ServiceAddress is where the project's code-intelligence service is
+	// published on loopback. The runtime assigns the port, so it changes across a
+	// restart and is reported rather than configured.
+	ServiceAddress string   `json:"service_address,omitempty"`
+	Detail         string   `json:"detail,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 func viewOf(p projectregistry.Project) projectView {
@@ -97,6 +102,7 @@ func withRuntime(view projectView, status projectstack.Status, err error) projec
 	view.Container = status.Container
 	view.Network = status.Network
 	view.Volume = status.Volume
+	view.ServiceAddress = status.ServiceAddress
 	view.Retryable = status.State.Retryable()
 	if status.Detail != "" {
 		view.Detail = status.Detail
@@ -137,6 +143,8 @@ func runProject(args []string, stdout, stderr io.Writer) error {
 		return runProjectLifecycle("restart", args[1:], stdout)
 	case "remove":
 		return runProjectRemove(args[1:], stdout)
+	case "reindex":
+		return runProjectReindex(args[1:], stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, projectUsage)
 		return nil
@@ -459,6 +467,9 @@ func writeProjectDetail(output io.Writer, v projectView) error {
 	}
 	if v.Volume != "" {
 		fmt.Fprintf(output, "  volume:     %s\n", v.Volume)
+	}
+	if v.ServiceAddress != "" {
+		fmt.Fprintf(output, "  service:    %s\n", v.ServiceAddress)
 	}
 	if v.Detail != "" {
 		fmt.Fprintf(output, "  detail:     %s\n", v.Detail)

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ type fixture struct {
 	logs     *bytes.Buffer
 	state    map[string]projectstack.State
 	statusEr error
+	// service is the address the fixture reports as the project's published
+	// code-intelligence service, empty unless a test installs a stand-in.
+	service map[string]string
 }
 
 func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixture {
@@ -45,6 +49,7 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 		tokens:   map[string]string{},
 		logs:     &bytes.Buffer{},
 		state:    map[string]projectstack.State{},
+		service:  map[string]string{},
 	}
 
 	// The registry is populated directly rather than through Add, so the test
@@ -79,6 +84,7 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 			status := projectstack.Status{ProjectID: project.ID, State: state}
 			if state == projectstack.StateRunning {
 				status.Health = "healthy"
+				status.ServiceAddress = f.service[project.ID]
 			}
 			return status, f.statusEr
 		},
@@ -458,7 +464,12 @@ func TestLogsCarryRequestAndProjectIdentifiers(t *testing.T) {
 	}
 }
 
-func TestToolListExposesOnlyProjectInfo(t *testing.T) {
+// TestToolListIsTheDocumentedCatalog pins the tool catalog.
+//
+// A project endpoint exposes named user actions and nothing else, per ADR-0004.
+// The list is asserted exactly so that adding a tool is a deliberate act with a
+// test change attached, rather than something that happens quietly.
+func TestToolListIsTheDocumentedCatalog(t *testing.T) {
 	f := newFixture(t, true, "alpha-aaaaaaaa")
 	session := f.connect(t, "alpha-aaaaaaaa", f.tokens["alpha-aaaaaaaa"])
 
@@ -466,15 +477,20 @@ func TestToolListExposesOnlyProjectInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 1 {
-		names := make([]string, 0, len(tools.Tools))
-		for _, tool := range tools.Tools {
-			names = append(names, tool.Name)
-		}
-		t.Fatalf("expected exactly project_info, got %v", names)
+	names := make([]string, 0, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
 	}
-	if tools.Tools[0].Name != "project_info" {
-		t.Errorf("tool = %q", tools.Tools[0].Name)
+	sort.Strings(names)
+
+	want := []string{"exact_search", "project_info"}
+	if len(names) != len(want) {
+		t.Fatalf("tools = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("tools = %v, want %v", names, want)
+		}
 	}
 }
 
