@@ -335,6 +335,13 @@ func (w *Watcher) translate(event fsnotify.Event) {
 			// silence, would lose a real create-then-rename sequence.
 			w.emit(Event{Path: relative, Kind: Written, At: w.now()})
 		case info.IsDir():
+			// Registered before it is reported, not after. Between the two there
+			// is a window in which the directory is known to the consumer but not
+			// to the watch registry, and anything happening inside it during that
+			// window is invisible. Worse, its own removal would then be reported
+			// as a file removal, and the consumer would leave every file that was
+			// inside it in the index.
+			w.register(relative)
 			w.emit(Event{Path: relative, Kind: Written, Directory: true, At: w.now()})
 			w.adopt(relative)
 		case info.Mode()&os.ModeSymlink != 0:

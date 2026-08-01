@@ -127,6 +127,11 @@ func TestARemovedDirectoryIsReportedAsADirectory(t *testing.T) {
 	h.await(t, "the directory being created", func(e Event) bool {
 		return e.Path == "pkg" && e.Directory
 	})
+	// Reporting the directory must imply having registered it. If it did not, a
+	// directory removed straight after being created would be reported as a file.
+	if !h.isWatched("pkg") {
+		t.Fatal("a new directory was reported before it was registered")
+	}
 
 	if err := os.RemoveAll(filepath.Join(h.root, "pkg")); err != nil {
 		t.Fatal(err)
