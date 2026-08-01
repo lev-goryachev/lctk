@@ -38,6 +38,8 @@ Filesystem tools must accept project-relative paths and protect against:
 
 The precise safe file-opening strategy requires a separate ADR and OS-specific tests.
 
+As implemented in Slice 1.5, the search boundary holds these in a specific way. The project service has exactly one workspace mounted and no way to express a second, so scope is structural rather than checked. Enumeration skips symbolic links instead of following them, because following one is the ordinary way out of a read-only mount. An absolute path, a parent traversal, or a Windows-style path is refused rather than clamped, in both a path filter and a change batch: silently reinterpreting a request is worse than declining it, because the caller then believes it searched something it did not.
+
 ## Runner
 
 The runner is separated from the gateway and indexers. For the trusted-local profile, the minimum guardrails are:

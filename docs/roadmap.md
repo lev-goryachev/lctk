@@ -200,23 +200,37 @@ This slice originally followed persistent search. It was moved ahead of it so th
 
 ### Slice 1.5: Persistent `exact_search`
 
-Connect the selected indexed backend through a custom stable adapter and API:
+**Status:** complete. The exclusion policy and the generation store are described in [indexing](indexing.md).
 
-- literal and regex;
-- path glob;
-- snippets, pagination, and limits;
-- project-relative normalized paths;
-- provenance and index generation;
-- persistent restart.
+Implemented:
 
-Tests:
+- a per-project search service running in the project's Linux container, built as a separate Go module so the engine cannot enter the portable host executable, which is what [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires rather than merely asks for;
+- a staged generation store: a build writes aside and publishes by replacing one symlink, so a live query sees a whole generation or the previous one and never a half-written index;
+- delta builds that hard-link the previous shards, with a bounded delta depth that escalates to a full rebuild, and generation pruning;
+- the project's own `.gitignore` honoured, including nested files and negations, with a short overridable default list and unconditional exclusion of version-control metadata;
+- literal and regular-expression search, case sensitivity, path globs, language filters, bounded previews, pagination, and limits;
+- an `exact_search` tool on the project route behind [`internal/codeintel`](../internal/codeintel), the stable adapter [ADR-0004](adr/0004-stable-aggregated-tool-api.md) requires, reporting backend, schema version, index generation, index time, and file count as provenance;
+- the service published on an ephemeral loopback port assigned by the runtime, discovered from the same inspect call that reports lifecycle state, so many projects run at once with nothing to coordinate;
+- `project_info` reporting the search capability and index freshness, and `lctk project reindex` for explicit catch-up and for the documented recovery from a corrupt index.
 
-- results come only from the mounted project;
-- update/delete/rename;
-- restart uses the saved index and performs catch-up;
-- malicious absolute or relative paths do not expand scope.
+Verified:
 
-The Slice 1.4 chain is then re-verified through the Codex extension with `exact_search` and index reuse across a restart included:
+- results come only from the mounted project: a file beside the workspace, and a symbolic link pointing at it, contribute nothing;
+- create, modify, delete, and rename, including a rename delivered as one batch;
+- a restart answers from the persisted index without rebuilding, and reconciliation catches up changes made while the service was not running;
+- a cursor from another index generation is refused rather than silently skipping or repeating results;
+- absolute, parent-traversing, and Windows-style paths are refused rather than reinterpreted, in both globs and change batches;
+- a corrupt index is a typed error rather than an empty result, and recovers with a rebuild;
+- delta escalation loses nothing, and pruning never breaks the published generation;
+- a targeted update applies the same ignore rules as a full build, so an ignored file cannot be added by one and dropped by the other.
+
+Measured against this repository through a real container and the live endpoint: 155 files indexed after ignore rules, literal and regular-expression queries with path globs, pagination walking a result set exactly once, create/rename/delete reflected across generations 1 to 4, and an index reused across a restart at generation 4 with the service on a new port the daemon rediscovered without being restarted. A real agent session called `exact_search` through a second MCP client and returned 9 matches with the first at `internal/gateway/gateway.go:286`; `git grep` independently reports the same 9 and the same first location.
+
+The ignore policy was not a planned item. It came from running against a real checkout: the first build walked a gitignored local directory of 278,000 cached files and never finished. A fixture would not have found it.
+
+This closes the [ADR-0011](adr/0011-zoekt-exact-search-backend.md) follow-up to define and test compaction thresholds before persistent search is declared complete. Its remaining follow-ups — watcher-driven scheduling, and published multi-architecture images from a release pipeline — belong to Slice 2.2 and to releasing.
+
+The Slice 1.4 chain now includes search:
 
 ```text
 register folder
@@ -228,6 +242,8 @@ register folder
 → stop and receive typed error
 → restart and reuse persistent index
 ```
+
+The search steps of that chain were run live for this slice. The cross-project refusal and the typed stopped-project error were measured in Slice 1.4 and are not changed by this one, because the route resolves the project before a tool is reached; that scope holds for `exact_search` specifically is covered by an automated test, which also asserts that a foreign project's service is never contacted.
 
 This is the first required vertical slice from the original brief.
 

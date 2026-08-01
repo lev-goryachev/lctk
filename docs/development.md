@@ -56,6 +56,18 @@ These commands are foundation evidence, not the complete project lifecycle descr
 
 `launch` is how the credential arrives. Codex reads the token from an environment variable, and an editor that is already running keeps the environment it started with, so the editor must be closed first. To set the variable durably instead, `lctk codex env --reveal PROJECT` prints the command; LCTK does not run it.
 
+## The code-intel service
+
+[`images/code-intel`](../images/code-intel) is a separate Go module that builds the per-project search service. It links Zoekt, whose low-level index package is Unix-specific, so it is excluded from the root module's build on purpose and never compiles into the host executable.
+
+That also means the ordinary checks above never touch it. It has its own CI job on Linux, and locally it is built and tested inside a container:
+
+```sh
+docker run --rm -v "$PWD/images/code-intel:/src" -w /src -e CGO_ENABLED=0 golang:1.25 go test ./...
+```
+
+`lctk image build` compiles it into the reusable image. A project must be restarted after a rebuild to pick up the new service.
+
 ## Dependency policy
 
 Direct dependencies are pinned in `go.mod`, and checksums are committed in `go.sum`. Prefer the standard library. A new dependency requires a concrete capability, license review, maintenance review, and documentation update when it changes an architectural contract.
