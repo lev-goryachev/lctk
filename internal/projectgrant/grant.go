@@ -34,6 +34,34 @@ const DefaultClient = "lctk-local"
 // loopback credential needs and costs nothing.
 const tokenBytes = 32
 
+// EnvVarPrefix begins the name of the environment variable a client reads a
+// project token from.
+const EnvVarPrefix = "LCTK_TOKEN_"
+
+// EnvVarName is the environment variable holding one project's token.
+//
+// The name is per project by decision, not by convenience: a single shared
+// variable would let a client scoped to one project reach another, which is the
+// isolation boundary docs/security.md states. See [ADR-0014].
+//
+// [ADR-0014]: ../../docs/adr/0014-project-credential-delivery.md
+func EnvVarName(projectID string) string {
+	b := make([]byte, 0, len(EnvVarPrefix)+len(projectID))
+	b = append(b, EnvVarPrefix...)
+	for i := 0; i < len(projectID); i++ {
+		c := projectID[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b = append(b, c-'a'+'A')
+		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			b = append(b, c)
+		default:
+			b = append(b, '_')
+		}
+	}
+	return string(b)
+}
+
 // Errors a caller is expected to distinguish. The gateway maps them to typed
 // wire errors, so they must stay separable.
 var (

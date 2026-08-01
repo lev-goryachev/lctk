@@ -36,6 +36,10 @@ Usage:
   lctk grant show [--json] [--reveal] PROJECT
   lctk grant list [--json]
   lctk grant revoke [--json] GRANT_ID
+  lctk codex status [--json] [PROJECT]
+  lctk codex config [--apply] [--force] [--remove] [--json] PROJECT
+  lctk codex env [--json] [--reveal] PROJECT
+  lctk codex launch [--editor NAME] [--dry-run] PROJECT
 `
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -59,6 +63,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runImage(args[1:], stdout, stderr)
 	case "grant":
 		return runGrant(args[1:], stdout, stderr)
+	case "codex":
+		return runCodex(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
