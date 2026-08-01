@@ -338,6 +338,9 @@ func runSettingsShow(args []string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "  watch.max_debounce_ms:         %d\n", settings.Watch.MaxDebounceMS)
 	fmt.Fprintf(stdout, "  watch.max_watched_directories: %d\n", settings.Watch.MaxWatchedDirectories)
 	fmt.Fprintf(stdout, "  watch.idle_stop_seconds:       %d\n", settings.Watch.IdleStopSeconds)
+	fmt.Fprintf(stdout, "  resources.mode:                %s\n", settings.Resources.Mode)
+	fmt.Fprintf(stdout, "  resources.memory_limit_mb:     %s\n",
+		memoryOrUnlimited(settings.Resources.MemoryLimitMB))
 	return nil
 }
 

@@ -128,8 +128,11 @@ type Status struct {
 	SkippedIgnored int      `json:"skipped_ignored"`
 	IgnoreSources  []string `json:"ignore_sources,omitempty"`
 	DeltaDepth     int      `json:"delta_depth"`
-	IndexedAt      string   `json:"indexed_at,omitempty"`
-	Reason         string   `json:"reason,omitempty"`
+	// SourceBytes and IndexBytes are what the project costs on disk.
+	SourceBytes int64  `json:"source_bytes"`
+	IndexBytes  int64  `json:"index_bytes"`
+	IndexedAt   string `json:"indexed_at,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // WatchSet is the set of project-relative directories a host watcher must

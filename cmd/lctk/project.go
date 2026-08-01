@@ -22,12 +22,13 @@ import (
 const projectUsage = `Usage:
   lctk project add [--profile minimal|full] [--json] PATH
   lctk project status [--json] [PROJECT]
-  lctk project start [--wait DURATION] [--json] PROJECT
+  lctk project start [--wait DURATION] [--yes] [--json] PROJECT
   lctk project stop [--json] PROJECT
-  lctk project restart [--wait DURATION] [--json] PROJECT
+  lctk project restart [--wait DURATION] [--yes] [--json] PROJECT
   lctk project remove [--json] PROJECT
   lctk project reindex [--full] [--json] PROJECT
   lctk project watch [--follow] [--json] PROJECT
+  lctk project resources [--mode quiet|normal|fast|default] [--json] PROJECT
 
 PROJECT accepts a project id, a project name, an unambiguous id prefix, or the
 path of a registered folder.
@@ -148,6 +149,8 @@ func runProject(args []string, stdout, stderr io.Writer) error {
 		return runProjectReindex(args[1:], stdout)
 	case "watch":
 		return runProjectWatch(context.Background(), args[1:], stdout)
+	case "resources":
+		return runProjectResources(args[1:], stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, projectUsage)
 		return nil
@@ -314,9 +317,13 @@ func runProjectLifecycle(action string, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("project "+action, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	asJSON := flags.Bool("json", false, "write the resulting status as JSON")
-	var wait time.Duration
+	var (
+		wait    time.Duration
+		proceed bool
+	)
 	if action != "stop" {
 		flags.DurationVar(&wait, "wait", defaultStartWait, "how long to wait for the stack to report healthy")
+		flags.BoolVar(&proceed, "yes", false, "start even when the volume is short of space")
 	}
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -339,6 +346,12 @@ func runProjectLifecycle(action string, args []string, stdout io.Writer) error {
 	// caller sees the lifecycle timeout rather than a context deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), wait+2*time.Minute)
 	defer cancel()
+
+	if action == "start" || action == "restart" {
+		if err := warnIfDiskIsTight(ctx, project, stdout, proceed); err != nil {
+			return err
+		}
+	}
 
 	var status projectstack.Status
 	var actionErr error

@@ -58,9 +58,11 @@ Open items:
 
 ## Resource planning
 
+Settled in Slice 2.3: the background-load mode controls container CPU and index concurrency, is set machine-wide with a per-project override in the registry, and leaves memory uncapped unless asked, because a CPU limit throttles an indexer and a memory limit kills it.
+
 The following must be defined:
 
-- a formula for forecasting disk use and a recommended cap;
+- the disk formula is anchored to one small repository and is a guess about large projects until one is measured;
 - RAM and CPU budgets by profile and backend;
 - when to warn, prohibit startup, or permit swapping;
 - the lifetime of the shared embedding inference process;

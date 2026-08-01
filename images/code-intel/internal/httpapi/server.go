@@ -29,6 +29,7 @@ type Indexer interface {
 	Reconcile(ctx context.Context) (searchindex.State, []searchindex.Change, error)
 	Update(ctx context.Context, changes []searchindex.Change) (searchindex.State, error)
 	WatchSet(ctx context.Context) ([]string, bool, error)
+	DiskBytes() (int64, error)
 }
 
 // Server exposes the indexer over HTTP.
@@ -118,7 +119,13 @@ type StatusView struct {
 	// which rules produced the file count rather than inferring it.
 	IgnoreSources []string `json:"ignore_sources,omitempty"`
 	DeltaDepth    int      `json:"delta_depth"`
-	IndexedAt     string   `json:"indexed_at,omitempty"`
+	// SourceBytes and IndexBytes are what the project costs: how much source is
+	// indexed, and how much disk the index occupies. Reported together because
+	// neither is meaningful alone -- a large index is only worrying next to the
+	// source it describes.
+	SourceBytes int64  `json:"source_bytes"`
+	IndexBytes  int64  `json:"index_bytes"`
+	IndexedAt   string `json:"indexed_at,omitempty"`
 	// Reason explains a not-ready state, so the condition is diagnosable without
 	// reading container logs.
 	Reason string `json:"reason,omitempty"`
@@ -143,6 +150,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	view.Ready = true
+	if bytes, err := s.indexer.DiskBytes(); err == nil {
+		view.IndexBytes = bytes
+	}
+	view.SourceBytes = state.SourceBytes
 	view.Generation = state.Generation
 	view.FileCount = state.FileCount
 	view.SkippedBig = state.SkippedBig

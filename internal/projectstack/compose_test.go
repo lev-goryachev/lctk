@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
@@ -33,6 +34,10 @@ func absPath(parts ...string) string {
 	}
 	return filepath.Join("/", joined)
 }
+
+// testBudget is the shipped normal-mode policy, so the tests exercise the
+// document a real project renders rather than a limit-free special case.
+var testBudget = hostsettings.Resources{Mode: hostsettings.ModeNormal}.Budget()
 
 func testProject(id, path string) projectregistry.Project {
 	return projectregistry.Project{
@@ -88,12 +93,12 @@ func TestDeriveNamesRejectsUnusableIdentifiers(t *testing.T) {
 func TestRenderIsReproducible(t *testing.T) {
 	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
 
-	first, err := Render(project)
+	first, err := Render(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		again, err := Render(project)
+		again, err := Render(project, testBudget)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +112,7 @@ func TestRenderProducesTheExpectedStack(t *testing.T) {
 	hostPath := absPath("work", "alpha")
 	project := testProject("alpha-abcd1234", hostPath)
 
-	body, err := Render(project)
+	body, err := Render(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,13 +243,13 @@ func TestLongMountSyntaxPreservesAColonInTheSource(t *testing.T) {
 }
 
 func TestRenderRejectsAnUnusableProject(t *testing.T) {
-	if _, err := Render(testProject("alpha-abcd1234", "")); !errors.Is(err, ErrInvalidProject) {
+	if _, err := Render(testProject("alpha-abcd1234", ""), testBudget); !errors.Is(err, ErrInvalidProject) {
 		t.Errorf("empty path: got %v", err)
 	}
-	if _, err := Render(testProject("alpha-abcd1234", "relative/path")); !errors.Is(err, ErrInvalidProject) {
+	if _, err := Render(testProject("alpha-abcd1234", "relative/path"), testBudget); !errors.Is(err, ErrInvalidProject) {
 		t.Errorf("relative path: got %v", err)
 	}
-	if _, err := Render(testProject("Bad ID", `C:\work\alpha`)); !errors.Is(err, ErrInvalidProject) {
+	if _, err := Render(testProject("Bad ID", `C:\work\alpha`), testBudget); !errors.Is(err, ErrInvalidProject) {
 		t.Errorf("bad id: got %v", err)
 	}
 }
@@ -280,11 +285,11 @@ func TestTwoProjectsGetSeparateResources(t *testing.T) {
 		t.Error("projects should share the reusable image")
 	}
 
-	alphaBody, err := Render(alpha)
+	alphaBody, err := Render(alpha, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	betaBody, err := Render(beta)
+	betaBody, err := Render(beta, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +306,7 @@ func TestWriteStoresOutsideTheRepositoryAndIsAtomic(t *testing.T) {
 	home := isolate(t)
 	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
 
-	path, err := Write(project)
+	path, err := Write(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +326,7 @@ func TestWriteStoresOutsideTheRepositoryAndIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := Render(project)
+	rendered, err := Render(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +339,7 @@ func TestWriteStoresOutsideTheRepositoryAndIsAtomic(t *testing.T) {
 
 	// Rewriting must leave no temporary files behind.
 	for i := 0; i < 3; i++ {
-		if _, err := Write(project); err != nil {
+		if _, err := Write(project, testBudget); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -369,4 +374,68 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A resource mode has to reach the runtime, not just the settings file. The
+// rendered document is where that becomes real.
+func TestTheResourceModeReachesTheRenderedDocument(t *testing.T) {
+	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
+
+	quiet := hostsettings.Resources{Mode: hostsettings.ModeQuiet}.Budget()
+	body, err := Render(project, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(body)
+	if !strings.Contains(rendered, "cpus: 1") {
+		t.Errorf("quiet mode did not limit CPU:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "LCTK_INDEX_PARALLELISM=1") {
+		t.Errorf("quiet mode did not bound index work:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "mem_limit") {
+		t.Errorf("a memory limit appeared without being asked for:\n%s", rendered)
+	}
+
+	fast := hostsettings.Resources{Mode: hostsettings.ModeFast}.Budget()
+	body, err = Render(project, fast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered = string(body)
+	if strings.Contains(rendered, "cpus:") {
+		t.Errorf("fast mode still limited CPU:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "LCTK_INDEX_PARALLELISM") {
+		t.Errorf("fast mode still bounded index work:\n%s", rendered)
+	}
+
+	capped := hostsettings.Resources{Mode: hostsettings.ModeNormal, MemoryLimitMB: 1536}.Budget()
+	body, err = Render(project, capped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "mem_limit: 1536m") {
+		t.Errorf("an explicit memory limit did not reach the document:\n%s", body)
+	}
+}
+
+// Reproducibility has to survive the new parameter: the same project and the same
+// budget must render the same bytes.
+func TestRenderingStaysReproducibleAcrossModes(t *testing.T) {
+	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
+	for _, mode := range []hostsettings.Mode{hostsettings.ModeQuiet, hostsettings.ModeNormal, hostsettings.ModeFast} {
+		budget := hostsettings.Resources{Mode: mode}.Budget()
+		first, err := Render(project, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := Render(project, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(first) != string(again) {
+			t.Fatalf("mode %q rendered different bytes twice", mode)
+		}
+	}
 }

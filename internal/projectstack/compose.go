@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -33,16 +34,21 @@ type composeServices struct {
 }
 
 type composeService struct {
-	Image         string             `yaml:"image"`
-	ContainerName string             `yaml:"container_name"`
-	Init          bool               `yaml:"init"`
-	Restart       string             `yaml:"restart"`
-	Environment   []string           `yaml:"environment"`
-	Volumes       []composeMount     `yaml:"volumes"`
-	Ports         []string           `yaml:"ports"`
-	Networks      []string           `yaml:"networks"`
-	Healthcheck   composeHealthcheck `yaml:"healthcheck"`
-	Labels        []string           `yaml:"labels"`
+	Image         string `yaml:"image"`
+	ContainerName string `yaml:"container_name"`
+	Init          bool   `yaml:"init"`
+	Restart       string `yaml:"restart"`
+	// CPUs and MemLimit carry the background-load policy into the runtime. Both
+	// are omitted when unset, so a project with no limits renders exactly the
+	// document it rendered before limits existed.
+	CPUs        float64            `yaml:"cpus,omitempty"`
+	MemLimit    string             `yaml:"mem_limit,omitempty"`
+	Environment []string           `yaml:"environment"`
+	Volumes     []composeMount     `yaml:"volumes"`
+	Ports       []string           `yaml:"ports"`
+	Networks    []string           `yaml:"networks"`
+	Healthcheck composeHealthcheck `yaml:"healthcheck"`
+	Labels      []string           `yaml:"labels"`
 }
 
 // composeMount uses Compose long syntax deliberately. Short syntax separates
@@ -83,10 +89,12 @@ type composeVolume struct {
 
 // Render produces the Compose document for one project.
 //
-// The output is a pure function of the project record and the product version, so
-// rendering the same project twice yields identical bytes. Nothing time-based,
-// random, or environment-dependent may enter this function.
-func Render(project projectregistry.Project) ([]byte, error) {
+// The output is a pure function of the project record, the resource budget, and
+// the product version, so rendering the same inputs twice yields identical bytes.
+// Nothing time-based, random, or environment-dependent may enter this function --
+// which is why the budget is a parameter rather than something read from the
+// settings file here.
+func Render(project projectregistry.Project, budget hostsettings.Budget) ([]byte, error) {
 	names, err := DeriveNames(project.ID)
 	if err != nil {
 		return nil, err
@@ -107,13 +115,10 @@ func Render(project projectregistry.Project) ([]byte, error) {
 				Init:          true,
 				// The stack is started and stopped explicitly by LCTK, so a
 				// container must not come back on its own after a stop.
-				Restart: "no",
-				Environment: []string{
-					"LCTK_PROJECT_ID=" + project.ID,
-					"LCTK_PROJECT_PROFILE=" + string(project.Profile),
-					"LCTK_WORKSPACE=" + WorkspaceMount,
-					"LCTK_STATE_DIR=" + StateMount,
-				},
+				Restart:     "no",
+				CPUs:        budget.CPUs,
+				MemLimit:    memoryLimit(budget.MemoryLimitMB),
+				Environment: environment(project, budget),
 				Volumes: []composeMount{
 					{
 						Type:   "bind",
@@ -168,12 +173,37 @@ func Render(project projectregistry.Project) ([]byte, error) {
 	return append([]byte(header), body...), nil
 }
 
+// environment is what the project service reads at startup.
+//
+// The parallelism cap is passed in rather than derived inside the container,
+// because the container cannot see the host's policy and would otherwise size
+// itself to the whole machine regardless of what the operator asked for.
+func environment(project projectregistry.Project, budget hostsettings.Budget) []string {
+	values := []string{
+		"LCTK_PROJECT_ID=" + project.ID,
+		"LCTK_PROJECT_PROFILE=" + string(project.Profile),
+		"LCTK_WORKSPACE=" + WorkspaceMount,
+		"LCTK_STATE_DIR=" + StateMount,
+	}
+	if budget.IndexParallelism > 0 {
+		values = append(values, "LCTK_INDEX_PARALLELISM="+strconv.Itoa(budget.IndexParallelism))
+	}
+	return values
+}
+
+func memoryLimit(megabytes int) string {
+	if megabytes <= 0 {
+		return ""
+	}
+	return strconv.Itoa(megabytes) + "m"
+}
+
 // Write renders the Compose document and stores it under the LCTK home.
 //
 // The write is atomic so an interrupted start cannot leave a half-written file
 // that Compose would later refuse or, worse, misread.
-func Write(project projectregistry.Project) (string, error) {
-	body, err := Render(project)
+func Write(project projectregistry.Project, budget hostsettings.Budget) (string, error) {
+	body, err := Render(project, budget)
 	if err != nil {
 		return "", err
 	}

@@ -27,12 +27,13 @@ Usage:
   lctk watch-once [--timeout DURATION] DIRECTORY
   lctk project add [--profile minimal|full] [--json] PATH
   lctk project status [--json] [PROJECT]
-  lctk project start [--wait DURATION] [--json] PROJECT
+  lctk project start [--wait DURATION] [--yes] [--json] PROJECT
   lctk project stop [--json] PROJECT
-  lctk project restart [--wait DURATION] [--json] PROJECT
+  lctk project restart [--wait DURATION] [--yes] [--json] PROJECT
   lctk project remove [--json] PROJECT
   lctk project reindex [--full] [--json] PROJECT
   lctk project watch [--follow] [--json] PROJECT
+  lctk project resources [--mode quiet|normal|fast|default] [--json] PROJECT
   lctk settings show [--json]
   lctk image build [--context DIR] [--json]
   lctk image status [--json]

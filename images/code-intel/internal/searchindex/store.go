@@ -51,6 +51,11 @@ type Limits struct {
 	// BulkChangePercent is the share of the index a batch may touch before a
 	// rebuild is cheaper than a delta.
 	BulkChangePercent int
+	// Parallelism bounds concurrent index work. Zero leaves the engine to size
+	// itself, which is right when the container has no CPU limit and wrong when
+	// it has one: the engine counts the host's processors, not the share the
+	// container is allowed to use.
+	Parallelism int
 }
 
 // DefaultLimits are the shipped policy.
@@ -115,6 +120,11 @@ type State struct {
 	// SkippedIgnored counts entries the project's own ignore rules excluded, so
 	// the effect of those rules is reportable rather than invisible.
 	SkippedIgnored int `json:"skipped_ignored"`
+	// SourceBytes is the total size of the indexed files, measured at the last
+	// full build and carried forward by delta builds. It is an estimate between
+	// rebuilds, which is all it is used for. A generation written before this
+	// field existed reports zero, which reads as "not measured", not "empty".
+	SourceBytes int64 `json:"source_bytes,omitempty"`
 	// IgnoreSources names the ignore files in effect for this build.
 	IgnoreSources []string  `json:"ignore_sources,omitempty"`
 	BuiltAt       time.Time `json:"built_at"`
@@ -167,6 +177,35 @@ func (s *Store) generationsPath() string { return filepath.Join(s.Root, generati
 func (s *Store) currentPath() string     { return filepath.Join(s.Root, currentLink) }
 
 func generationName(n uint64) string { return fmt.Sprintf("%06d", n) }
+
+// DiskBytes reports what this project's index currently occupies.
+//
+// Every retained generation is counted, not just the published one, because that
+// is what the volume actually holds. Hard-linked shards are counted once per
+// link, so a delta generation appears to cost as much as a full one; the number
+// is an upper bound on real disk use, which is the safe direction for a figure
+// used to decide whether there is room.
+func (s *Store) DiskBytes() (int64, error) {
+	var total int64
+	err := filepath.WalkDir(s.Root, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, internal("measure the index directory", err)
+	}
+	return total, nil
+}
 
 // State returns the published state, or a typed not-ready error when no
 // generation exists yet.
@@ -221,13 +260,14 @@ func (s *Store) Rebuild(ctx context.Context) (State, error) {
 	}
 
 	return s.build(ctx, buildPlan{
-		generation: previous + 1,
-		full:       true,
-		files:      inventory.files,
-		skippedBig: inventory.skippedBig,
-		ignored:    inventory.skippedIgnored,
-		sources:    inventory.ignoreSources,
-		add:        sortedKeys(inventory.files),
+		generation:  previous + 1,
+		full:        true,
+		files:       inventory.files,
+		skippedBig:  inventory.skippedBig,
+		ignored:     inventory.skippedIgnored,
+		sources:     inventory.ignoreSources,
+		sourceBytes: inventory.sourceBytes,
+		add:         sortedKeys(inventory.files),
 	})
 }
 
@@ -338,16 +378,17 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 	sort.Strings(add)
 
 	return s.build(ctx, buildPlan{
-		generation: state.Generation + 1,
-		full:       false,
-		previous:   dir,
-		deltaDepth: state.DeltaDepth + 1,
-		files:      files,
-		skippedBig: state.SkippedBig,
-		ignored:    state.SkippedIgnored,
-		sources:    state.IgnoreSources,
-		add:        add,
-		tombstone:  sortedSet(tombstone),
+		generation:  state.Generation + 1,
+		full:        false,
+		previous:    dir,
+		deltaDepth:  state.DeltaDepth + 1,
+		files:       files,
+		skippedBig:  state.SkippedBig,
+		ignored:     state.SkippedIgnored,
+		sources:     state.IgnoreSources,
+		sourceBytes: state.SourceBytes,
+		add:         add,
+		tombstone:   sortedSet(tombstone),
 	})
 }
 
@@ -390,16 +431,17 @@ func (s *Store) Reconcile(ctx context.Context) (State, []Change, error) {
 }
 
 type buildPlan struct {
-	generation uint64
-	full       bool
-	previous   string
-	deltaDepth int
-	files      map[string]string
-	skippedBig int
-	ignored    int
-	sources    []string
-	add        []string
-	tombstone  []string
+	generation  uint64
+	full        bool
+	previous    string
+	deltaDepth  int
+	files       map[string]string
+	skippedBig  int
+	ignored     int
+	sources     []string
+	sourceBytes int64
+	add         []string
+	tombstone   []string
 }
 
 // build writes one generation into a staging directory and publishes it
@@ -477,6 +519,7 @@ func (s *Store) build(ctx context.Context, plan buildPlan) (State, error) {
 		FileCount:      len(plan.files),
 		SkippedBig:     plan.skippedBig,
 		SkippedIgnored: plan.ignored,
+		SourceBytes:    plan.sourceBytes,
 		IgnoreSources:  plan.sources,
 		BuiltAt:        time.Now().UTC().Truncate(time.Second),
 		FullBuild:      plan.full,
@@ -559,6 +602,7 @@ func (s *Store) options(dir string, delta bool) index.Options {
 		// of the exact-search contract, so it stays off.
 		DisableCTags: true,
 		IsDelta:      delta,
+		Parallelism:  s.Limits.Parallelism,
 	}
 	options.SetDefaults()
 	return options
