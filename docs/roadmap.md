@@ -22,7 +22,7 @@ Delivered:
 
 - Apache-2.0 repository, documentation, policy, and ADR baseline;
 - Go 1.25 module and one `lctk` executable;
-- official MCP Go SDK v1.6.1 Streamable HTTP compatibility tool;
+- official MCP Go SDK v1.7.0 Streamable HTTP compatibility tool;
 - health endpoint, `fsnotify` watcher proof, and read-only Moby Docker diagnostic;
 - automated tests and hosted Windows/macOS CI;
 - non-publishing Windows amd64 and Darwin arm64 dry-run archives plus checksums.
