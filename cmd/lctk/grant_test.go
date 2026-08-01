@@ -136,23 +136,6 @@ func TestGrantShowJSONCarriesTheConnectionContract(t *testing.T) {
 	}
 }
 
-func TestTokenEnvVarNameIsSafeAndUnique(t *testing.T) {
-	first := TokenEnvVarName("alpha-abcd1234")
-	second := TokenEnvVarName("beta-abcd1234")
-	if first == second {
-		t.Error("two projects share an environment variable name")
-	}
-	if !strings.HasPrefix(first, "LCTK_TOKEN_") {
-		t.Errorf("name = %q", first)
-	}
-	for _, r := range first {
-		valid := r == '_' || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-		if !valid {
-			t.Errorf("name %q contains a character invalid in an environment variable: %q", first, r)
-		}
-	}
-}
-
 func TestGrantListRedactsTokens(t *testing.T) {
 	isolateHome(t)
 	healthyRuntime(t)

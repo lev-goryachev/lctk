@@ -511,3 +511,78 @@ func TestBearerTokenParsing(t *testing.T) {
 		}
 	}
 }
+
+// TestUnauthenticatedProbeIsTypedAndUniform covers the diagnostic contract in
+// ADR-0012: an operator's existing Codex diagnostics probe a route without
+// credentials, so the route must answer rather than fail to connect. ADR-0014
+// adds that the answer names the stale-environment case, and it must do so
+// without revealing whether the project exists.
+func TestUnauthenticatedProbeIsTypedAndUniform(t *testing.T) {
+	f := newFixture(t, true, "alpha-aaaaaaaa")
+
+	type probe struct{ method, project string }
+	probes := []probe{
+		{http.MethodGet, "alpha-aaaaaaaa"},
+		{http.MethodHead, "alpha-aaaaaaaa"},
+		{http.MethodPost, "alpha-aaaaaaaa"},
+		{http.MethodGet, "never-registered"},
+		{http.MethodHead, "never-registered"},
+	}
+
+	var bodies []string
+	for _, p := range probes {
+		request, err := http.NewRequestWithContext(t.Context(), p.method, f.endpoint(p.project), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s %s: %v", p.method, p.project, err)
+		}
+		raw, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s: status = %d, want 401", p.method, p.project, response.StatusCode)
+		}
+		if response.Header.Get("WWW-Authenticate") == "" {
+			t.Errorf("%s %s: no WWW-Authenticate header", p.method, p.project)
+		}
+		if p.method == http.MethodHead {
+			continue
+		}
+
+		var envelope errorEnvelope
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatalf("%s %s: body is not the typed envelope: %v", p.method, p.project, err)
+		}
+		if envelope.Error.Code != CodeAuthRequired {
+			t.Errorf("%s %s: code = %q", p.method, p.project, envelope.Error.Code)
+		}
+		if !strings.Contains(envelope.Error.RecommendedAction, "start it again") &&
+			!strings.Contains(envelope.Error.RecommendedAction, "start the client again") {
+			t.Errorf("%s %s: recommended action does not name the restart case: %q",
+				p.method, p.project, envelope.Error.RecommendedAction)
+		}
+		// The project identifier echoes the route, which the caller already
+		// knows. Everything else must match between a real and an invented
+		// project.
+		envelope.Error.ProjectID = ""
+		envelope.Error.RequestID = ""
+		normalized, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, string(normalized))
+	}
+
+	for i := 1; i < len(bodies); i++ {
+		if bodies[i] != bodies[0] {
+			t.Errorf("an unauthenticated probe distinguishes a registered project from an invented one:\n%s\n%s",
+				bodies[0], bodies[i])
+		}
+	}
+}

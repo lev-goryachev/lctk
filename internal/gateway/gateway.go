@@ -167,9 +167,14 @@ func (g *Gateway) resolve(r *http.Request, projectID, requestID string) (*serveC
 
 	token := bearerToken(r.Header.Get("Authorization"))
 	if token == "" {
+		// The stale-environment case is named here because a client that
+		// inherited an environment predating its grant cannot otherwise tell it
+		// apart from having no grant at all. Naming it reveals nothing: the
+		// wording is identical for a project that does not exist.
 		return nil, fail(http.StatusUnauthorized, CodeAuthRequired,
 			"A project grant is required.",
-			"Send Authorization: Bearer with the grant token for this project.", false)
+			"Send Authorization: Bearer with this project's grant token. "+
+				"If the client was started before the grant existed, start it again so it inherits the variable.", false)
 	}
 
 	grants, err := g.options.Grants()
@@ -184,7 +189,7 @@ func (g *Gateway) resolve(r *http.Request, projectID, requestID string) (*serveC
 	case errors.Is(err, projectgrant.ErrNoGrant):
 		return nil, fail(http.StatusUnauthorized, CodeAuthRequired,
 			"The presented credential is not a known grant.",
-			"Obtain a grant with lctk grant show.", false)
+			"Obtain a grant with lctk grant show, or start the client again if the grant was reissued after it started.", false)
 	case errors.Is(err, projectgrant.ErrGrantExpired):
 		return nil, fail(http.StatusUnauthorized, CodeAuthRequired,
 			"The grant has expired.", "Issue a new grant.", false)

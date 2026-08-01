@@ -157,7 +157,46 @@ Verified:
 
 Confirmed by hand against a running daemon with a real container: `initialize` succeeded on the routed project, a foreign token was refused with 403, a `project_info` call carrying a deliberately wrong `project_id` still answered for the routed project, and a stopped project returned the full typed error envelope with 503.
 
-### Slice 1.4: Persistent `exact_search`
+### Slice 1.4: Actual Codex end-to-end
+
+**Status:** the chain is measured and passing against real components; the extension user interface is not yet exercised, so the slice is not claimed complete. The [measured results](spikes/codex-end-to-end-results.md) state both.
+
+LCTK generates local Codex configuration and delivers the project grant. The scenario:
+
+```text
+register folder
+→ start stack
+→ connect project endpoint
+→ project_info
+→ attempt cross-project access and receive refusal/no data
+→ stop and receive typed error
+→ restart and reconnect
+```
+
+Credential delivery is decided in [ADR-0014](adr/0014-project-credential-delivery.md), which closes the item [ADR-0012](adr/0012-codex-integration-contract.md) named as blocking this slice.
+
+Implemented:
+
+- generation of the Codex `mcp_servers` entry for a project endpoint, written into a marker-delimited region of the user's own configuration file, leaving every other byte untouched, previewed by default and written only with `--apply`, backed up before each write, and parsed before it is written so a generated document cannot break the client's whole configuration load;
+- refusal to overwrite a same-named entry LCTK did not generate unless forced, and outright refusal to rewrite one written as an inline key;
+- credential delivery through a process LCTK starts, so the token exists only in that process's environment, no generated file holds a secret, and LCTK makes no durable change to the machine; the persistent alternative is printed for the operator to run, never applied;
+- `lctk codex status/config/env/launch`, with the token withheld unless explicitly revealed;
+- a typed `AUTH_REQUIRED` on an unauthenticated probe of any project route, whose recommended action names the case where a client started before its grant existed, worded identically for a project that does not exist.
+
+Verified:
+
+- the credential reaches a started process's environment, and nothing is left behind in LCTK's own;
+- generating an entry never writes a token, and re-applying an unchanged entry rewrites nothing;
+- writing preserves unrelated servers, tables, and quoted path keys in a file LCTK does not own;
+- an unauthenticated `GET`, `HEAD`, or `POST` returns the same typed `401` for a registered project and an invented one.
+
+Measured end to end against the real `lctk` executable, a real daemon, real containers, and the Codex binary the VS Code extension runs: register, start, connect, `project_info` with a deliberately wrong `project_id` argument, `403 AUTH_FORBIDDEN` for a foreign token, a typed `PROJECT_STOPPED` that survives into the client's own error text, project state preserved across a stop, and reconnection after a restart with no configuration change.
+
+Remaining before the slice is claimed complete: exercise the extension user interface, which the harness cannot drive. The manual steps are listed in the results document.
+
+This slice originally followed persistent search. It was moved ahead of it so that the client boundary is proven against a real editor before the heaviest backend work begins, and so that search lands inside a chain already known to work end to end. The search steps of the original scenario move to Slice 1.5, which re-runs this chain with `exact_search` in it.
+
+### Slice 1.5: Persistent `exact_search`
 
 Connect the selected indexed backend through a custom stable adapter and API:
 
@@ -175,9 +214,7 @@ Tests:
 - restart uses the saved index and performs catch-up;
 - malicious absolute or relative paths do not expand scope.
 
-### Slice 1.5: Actual Codex end-to-end
-
-LCTK generates local Codex configuration and a grant. The following is verified through the Codex extension in VS Code:
+The Slice 1.4 chain is then re-verified through the Codex extension with `exact_search` and index reuse across a restart included:
 
 ```text
 register folder

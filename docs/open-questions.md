@@ -12,12 +12,13 @@ Slice 0.4 measured the schema itself; see the [results](spikes/codex-compatibili
 - secret-free configuration is committable, because both credential mechanisms reference environment-variable names rather than values;
 - `config/mcpServer/reload` is the reload mechanism and does not require restarting the editor.
 
+Decided since, in [ADR-0014](adr/0014-project-credential-delivery.md): the token reaches the client in the environment of a process LCTK starts, per project, with the durable alternative printed rather than applied; and LCTK generates a user-global `mcp_servers` entry, written into a marker-delimited region of the user's own file.
+
 What remains undecided:
 
-- how a per-project grant token reaches the environment the editor inherits, given that extension settings cannot inject it and a newly created user-level variable is invisible to a running editor;
-- whether LCTK generates a user-global `mcp_servers` entry, a trusted project-local file, or both, given that a repository-local file can override the URL of a same-named global entry;
-- whether LCTK should offer a local OAuth path to avoid environment variables entirely, and what that would mean for a local-first product;
-- how LCTK reacts when a repository ships its own `.codex/config.toml` that shadows a generated project endpoint.
+- whether LCTK should offer a local OAuth path to avoid environment variables entirely, which would also let a user-started editor authenticate on its own and would serve the browser-origin flow in [`security.md`](security.md);
+- whether a trusted project-local file is worth generating in addition to the user-global entry;
+- how LCTK reacts when a repository ships its own `.codex/config.toml` that shadows a generated project endpoint, now that LCTK can detect a same-named entry it did not write.
 
 ## Daemon management API
 

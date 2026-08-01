@@ -41,6 +41,21 @@ The foreground daemon listens on `127.0.0.1:4444` by default. Slice 0.1 provides
 
 These commands are foundation evidence, not the complete project lifecycle described elsewhere.
 
+## Connecting a client
+
+`lctk codex` generates the client configuration for a registered project and delivers its grant, following [ADR-0014](adr/0014-project-credential-delivery.md).
+
+```sh
+./lctk codex config PROJECT            # print the entry
+./lctk codex config --apply PROJECT    # write it into CODEX_HOME/config.toml
+./lctk codex launch PROJECT            # start the editor with the grant in its environment
+./lctk codex status                    # where the entry is, and whether the variable is set
+```
+
+`config` writes only inside a marker-delimited region of a file LCTK does not own, takes a backup, and refuses to overwrite a same-named entry it did not generate. No generated file contains a token.
+
+`launch` is how the credential arrives. Codex reads the token from an environment variable, and an editor that is already running keeps the environment it started with, so the editor must be closed first. To set the variable durably instead, `lctk codex env --reveal PROJECT` prints the command; LCTK does not run it.
+
 ## Dependency policy
 
 Direct dependencies are pinned in `go.mod`, and checksums are committed in `go.sum`. Prefer the standard library. A new dependency requires a concrete capability, license review, maintenance review, and documentation update when it changes an architectural contract.

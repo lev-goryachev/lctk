@@ -323,3 +323,20 @@ func TestLoadRejectsMalformedRecords(t *testing.T) {
 		})
 	}
 }
+
+func TestEnvVarNameIsSafeAndPerProject(t *testing.T) {
+	first := EnvVarName("alpha-abcd1234")
+	second := EnvVarName("beta-abcd1234")
+	if first == second {
+		t.Error("two projects share an environment variable name")
+	}
+	if !strings.HasPrefix(first, EnvVarPrefix) {
+		t.Errorf("name = %q", first)
+	}
+	for _, r := range first {
+		valid := r == '_' || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !valid {
+			t.Errorf("name %q contains a character invalid in an environment variable: %q", first, r)
+		}
+	}
+}

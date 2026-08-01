@@ -52,30 +52,12 @@ func grantViewOf(grant projectgrant.Grant, projectID string, reveal bool) grantV
 	}
 	if projectID != "" {
 		view.Endpoint = fmt.Sprintf("http://%s/projects/%s/mcp", daemon.DefaultAddress, projectID)
-		view.TokenEnvVar = TokenEnvVarName(projectID)
+		view.TokenEnvVar = projectgrant.EnvVarName(projectID)
 	}
 	if reveal {
 		view.Token = grant.Token
 	}
 	return view
-}
-
-// TokenEnvVarName is the environment variable a client reads the project token
-// from. It is derived from the project id so two projects never collide.
-func TokenEnvVarName(projectID string) string {
-	var b []byte
-	for i := 0; i < len(projectID); i++ {
-		c := projectID[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-			b = append(b, c-'a'+'A')
-		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-			b = append(b, c)
-		default:
-			b = append(b, '_')
-		}
-	}
-	return "LCTK_TOKEN_" + string(b)
 }
 
 func runGrant(args []string, stdout, stderr io.Writer) error {

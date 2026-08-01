@@ -31,7 +31,8 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`spikes/search-backend-evaluation.md`](spikes/search-backend-evaluation.md) | Slice 0.3 persistent search backend test contract |
 | [`spikes/search-backend-evaluation-results.md`](spikes/search-backend-evaluation-results.md) | Slice 0.3 measurements and accepted Zoekt recommendation |
 | [`spikes/codex-compatibility.md`](spikes/codex-compatibility.md) | Slice 0.4 Codex verification contract |
-| [`spikes/codex-compatibility-results.md`](spikes/codex-compatibility-results.md) | Slice 0.4 measurements and proposed Codex integration contract |
+| [`spikes/codex-compatibility-results.md`](spikes/codex-compatibility-results.md) | Slice 0.4 measurements and accepted Codex integration contract |
+| [`spikes/codex-end-to-end-results.md`](spikes/codex-end-to-end-results.md) | Slice 1.4 end-to-end measurements against the real client, daemon, and containers |
 | [`spikes/codebase-memory-mcp-assessment.md`](spikes/codebase-memory-mcp-assessment.md) | Comparative assessment of Codebase Memory MCP and the accepted reference-only disposition |
 | [`open-questions.md`](open-questions.md) | Unresolved product and technical questions |
 | [`adr/`](adr/README.md) | Architecture decision log |
