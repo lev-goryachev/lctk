@@ -1,6 +1,6 @@
 # Local Code ToolKit (LCTK)
 
-> **Status:** public pre-alpha. Project registration, per-project containers, route-bound project MCP endpoints, persistent `exact_search`, the client end-to-end lifecycle, and the host change journal are implemented and measured against real components. Incremental indexing driven by that journal, symbol and semantic intelligence, and safe command execution remain planned work. See the [roadmap](docs/roadmap.md) for what each slice claims and how it was verified.
+> **Status:** public pre-alpha. Project registration, per-project containers, route-bound project MCP endpoints, persistent `exact_search`, the client end-to-end lifecycle, and incremental indexing that follows saved files are implemented and measured against real components. Resource policies, symbol and semantic intelligence, and safe command execution remain planned work. See the [roadmap](docs/roadmap.md) for what each slice claims and how it was verified.
 
 Local Code ToolKit is a local, extensible MCP platform for software development. It decouples code intelligence, indexing, project memory, and command execution from any specific LLM or IDE.
 
@@ -33,6 +33,8 @@ The project is then reachable at `http://127.0.0.1:4444/projects/{project_id}/mc
 
 - `project_info` — what this endpoint is bound to, what it can do, and how fresh its index is;
 - `exact_search` — indexed literal and regular-expression search over the saved working tree, including files that are saved but not committed.
+
+The index follows edits on its own. Saving a file makes it searchable without any command; measured on this repository, a file written was found by search 0.2 seconds later. When the index cannot be brought up to date, the answer says so rather than looking current.
 
 Around that:
 

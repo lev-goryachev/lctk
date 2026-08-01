@@ -59,6 +59,7 @@ func changeReporter(supervisor *watchsupervisor.Supervisor) gateway.ChangeReport
 		state := gateway.ChangeState{
 			Watching:        view.Watching,
 			Pending:         view.Pending,
+			Indexing:        view.Indexing,
 			LastEventAt:     view.LastEventAt,
 			DebounceSeconds: view.DebounceSeconds,
 		}
@@ -86,6 +87,7 @@ func Run(ctx context.Context, address string) error {
 			RequireRunning: true,
 			Wake:           supervisor.Wake,
 			Changes:        changeReporter(supervisor),
+			Flush:          supervisor.Flush,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

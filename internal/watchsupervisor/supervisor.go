@@ -71,16 +71,28 @@ type View struct {
 	// pending counts describe a record nobody is adding to.
 	Watching bool `json:"watching"`
 	// Directories is how many native watches are held.
-	Directories int    `json:"directories"`
-	Pending     int    `json:"pending"`
-	Sequence    uint64 `json:"sequence"`
-	Checkpoint  uint64 `json:"checkpoint"`
+	Directories int `json:"directories"`
+	Pending     int `json:"pending"`
+	// Indexing says an index update is in flight, which is what distinguishes a
+	// project that is catching up from one that is simply behind.
+	Indexing   bool   `json:"indexing"`
+	Sequence   uint64 `json:"sequence"`
+	Checkpoint uint64 `json:"checkpoint"`
+	// Generation is the index generation the checkpoint describes.
+	Generation uint64 `json:"generation"`
 	// Gap is present when the record is incomplete and the consumer must
 	// reconcile rather than apply the pending list.
-	Gap             *changejournal.Gap `json:"gap,omitempty"`
-	LastEventAt     time.Time          `json:"last_event_at,omitzero"`
-	SettledAt       time.Time          `json:"settled_at,omitzero"`
-	DebounceSeconds float64            `json:"debounce_seconds"`
+	Gap         *changejournal.Gap `json:"gap,omitempty"`
+	LastEventAt time.Time          `json:"last_event_at,omitzero"`
+	SettledAt   time.Time          `json:"settled_at,omitzero"`
+	// AppliedAt is when the index was last brought up to date from the journal.
+	AppliedAt time.Time `json:"applied_at,omitzero"`
+	// LastError is why the most recent attempt to update the index failed, empty
+	// when the last attempt succeeded. It is reported rather than only logged,
+	// because an index that has stopped advancing looks exactly like one with
+	// nothing to do.
+	LastError       string  `json:"last_error,omitempty"`
+	DebounceSeconds float64 `json:"debounce_seconds"`
 }
 
 // Supervisor manages the per-project watchers.
@@ -222,6 +234,22 @@ func (s *Supervisor) Wake(project projectregistry.Project, status projectstack.S
 	}()
 }
 
+// Flush brings a project's index up to date now, rather than at the end of its
+// debounce window, and waits for the caller's context.
+//
+// It is what lets a search see an edit made a moment ago. A project with nothing
+// pending returns immediately, and a project with no watcher returns immediately
+// too, because there is no record to apply.
+func (s *Supervisor) Flush(ctx context.Context, projectID string) {
+	s.mu.Lock()
+	w, ok := s.workers[projectID]
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	w.flush(ctx)
+}
+
 // View reports the observation state for a project.
 func (s *Supervisor) View(projectID string) (View, bool) {
 	s.mu.Lock()
@@ -313,6 +341,7 @@ func (s *Supervisor) start(ctx context.Context, project projectregistry.Project,
 		projectID: project.ID,
 		journal:   journal,
 		watcher:   watcher,
+		index:     s.options.NewClient(status.ServiceAddress),
 		watch:     watch,
 		logger:    logger,
 		now:       s.options.Now,

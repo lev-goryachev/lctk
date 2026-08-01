@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // settle is how long a test waits for a native event. Filesystem notification is
@@ -166,6 +168,31 @@ func TestADirectoryIsNeverReportedAsWritten(t *testing.T) {
 		case <-time.After(500 * time.Millisecond):
 			return
 		}
+	}
+}
+
+// One removal can be reported twice: the parent's watch sees the child go, and
+// the directory's own watch sees itself go. The second report must not describe
+// the directory as a file — a consumer keeping one entry per path would let it
+// overwrite the first, and every file that was inside would stay in the index.
+func TestARepeatedRemovalStillReportsADirectory(t *testing.T) {
+	h := newHarness(t)
+	h.write(t, "pkg/a.go", "package pkg\n")
+	h.await(t, "the new directory", func(e Event) bool { return e.Path == "pkg" && e.Directory })
+
+	if err := os.RemoveAll(filepath.Join(h.root, "pkg")); err != nil {
+		t.Fatal(err)
+	}
+	h.await(t, "the removal", func(e Event) bool { return e.Path == "pkg" && e.Kind == Removed })
+
+	// Replay the same native event, which is what a second watch reporting the
+	// same removal amounts to.
+	h.translate(fsnotify.Event{Name: filepath.Join(h.root, "pkg"), Op: fsnotify.Remove})
+	repeat := h.await(t, "the repeated removal", func(e Event) bool {
+		return e.Path == "pkg" && e.Kind == Removed
+	})
+	if !repeat.Directory {
+		t.Fatal("a repeated directory removal was downgraded to a file removal")
 	}
 }
 

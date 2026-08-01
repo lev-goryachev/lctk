@@ -43,6 +43,8 @@ type fixture struct {
 	changes map[string]ChangeState
 	// woken records which projects the route asked the host to observe.
 	woken []string
+	// flushed records which projects a search asked the host to bring up to date.
+	flushed []string
 }
 
 func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixture {
@@ -103,6 +105,14 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 		Changes: func(projectID string) (ChangeState, bool) {
 			state, ok := f.changes[projectID]
 			return state, ok
+		},
+		Flush: func(_ context.Context, projectID string) {
+			f.flushed = append(f.flushed, projectID)
+			// A real flush applies what is pending, so the stand-in does too.
+			if state, ok := f.changes[projectID]; ok {
+				state.Pending = 0
+				f.changes[projectID] = state
+			}
 		},
 	})
 

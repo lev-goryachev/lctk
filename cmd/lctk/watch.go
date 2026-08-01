@@ -95,7 +95,7 @@ func watchStatus(projectID, projectRoot string) (watchView, error) {
 		DebounceSeconds: resolveDebounce(projectRoot).Seconds(),
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := readJournal(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return view, nil
@@ -125,6 +125,28 @@ func watchStatus(projectID, projectRoot string) (watchView, error) {
 	return view, nil
 }
 
+// readJournal reads the document, retrying briefly while the daemon replaces it.
+//
+// The daemon publishes a new journal by renaming a temporary file over the old
+// one. On Windows that rename briefly locks the target, so a reader arriving at
+// exactly the wrong moment is refused rather than given stale content. The fix is
+// to wait: the window is a rename, not an operation, and it closes immediately.
+func readJournal(path string) ([]byte, error) {
+	const attempts = 10
+	var err error
+	for attempt := range attempts {
+		var raw []byte
+		raw, err = os.ReadFile(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return raw, err
+		}
+		if attempt < attempts-1 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return nil, err
+}
+
 // resolveDebounce reports the window that would apply to this project, so the
 // status line shows the policy in force rather than the shipped default.
 func resolveDebounce(projectRoot string) time.Duration {
@@ -149,6 +171,9 @@ func printWatchView(stdout io.Writer, view watchView) error {
 
 	fmt.Fprintf(stdout, "  pending:    %d change(s) since the index was last caught up\n", view.Pending)
 	fmt.Fprintf(stdout, "  sequence:   %d observed, %d applied\n", view.Sequence, view.Checkpoint)
+	if view.Generation > 0 {
+		fmt.Fprintf(stdout, "  index:      generation %d\n", view.Generation)
+	}
 	if view.Complete {
 		fmt.Fprintf(stdout, "  record:     complete\n")
 	} else {

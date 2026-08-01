@@ -103,6 +103,10 @@ type Provenance struct {
 	IndexGeneration uint64 `json:"index_generation"`
 	IndexedAt       string `json:"indexed_at,omitempty"`
 	FileCount       int    `json:"file_count"`
+	// Freshness is filled in by the caller that knows what the host has observed
+	// since this generation was built. The adapter cannot judge it: the service
+	// knows what it indexed, not what has changed on disk since.
+	Freshness string `json:"freshness,omitempty"`
 }
 
 // Response is the public search response.
@@ -226,14 +230,62 @@ func (c *Client) WatchSet(ctx context.Context) (WatchSet, error) {
 	return set, nil
 }
 
-// Reindex asks the service to catch up with the workspace.
-func (c *Client) Reindex(ctx context.Context, full bool) (Status, error) {
+// Change is one file event for the index to apply.
+type Change struct {
+	Path    string `json:"path"`
+	Deleted bool   `json:"deleted,omitempty"`
+	// Subtree says the path names a removed directory, which takes every file
+	// beneath it. The service expands it, because only the service knows what was
+	// in there: by the time the change is reported the directory is gone.
+	Subtree bool `json:"subtree,omitempty"`
+}
+
+// IndexResult is what an index operation published.
+type IndexResult struct {
+	Generation uint64 `json:"generation"`
+	FileCount  int    `json:"file_count"`
+	Applied    int    `json:"applied"`
+	// FullBuild says the service decided to rebuild rather than apply a delta,
+	// which it does for a batch large enough that a delta would cost more.
+	FullBuild bool   `json:"full_build"`
+	IndexedAt string `json:"indexed_at"`
+}
+
+// Apply submits an explicit batch of changes.
+//
+// The caller owns the deadline. A batch the service escalates to a full rebuild
+// takes as long as a rebuild takes, and there is no useful single timeout that
+// suits both that and a two-file edit.
+func (c *Client) Apply(ctx context.Context, changes []Change) (IndexResult, error) {
+	var result IndexResult
+	body := struct {
+		Mode    string   `json:"mode"`
+		Changes []Change `json:"changes"`
+	}{Mode: "apply", Changes: changes}
+	if err := c.call(ctx, "/index", body, &result); err != nil {
+		return IndexResult{}, err
+	}
+	return result, nil
+}
+
+// Reconcile asks the service to compare the workspace with its own inventory and
+// apply the difference. It is the recovery path when the host's record of changes
+// is known to be incomplete.
+func (c *Client) Reconcile(ctx context.Context, full bool) (IndexResult, error) {
 	mode := "reconcile"
 	if full {
 		mode = "full"
 	}
-	var ignored map[string]any
-	if err := c.call(ctx, "/index", map[string]string{"mode": mode}, &ignored); err != nil {
+	var result IndexResult
+	if err := c.call(ctx, "/index", map[string]string{"mode": mode}, &result); err != nil {
+		return IndexResult{}, err
+	}
+	return result, nil
+}
+
+// Reindex asks the service to catch up and reports the resulting status.
+func (c *Client) Reindex(ctx context.Context, full bool) (Status, error) {
+	if _, err := c.Reconcile(ctx, full); err != nil {
 		return Status{}, err
 	}
 	return c.Status(ctx)

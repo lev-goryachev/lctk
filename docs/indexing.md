@@ -80,6 +80,45 @@ The project's value is a proposal, not a setting: the host clamps it to between 
 
 Debounce delays updates to persistent indexes, but not file saves or ordinary source reads. While a batch is pending or being processed, responses show pending changes and freshness lag.
 
+## Applying the journal
+
+As implemented in Slice 2.2, a settled batch is applied to the project index without anyone asking.
+
+The journal decides which of two paths is taken, and the choice is not the consumer's to make:
+
+- **complete record** — the pending list is applied as a delta, and the checkpoint advances to the sequence that was applied, together with the index generation it produced;
+- **gap** — the pending list is a lower bound and cannot be applied, so the service reconciles its own inventory against the filesystem instead, and the gap is cleared only if it is the same gap the reconciliation set out to close.
+
+A failed update advances nothing. The batch stays pending and is tried again at the next settle, and the reason is reported in `lctk project watch` rather than only logged, because an index that has stopped advancing looks exactly like one with nothing to do.
+
+Three translations matter:
+
+| Observation | Sent to the index |
+|---|---|
+| A file written | apply the path |
+| A file removed | retract the path |
+| A directory removed | retract the path **and everything beneath it** |
+| A directory created | nothing; its files arrive as their own observations |
+
+The directory case is the one that cannot be reconstructed later. Once a directory is gone, nothing can enumerate what was in it, so the change carries a subtree flag and the service expands it against its own inventory. Sent as an ordinary path it would retract one entry the index does not hold, and every file that had been inside would stay searchable.
+
+### A search sees the edit that just happened
+
+An agent that writes a file and immediately searches for it is the common case, and waiting out a 3-second debounce window would tell it the code it just wrote does not exist. So a search flushes the pending batch first and waits, bounded by a few seconds.
+
+The bound applies to the wait, not to the work. A caller that gives up waiting does not cancel a rebuild halfway; the search runs against what the index holds and reports its freshness, which is still an honest answer.
+
+Measured against this repository: a file written and searched for **0.2 seconds later** was found, against a 3-second debounce window.
+
+### Bulk changes
+
+A batch touching much of the index costs more as a delta than as a rebuild, because every retracted path leaves a tombstone that later queries have to resolve. Two thresholds escalate a batch to a full rebuild:
+
+- more than a quarter of the indexed files in one batch, and
+- at least 500 files, so a small project is not rebuilt whenever two files change.
+
+Above those, and above the delta-depth limit from [Slice 1.5](#persistent-exact-index), the next update is a rebuild. The journal has its own upper bound at 10,000 pending paths, past which it records a bulk gap and the change goes to reconciliation instead.
+
 ## Layered updates
 
 A routine file change does not trigger a full repository rebuild:

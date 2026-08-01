@@ -141,7 +141,21 @@ type Watcher struct {
 	// over would say it 1000 times. One notice is the whole message: the record is
 	// incomplete and reconciliation is required.
 	capacityGapped bool
+	// removedDirectories remembers directories whose removal has been reported.
+	//
+	// One removal can be reported more than once: the parent's watch sees a child
+	// disappear, and the directory's own watch sees itself go. By the second report
+	// the registry has already forgotten the path, so it would be reported as a
+	// file — and a consumer keeping one entry per path would let that overwrite
+	// the first report, then leave every file that was inside the directory in the
+	// index. Found by an end-to-end test, not by reasoning about the API.
+	removedDirectories map[string]struct{}
 }
+
+// maxRememberedRemovals bounds the memory above. Forgetting costs at most a
+// downgraded duplicate, which reconciliation corrects, so the whole set is
+// dropped rather than carrying an eviction order that would never be read.
+const maxRememberedRemovals = 4096
 
 // Start begins observing. The returned watcher owns a goroutine until Close.
 func Start(options Options) (*Watcher, error) {
@@ -168,16 +182,17 @@ func Start(options Options) (*Watcher, error) {
 	}
 
 	w := &Watcher{
-		root:     root,
-		limit:    options.MaxDirectories,
-		now:      options.Now,
-		logger:   options.Logger,
-		inner:    inner,
-		events:   make(chan Event, options.Buffer),
-		gaps:     make(chan Gap, 16),
-		done:     make(chan struct{}),
-		finished: make(chan struct{}),
-		watched:  map[string]struct{}{},
+		root:               root,
+		limit:              options.MaxDirectories,
+		now:                options.Now,
+		logger:             options.Logger,
+		inner:              inner,
+		events:             make(chan Event, options.Buffer),
+		gaps:               make(chan Gap, 16),
+		done:               make(chan struct{}),
+		finished:           make(chan struct{}),
+		watched:            map[string]struct{}{},
+		removedDirectories: map[string]struct{}{},
 	}
 
 	for _, relative := range options.Directories {
@@ -253,7 +268,30 @@ func (w *Watcher) register(relative string) {
 
 	w.mu.Lock()
 	w.watched[relative] = struct{}{}
+	// A directory that exists again is no longer a removed one.
+	delete(w.removedDirectories, relative)
 	w.mu.Unlock()
+}
+
+// wasDirectory reports whether a now-absent path was a directory, consulting the
+// live registry first and the memory of recent removals second.
+func (w *Watcher) wasDirectory(relative string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, watched := w.watched[relative]; watched {
+		return true
+	}
+	_, removed := w.removedDirectories[relative]
+	return removed
+}
+
+func (w *Watcher) rememberRemoval(relative string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.removedDirectories) >= maxRememberedRemovals {
+		w.removedDirectories = map[string]struct{}{}
+	}
+	w.removedDirectories[relative] = struct{}{}
 }
 
 func (w *Watcher) unregister(relative string) {
@@ -318,9 +356,12 @@ func (w *Watcher) translate(event fsnotify.Event) {
 	case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 		// The path is already gone, so the filesystem cannot say what it was.
 		// The watch registry can: every directory the project indexes is
-		// registered, so a removed path we were watching was a directory.
-		directory := w.isWatched(relative)
+		// registered, so a removed path we were watching was a directory. A
+		// repeated report of the same removal is answered from the memory of
+		// recent removals, because by then the registry has forgotten.
+		directory := w.wasDirectory(relative)
 		if directory {
+			w.rememberRemoval(relative)
 			w.unregister(relative)
 			w.dropSubtree(relative)
 		}

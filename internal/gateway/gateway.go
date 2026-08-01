@@ -43,6 +43,9 @@ type Waker func(project projectregistry.Project, status projectstack.Status)
 type ChangeState struct {
 	Watching bool
 	Pending  int
+	// Indexing says the host is bringing the index up to date right now, which is
+	// worth waiting for in a way that "behind and idle" is not.
+	Indexing bool
 	// GapReason is set when the host's record of changes is known to be
 	// incomplete, in which case the pending count is a lower bound.
 	GapReason       string
@@ -53,6 +56,19 @@ type ChangeState struct {
 // ChangeReporter returns the watcher's view of a project, and false when no
 // watcher is running for it.
 type ChangeReporter func(projectID string) (ChangeState, bool)
+
+// Flusher brings a project's index up to date now rather than at the end of its
+// debounce window, returning when the work is done or the context expires.
+type Flusher func(ctx context.Context, projectID string)
+
+// searchFlushBudget bounds how long a search waits for pending changes to reach
+// the index.
+//
+// A caller that has just written a file and immediately searches wants to see it,
+// and a second or two of waiting is a far better answer than a confidently wrong
+// one. The bound exists because the wait cannot be unlimited: past it the search
+// runs against what the index already holds and says so, which is still honest.
+const searchFlushBudget = 5 * time.Second
 
 // Options configures a gateway.
 type Options struct {
@@ -74,6 +90,9 @@ type Options struct {
 	// freshness is unknown rather than implying it is current.
 	Wake    Waker
 	Changes ChangeReporter
+	// Flush lets a search wait for observed changes to reach the index instead of
+	// answering from a generation it already knows is behind.
+	Flush Flusher
 }
 
 // Gateway serves /projects/{project_id}/mcp.
@@ -165,6 +184,9 @@ type changeInfo struct {
 	Watching bool `json:"watching"`
 	// Pending counts files changed since the index was last brought up to date.
 	Pending int `json:"pending"`
+	// Indexing says those changes are being applied right now, which tells a
+	// caller that retrying shortly is worth more than retrying eventually.
+	Indexing bool `json:"indexing,omitempty"`
 	// Complete says the record of those changes is known to be whole. When it is
 	// false, Pending is a lower bound and GapReason says why.
 	Complete    bool   `json:"complete"`
@@ -190,6 +212,10 @@ const (
 // is told "fresh" will not re-check, so claiming freshness without evidence is
 // the one answer that causes silent wrong work.
 func describeChanges(state ChangeState, watching bool, indexing bool) (*changeInfo, string) {
+	// A build in the project service and a drain on the host are both "the index
+	// is being brought up to date"; a caller does not care which.
+	indexing = indexing || state.Indexing
+
 	freshness := freshnessUnknown
 	if indexing {
 		freshness = freshnessUpdating
@@ -201,6 +227,7 @@ func describeChanges(state ChangeState, watching bool, indexing bool) (*changeIn
 	info := &changeInfo{
 		Watching:        state.Watching,
 		Pending:         state.Pending,
+		Indexing:        indexing,
 		Complete:        state.GapReason == "",
 		GapReason:       state.GapReason,
 		DebounceSeconds: state.DebounceSeconds,
@@ -257,6 +284,10 @@ type exactSearchOutput struct {
 	ScopeSource string               `json:"scope_source"`
 	Root        string               `json:"root"`
 	Provenance  codeintel.Provenance `json:"provenance"`
+	// Changes says what the host has observed but not yet applied. It is present
+	// only when it has something to report, which after a flush means the index
+	// could not be brought fully up to date.
+	Changes *changeInfo `json:"changes,omitempty"`
 }
 
 // serveContext is everything resolved for one authenticated request.
@@ -500,6 +531,15 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			}
 		}
 
+		// Bring the index up to date before answering. An agent that just wrote a
+		// file and searched for it is the common case, and waiting a moment beats
+		// telling it the code it wrote does not exist.
+		if g.options.Flush != nil {
+			flushCtx, cancel := context.WithTimeout(ctx, searchFlushBudget)
+			g.options.Flush(flushCtx, resolved.project.ID)
+			cancel()
+		}
+
 		response, err := g.searchClient(resolved).Search(ctx, codeintel.Request{
 			Pattern:       input.Pattern,
 			Mode:          input.Mode,
@@ -513,7 +553,10 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			return nil, exactSearchOutput{}, asSearchToolError(err)
 		}
 
-		return nil, exactSearchOutput{
+		// Freshness is judged after the search, not before: the flush above may
+		// have applied everything, in which case there is nothing left to warn
+		// about, and reporting a state read earlier would be stale by one step.
+		output := exactSearchOutput{
 			ProjectID:   resolved.project.ID,
 			Matches:     response.Matches,
 			Total:       response.Total,
@@ -522,7 +565,16 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			ScopeSource: "route_and_registry",
 			Root:        projectstack.WorkspaceMount,
 			Provenance:  response.Provenance,
-		}, nil
+		}
+		if g.options.Changes != nil {
+			state, watching := g.options.Changes(resolved.project.ID)
+			changes, freshness := describeChanges(state, watching, false)
+			output.Provenance.Freshness = freshness
+			if freshness != freshnessFresh {
+				output.Changes = changes
+			}
+		}
+		return nil, output, nil
 	})
 
 	return server
