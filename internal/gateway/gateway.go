@@ -43,6 +43,9 @@ type Waker func(project projectregistry.Project, status projectstack.Status)
 type ChangeState struct {
 	Watching bool
 	Pending  int
+	// Indexing says the host is bringing the index up to date right now, which is
+	// worth waiting for in a way that "behind and idle" is not.
+	Indexing bool
 	// GapReason is set when the host's record of changes is known to be
 	// incomplete, in which case the pending count is a lower bound.
 	GapReason       string
@@ -181,6 +184,9 @@ type changeInfo struct {
 	Watching bool `json:"watching"`
 	// Pending counts files changed since the index was last brought up to date.
 	Pending int `json:"pending"`
+	// Indexing says those changes are being applied right now, which tells a
+	// caller that retrying shortly is worth more than retrying eventually.
+	Indexing bool `json:"indexing,omitempty"`
 	// Complete says the record of those changes is known to be whole. When it is
 	// false, Pending is a lower bound and GapReason says why.
 	Complete    bool   `json:"complete"`
@@ -206,6 +212,10 @@ const (
 // is told "fresh" will not re-check, so claiming freshness without evidence is
 // the one answer that causes silent wrong work.
 func describeChanges(state ChangeState, watching bool, indexing bool) (*changeInfo, string) {
+	// A build in the project service and a drain on the host are both "the index
+	// is being brought up to date"; a caller does not care which.
+	indexing = indexing || state.Indexing
+
 	freshness := freshnessUnknown
 	if indexing {
 		freshness = freshnessUpdating
@@ -217,6 +227,7 @@ func describeChanges(state ChangeState, watching bool, indexing bool) (*changeIn
 	info := &changeInfo{
 		Watching:        state.Watching,
 		Pending:         state.Pending,
+		Indexing:        indexing,
 		Complete:        state.GapReason == "",
 		GapReason:       state.GapReason,
 		DebounceSeconds: state.DebounceSeconds,

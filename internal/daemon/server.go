@@ -59,6 +59,7 @@ func changeReporter(supervisor *watchsupervisor.Supervisor) gateway.ChangeReport
 		state := gateway.ChangeState{
 			Watching:        view.Watching,
 			Pending:         view.Pending,
+			Indexing:        view.Indexing,
 			LastEventAt:     view.LastEventAt,
 			DebounceSeconds: view.DebounceSeconds,
 		}

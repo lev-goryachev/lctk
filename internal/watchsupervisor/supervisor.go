@@ -71,10 +71,13 @@ type View struct {
 	// pending counts describe a record nobody is adding to.
 	Watching bool `json:"watching"`
 	// Directories is how many native watches are held.
-	Directories int    `json:"directories"`
-	Pending     int    `json:"pending"`
-	Sequence    uint64 `json:"sequence"`
-	Checkpoint  uint64 `json:"checkpoint"`
+	Directories int `json:"directories"`
+	Pending     int `json:"pending"`
+	// Indexing says an index update is in flight, which is what distinguishes a
+	// project that is catching up from one that is simply behind.
+	Indexing   bool   `json:"indexing"`
+	Sequence   uint64 `json:"sequence"`
+	Checkpoint uint64 `json:"checkpoint"`
 	// Generation is the index generation the checkpoint describes.
 	Generation uint64 `json:"generation"`
 	// Gap is present when the record is incomplete and the consumer must

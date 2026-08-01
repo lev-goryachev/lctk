@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/changejournal"
@@ -38,6 +39,12 @@ type worker struct {
 	// pending list and apply it twice, and the second would commit a checkpoint
 	// covering work the first had already retracted.
 	drainMu sync.Mutex
+	// draining says an index update is in flight. It is reported rather than kept
+	// private, because "behind and catching up" and "behind and not" call for
+	// different things from a caller: one is worth waiting for.
+	draining atomic.Bool
+	// stopped refuses new index updates once the worker is being released.
+	stopped atomic.Bool
 
 	mu        sync.Mutex
 	lastUse   time.Time
@@ -156,11 +163,17 @@ func (w *worker) persist() {
 // queued — the running drain will pick up whatever arrived, and if it does not,
 // the next settle will.
 func (w *worker) drainAsync() {
+	if w.stopped.Load() {
+		return
+	}
 	go func() {
 		if !w.drainMu.TryLock() {
 			return
 		}
 		defer w.drainMu.Unlock()
+		if w.stopped.Load() {
+			return
+		}
 		w.drain()
 	}()
 }
@@ -172,11 +185,17 @@ func (w *worker) drainAsync() {
 // waiting must not cancel a rebuild halfway, or a caller with a short deadline
 // could stop the index from ever advancing.
 func (w *worker) flush(ctx context.Context) {
+	if w.stopped.Load() {
+		return
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		w.drainMu.Lock()
 		defer w.drainMu.Unlock()
+		if w.stopped.Load() {
+			return
+		}
 		w.drain()
 	}()
 
@@ -201,6 +220,9 @@ func (w *worker) drain() {
 	// separately would let a change observed in between be committed without ever
 	// being applied.
 	mark := snapshot.Mark()
+
+	w.draining.Store(true)
+	defer w.draining.Store(false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), DrainTimeout)
 	defer cancel()
@@ -294,6 +316,16 @@ func (w *worker) stop(reason, detail string) {
 	w.stopOnce.Do(func() {
 		close(w.done)
 		<-w.finished
+
+		// Releasing a watcher has to mean the work has actually stopped. An index
+		// update runs on its own goroutine, so without this a drain would still be
+		// writing the journal and committing checkpoints for a worker that no
+		// longer exists. The flag is set first so nothing new starts, then the lock
+		// waits out whatever is already running.
+		w.stopped.Store(true)
+		w.drainMu.Lock()
+		w.drainMu.Unlock() //nolint:staticcheck // waiting out an in-flight drain, not guarding a section
+
 		_ = w.watcher.Close()
 
 		w.journal.MarkGap(reason, detail, w.now())
@@ -317,6 +349,7 @@ func (w *worker) view() View {
 		Watching:        true,
 		Directories:     w.watcher.Watched(),
 		Pending:         len(snapshot.Pending),
+		Indexing:        w.draining.Load(),
 		Sequence:        snapshot.Sequence,
 		Checkpoint:      snapshot.Checkpoint,
 		Generation:      snapshot.Generation,
