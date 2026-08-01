@@ -83,9 +83,11 @@ type State struct {
 	SkippedBig int `json:"skipped_too_large"`
 	// SkippedIgnored counts entries the project's own ignore rules excluded, so
 	// the effect of those rules is reportable rather than invisible.
-	SkippedIgnored int       `json:"skipped_ignored"`
-	BuiltAt        time.Time `json:"built_at"`
-	FullBuild      bool      `json:"full_build"`
+	SkippedIgnored int `json:"skipped_ignored"`
+	// IgnoreSources names the ignore files in effect for this build.
+	IgnoreSources []string  `json:"ignore_sources,omitempty"`
+	BuiltAt       time.Time `json:"built_at"`
+	FullBuild     bool      `json:"full_build"`
 }
 
 // Change is one file event to apply.
@@ -186,6 +188,7 @@ func (s *Store) Rebuild(ctx context.Context) (State, error) {
 		files:      inventory.files,
 		skippedBig: inventory.skippedBig,
 		ignored:    inventory.skippedIgnored,
+		sources:    inventory.ignoreSources,
 		add:        sortedKeys(inventory.files),
 	})
 }
@@ -207,6 +210,13 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		return state, nil
 	}
 	if state.DeltaDepth+1 > s.Limits.MaxDeltaGenerations {
+		return s.Rebuild(ctx)
+	}
+	// An edited ignore file changes what belongs in the index everywhere beneath
+	// it, not just for the files in this batch. A delta could only add or remove
+	// the entries it was handed, so a file the new rules now exclude would linger
+	// until something else happened to touch it.
+	if touchesIgnoreRules(changes) {
 		return s.Rebuild(ctx)
 	}
 
@@ -274,6 +284,7 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		files:      files,
 		skippedBig: state.SkippedBig,
 		ignored:    state.SkippedIgnored,
+		sources:    state.IgnoreSources,
 		add:        add,
 		tombstone:  sortedSet(touched),
 	})
@@ -325,6 +336,7 @@ type buildPlan struct {
 	files      map[string]string
 	skippedBig int
 	ignored    int
+	sources    []string
 	add        []string
 	tombstone  []string
 }
@@ -404,6 +416,7 @@ func (s *Store) build(ctx context.Context, plan buildPlan) (State, error) {
 		FileCount:      len(plan.files),
 		SkippedBig:     plan.skippedBig,
 		SkippedIgnored: plan.ignored,
+		IgnoreSources:  plan.sources,
 		BuiltAt:        time.Now().UTC().Truncate(time.Second),
 		FullBuild:      plan.full,
 	}

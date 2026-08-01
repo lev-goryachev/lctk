@@ -43,6 +43,10 @@ type inventoryResult struct {
 	// skippedIgnored counts entries excluded by the project's own ignore rules,
 	// so the effect is reportable rather than invisible.
 	skippedIgnored int
+	// ignoreSources names the ignore files that were actually found, so an
+	// operator can see which rules were in effect instead of inferring it from
+	// what went missing.
+	ignoreSources []string
 }
 
 // inventory walks the workspace and records a digest per eligible file.
@@ -58,10 +62,11 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 	defer root.Close()
 
 	result := inventoryResult{files: map[string]string{}}
+	sources := &sourceSet{}
 
 	// Ignore rules are collected per directory as the walk descends, because a
 	// nested ignore file adds rules for its own subtree only.
-	rules := map[string]ignoreSet{"": rootIgnoreSet(root)}
+	rules := map[string]ignoreSet{"": rootIgnoreSet(root, sources)}
 
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -88,7 +93,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 				result.skippedIgnored++
 				return fs.SkipDir
 			}
-			rules[name] = inherited.withFile(root, name)
+			rules[name] = inherited.withFiles(root, name, sources)
 			return nil
 		}
 
@@ -98,7 +103,11 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		if inherited.ignored(name, false) {
+		// An ignore file is never itself ignored. It has to appear in the
+		// inventory, or a change to it goes unnoticed and the rules it declares
+		// silently stop matching what is actually indexed. Excluding a file that
+		// decides exclusions is a rule that hides its own edits.
+		if !isIgnoreFile(name) && inherited.ignored(name, false) {
 			result.skippedIgnored++
 			return nil
 		}
@@ -125,6 +134,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 		}
 		return inventoryResult{}, internal("enumerate the workspace", err)
 	}
+	result.ignoreSources = sources.list()
 	return result, nil
 }
 
@@ -136,7 +146,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 // again.
 func (s *Store) eligible(root *os.Root, relative string) bool {
 	segments := strings.Split(relative, "/")
-	rules := rootIgnoreSet(root)
+	rules := rootIgnoreSet(root, nil)
 	prefix := ""
 
 	for depth, segment := range segments {
@@ -149,11 +159,11 @@ func (s *Store) eligible(root *os.Root, relative string) bool {
 			prefix = prefix + "/" + segment
 		}
 		isDir := depth < len(segments)-1
-		if rules.ignored(prefix, isDir) {
+		if (isDir || !isIgnoreFile(prefix)) && rules.ignored(prefix, isDir) {
 			return false
 		}
 		if isDir {
-			rules = rules.withFile(root, prefix)
+			rules = rules.withFiles(root, prefix, nil)
 		}
 	}
 	return true

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/codeintel"
@@ -17,16 +18,17 @@ import (
 const reindexTimeout = 10 * time.Minute
 
 type reindexView struct {
-	ProjectID      string `json:"project_id"`
-	Full           bool   `json:"full"`
-	Ready          bool   `json:"ready"`
-	Indexing       bool   `json:"indexing"`
-	Generation     uint64 `json:"generation"`
-	FileCount      int    `json:"file_count"`
-	SkippedBig     int    `json:"skipped_too_large"`
-	SkippedIgnored int    `json:"skipped_ignored"`
-	IndexedAt      string `json:"indexed_at,omitempty"`
-	Reason         string `json:"reason,omitempty"`
+	ProjectID      string   `json:"project_id"`
+	Full           bool     `json:"full"`
+	Ready          bool     `json:"ready"`
+	Indexing       bool     `json:"indexing"`
+	Generation     uint64   `json:"generation"`
+	FileCount      int      `json:"file_count"`
+	SkippedBig     int      `json:"skipped_too_large"`
+	SkippedIgnored int      `json:"skipped_ignored"`
+	IgnoreSources  []string `json:"ignore_sources,omitempty"`
+	IndexedAt      string   `json:"indexed_at,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
 }
 
 // runProjectReindex asks a running project to bring its index up to date.
@@ -81,6 +83,7 @@ func runProjectReindex(args []string, stdout io.Writer) error {
 		FileCount:      indexStatus.FileCount,
 		SkippedBig:     indexStatus.SkippedBig,
 		SkippedIgnored: indexStatus.SkippedIgnored,
+		IgnoreSources:  indexStatus.IgnoreSources,
 		IndexedAt:      indexStatus.IndexedAt,
 		Reason:         indexStatus.Reason,
 	}
@@ -96,6 +99,9 @@ func runProjectReindex(args []string, stdout io.Writer) error {
 	}
 	if view.SkippedIgnored > 0 {
 		fmt.Fprintf(stdout, "  ignored:    %d entries excluded by ignore rules\n", view.SkippedIgnored)
+	}
+	if len(view.IgnoreSources) > 0 {
+		fmt.Fprintf(stdout, "  rules from: %s\n", strings.Join(view.IgnoreSources, ", "))
 	}
 	if view.IndexedAt != "" {
 		fmt.Fprintf(stdout, "  indexed at: %s\n", view.IndexedAt)

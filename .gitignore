@@ -12,6 +12,8 @@
 *.local.toml
 *.local.yaml
 *.local.yml
+# A machine-specific indexing override is personal, not a project decision.
+.lctkignore.local
 
 # Editors and operating systems
 .vscode/
