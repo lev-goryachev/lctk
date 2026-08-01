@@ -329,11 +329,27 @@ Bulk escalation is covered by automated tests rather than measured live: this re
 
 ### Slice 2.3: Resource policies and Admin UI baseline
 
-- quiet, normal, and fast background modes;
-- disk and resource estimates and confirmation;
+**Status:** resource policies complete; the Admin UI baseline is the remaining half.
+
+Implemented:
+
+- `quiet`, `normal`, and `fast` background modes that change what a project actually costs — container CPU limit and concurrent index work — set machine-wide with a per-project override in the registry rather than in the repository manifest, because how much of a machine a project may spend is the machine owner's decision;
+- memory left uncapped in every mode unless explicitly configured, because a CPU limit throttles an indexer while a memory limit kills it and leaves the index no better off;
+- the parallelism cap passed into the container rather than derived inside it, since the container cannot see the host's policy and would otherwise size itself to the whole machine;
+- disk reporting: what the index occupies, how much source it describes, and how much room is left, with `start` and `restart` refusing when less than a gigabyte would remain unless `--yes` is given;
+- `lctk project resources` and the resource half of `lctk settings show`.
+
+Verified live against this repository, by inspecting the running container rather than by reading the setting back: `quiet` produced a 1-CPU limit and `LCTK_INDEX_PARALLELISM=1`, `fast` produced no CPU limit and no cap, and clearing the override returned it to the machine's 2 CPUs. Measured disk: 9.98 MiB of index for 1.19 MiB of source across 179 files and two retained generations.
+
+The disk estimate was wrong before it was measured. A guessed ratio of 2× would have predicted 2.4 MiB against an actual 10 MiB, because a shard carries fixed metadata that dominates on a small project and two generations are retained. The model now has that shape, and the roadmap records that it is anchored to one repository and is a guess about large ones.
+
+Remaining:
+
 - add, start, stop, status, and index progress;
 - logs/doctor;
 - client grants.
+
+These are the Admin UI baseline: a minimal local web surface over an Admin API separate from the project `code` endpoint, whose session bootstrap [security](security.md) still records as an open question.
 
 ## Stage 3 — Safe coding operations
 

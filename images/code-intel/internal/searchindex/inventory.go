@@ -38,8 +38,12 @@ var defaultIgnorePatterns = []string{
 }
 
 type inventoryResult struct {
-	files      map[string]string
-	skippedBig int
+	files map[string]string
+	// sourceBytes is the total size of the indexed files. It is what makes an
+	// index-size estimate possible for a project that has never been built: the
+	// only useful predictor of index size is how much source there is.
+	sourceBytes int64
+	skippedBig  int
 	// skippedIgnored counts entries excluded by the project's own ignore rules,
 	// so the effect is reportable rather than invisible.
 	skippedIgnored int
@@ -126,6 +130,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 			return err
 		}
 		result.files[name] = digestOf(content)
+		result.sourceBytes += info.Size()
 		return nil
 	})
 	if err != nil {

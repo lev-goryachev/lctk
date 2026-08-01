@@ -84,7 +84,7 @@ func TestInspectReadsThePublishedServiceAddress(t *testing.T) {
 // that together let many projects run at once without coordination: the runtime
 // chooses the host port, and it is never exposed beyond loopback.
 func TestComposePublishesTheServiceOnLoopbackWithoutAFixedPort(t *testing.T) {
-	rendered, err := Render(testProject("alpha-abcd1234", absPath("work", "alpha")))
+	rendered, err := Render(testProject("alpha-abcd1234", absPath("work", "alpha")), testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +107,11 @@ func TestComposePublishesTheServiceOnLoopbackWithoutAFixedPort(t *testing.T) {
 
 func TestComposeRenderingStaysReproducibleWithThePublishedPort(t *testing.T) {
 	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
-	first, err := Render(project)
+	first, err := Render(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Render(project)
+	second, err := Render(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}

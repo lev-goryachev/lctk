@@ -71,6 +71,14 @@ type Project struct {
 	// registration time. The manifest's contents are read on demand rather than
 	// cached, so a repository edit cannot silently persist into host state.
 	ManifestPresent bool `json:"manifest_present"`
+	// ResourceMode overrides the machine-wide background-load policy for this
+	// project. Empty means the machine policy applies.
+	//
+	// It lives in the registry rather than in the repository manifest because how
+	// much of a machine a project may use is the machine owner's decision. A
+	// repository author has no say in it, and the manifest has no field that could
+	// express one.
+	ResourceMode string `json:"resource_mode,omitempty"`
 }
 
 // DuplicateError reports which existing registration already covers a folder.
@@ -187,6 +195,22 @@ func (r *Registry) matching(c projectpath.Canonical) (project Project, sameFile 
 
 // Remove deletes a registration. Persistent project data is not touched, per the
 // remove versus purge distinction in docs/project-lifecycle.md.
+// SetResourceMode records this project's background-load override. An empty mode
+// clears it, so the project follows the machine policy again.
+//
+// The value is not validated here. The registry stores host decisions; deciding
+// which modes exist belongs to the package that defines them, and duplicating
+// that list here would give two answers to one question.
+func (r *Registry) SetResourceMode(projectID, mode string) error {
+	for i := range r.projects {
+		if r.projects[i].ID == projectID {
+			r.projects[i].ResourceMode = mode
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrNotFound, projectID)
+}
+
 func (r *Registry) Remove(reference string) (Project, error) {
 	project, err := r.Resolve(reference)
 	if err != nil {

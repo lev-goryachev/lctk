@@ -128,5 +128,12 @@ func limitsFromEnv() searchindex.Limits {
 	if value, err := strconv.Atoi(os.Getenv("LCTK_INDEX_MAX_DELTAS")); err == nil && value > 0 {
 		limits.MaxDeltaGenerations = value
 	}
+	// The parallelism cap comes from the host's background-load policy. The
+	// container cannot see that policy and would otherwise size itself to
+	// whatever the runtime lets it see, which on a CPU-limited container is the
+	// whole machine.
+	if value, err := strconv.Atoi(os.Getenv("LCTK_INDEX_PARALLELISM")); err == nil && value > 0 {
+		limits.Parallelism = value
+	}
 	return limits
 }

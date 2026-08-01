@@ -66,10 +66,80 @@ type Watch struct {
 	IdleStopSeconds int `json:"idle_stop_seconds"`
 }
 
+// Mode is the background-load policy: how much of the machine LCTK may spend on
+// work the user did not directly ask for.
+type Mode string
+
+const (
+	// ModeQuiet keeps indexing out of the way of interactive work.
+	ModeQuiet Mode = "quiet"
+	// ModeNormal is the shipped balance.
+	ModeNormal Mode = "normal"
+	// ModeFast finishes indexing as quickly as the machine allows.
+	ModeFast Mode = "fast"
+)
+
+// Valid reports whether a mode is one this build understands. The empty mode is
+// valid and means "use the layer above": machine policy for a project, the
+// shipped default for the machine.
+func (m Mode) Valid() bool {
+	switch m {
+	case "", ModeQuiet, ModeNormal, ModeFast:
+		return true
+	}
+	return false
+}
+
+// Resources is the host's background-load policy.
+type Resources struct {
+	Mode Mode `json:"mode"`
+	// MemoryLimitMB caps the memory a project container may use. Zero means no
+	// cap, which is the shipped default and a deliberate one: a memory limit does
+	// not slow an indexer down, it kills it, and the right limit depends on the
+	// project rather than on the mode. An operator who wants the guarantee can
+	// set it; nobody gets it by accident.
+	MemoryLimitMB int `json:"memory_limit_mb"`
+}
+
+// Budget is what a mode actually costs, in terms the container runtime and the
+// index service understand.
+type Budget struct {
+	// CPUs limits the project container. Zero means no limit.
+	CPUs float64
+	// IndexParallelism bounds concurrent index work inside the service. Zero
+	// leaves the engine's own default, which scales with the container's CPUs.
+	IndexParallelism int
+	// MemoryLimitMB caps container memory. Zero means no cap.
+	MemoryLimitMB int
+}
+
+// Budget resolves the policy into numbers.
+//
+// CPU is limited rather than memory because the two fail differently. A CPU
+// limit throttles: indexing takes longer and the machine stays usable. A memory
+// limit kills: the container is terminated mid-build and the index is no better
+// off than before. So the mode controls CPU, and memory is opt-in.
+func (r Resources) Budget() Budget {
+	budget := Budget{MemoryLimitMB: r.MemoryLimitMB}
+	switch r.Mode {
+	case ModeQuiet:
+		budget.CPUs = 1
+		budget.IndexParallelism = 1
+	case ModeFast:
+		// No CPU limit and no parallelism cap: the engine sizes itself to what
+		// the container is allowed to use, which here is everything.
+	default:
+		budget.CPUs = 2
+		budget.IndexParallelism = 2
+	}
+	return budget
+}
+
 // Settings is the whole document.
 type Settings struct {
-	SchemaVersion int   `json:"schema_version"`
-	Watch         Watch `json:"watch"`
+	SchemaVersion int       `json:"schema_version"`
+	Watch         Watch     `json:"watch"`
+	Resources     Resources `json:"resources"`
 }
 
 // Defaults are the shipped policy.
@@ -86,6 +156,7 @@ var Defaults = Settings{
 		MaxWatchedDirectories: 20000,
 		IdleStopSeconds:       900,
 	},
+	Resources: Resources{Mode: ModeNormal},
 }
 
 // Path returns the settings document without creating anything.
@@ -142,7 +213,33 @@ func LoadFrom(path string) (Settings, error) {
 	if document.Watch.IdleStopSeconds != 0 {
 		merged.Watch.IdleStopSeconds = document.Watch.IdleStopSeconds
 	}
+	if document.Resources.Mode != "" {
+		if !document.Resources.Mode.Valid() {
+			return Defaults, fmt.Errorf("settings %q name an unknown resource mode %q: expected quiet, normal, or fast",
+				path, document.Resources.Mode)
+		}
+		merged.Resources.Mode = document.Resources.Mode
+	}
+	if document.Resources.MemoryLimitMB != 0 {
+		if document.Resources.MemoryLimitMB < 0 {
+			return Defaults, fmt.Errorf("settings %q set a negative memory limit", path)
+		}
+		merged.Resources.MemoryLimitMB = document.Resources.MemoryLimitMB
+	}
 	return merged, nil
+}
+
+// WithProjectMode applies a project's own mode on top of the machine policy.
+//
+// Unlike the debounce proposal, this does not come from the repository. It is set
+// by the machine owner per project, because how much of their machine a project
+// may use is theirs to decide and a repository author's to have no say in.
+func (r Resources) WithProjectMode(mode Mode) Resources {
+	if mode == "" || !mode.Valid() {
+		return r
+	}
+	r.Mode = mode
+	return r
 }
 
 // Debounce is the settled window, clamped into the supported range.

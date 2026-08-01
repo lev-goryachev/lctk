@@ -167,15 +167,38 @@ Early capabilities become available while heavyweight layers continue to build. 
 
 ## Resource modes
 
-The user selects a background-load mode, for example:
+As implemented in Slice 2.3, the background-load mode decides what a project is allowed to cost:
 
-- `quiet` — minimal impact on interactive work;
-- `normal` — balanced default;
-- `fast` — finish indexing as quickly as possible.
+| Mode | Container CPU | Concurrent index work |
+|---|---|---|
+| `quiet` | 1 | 1 at a time |
+| `normal` (default) | 2 | 2 at a time |
+| `fast` | no limit | as many as the container allows |
 
-Interactive MCP calls must take priority over background indexing in `quiet` and `normal` modes.
+The mode is set machine-wide in `settings.json` and can be overridden per project with `lctk project resources --mode`. The override lives in the registry rather than in the repository manifest: how much of someone's machine a project may spend is theirs to decide, and a repository author has no say in it.
+
+Limits are applied when a container is created, so a change takes effect at the next `lctk project restart`. The command says so rather than leaving it to be discovered.
+
+**Memory is not capped by default, in any mode.** A CPU limit throttles — indexing takes longer and the machine stays usable — while a memory limit kills, and a container terminated mid-build leaves the index no better off than before. An operator who wants the guarantee sets `resources.memory_limit_mb`; nobody gets it by accident.
+
+The parallelism cap is passed into the container rather than derived inside it, because the container cannot see the host's policy and the engine would otherwise size itself to the whole machine no matter what was asked for.
 
 The embedding inference process may be a shared compute resource across projects. Project chunks, vector collections, and metadata remain separate.
+
+## Disk
+
+`lctk project resources` reports what a project costs and what room is left:
+
+```text
+  index:       10.0 MiB on disk for 1.2 MiB of source
+  free space:  626.7 GiB
+```
+
+`lctk project start` and `lctk project restart` refuse when starting would leave less than a gigabyte free, and `--yes` overrides the refusal. Failing beforehand with one sentence is better than failing partway through a build and leaving a partial generation plus two symptoms to untangle.
+
+For a project with no index yet, the expected size is estimated as a fixed cost plus a share of the source. The shape comes from the format — a shard carries metadata whose size does not depend on its content, and two generations are retained, so a project pays that twice before paying for anything else — and the numbers are anchored to one measurement: this repository, 179 files and 1.19 MiB of source, occupies 9.98 MiB of index. One small repository is not a sample, and on a large project the estimate will be high; that is the safe direction for a figure that only ever warns.
+
+Free space is measured on the volume holding the LCTK home, which is where Docker Desktop keeps its data in a default installation on both target platforms. The index itself lives in a Docker volume rather than in a directory LCTK owns, so there is nothing more direct to measure, and an operator who has relocated Docker's data directory gets a proxy rather than a measurement.
 
 ## Freshness contract
 

@@ -86,6 +86,18 @@ The machine policy lives in `settings.json` in the LCTK home, and `settings show
 
 A project may propose its own window with `index.debounce_ms` in the manifest. The host clamps it.
 
+## What a project is allowed to cost
+
+```sh
+./lctk project resources PROJECT                 # mode, limits, and disk use
+./lctk project resources --mode quiet PROJECT    # set this project's mode
+./lctk project resources --mode default PROJECT  # follow the machine again
+```
+
+Modes are `quiet`, `normal`, and `fast`; see [indexing](indexing.md#resource-modes) for what each costs. Limits are applied when a container is created, so a change takes effect at the next restart.
+
+`start` and `restart` refuse when the volume is short of space, and `--yes` overrides that.
+
 ## The code-intel service
 
 [`images/code-intel`](../images/code-intel) is a separate Go module that builds the per-project search service. It links Zoekt, whose low-level index package is Unix-specific, so it is excluded from the root module's build on purpose and never compiles into the host executable.

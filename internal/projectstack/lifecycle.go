@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -119,13 +120,40 @@ func (dockerRunner) Run(ctx context.Context, args ...string) (string, string, er
 // Manager drives project stacks.
 type Manager struct {
 	runner Runner
+	// settings resolves the machine's background-load policy. It is a function so
+	// a change takes effect on the next start without restarting the daemon, and
+	// so a test can drive a policy without writing a file.
+	settings func() (hostsettings.Settings, error)
 }
 
 // NewManager returns a manager backed by the local Docker CLI.
-func NewManager() *Manager { return &Manager{runner: dockerRunner{}} }
+func NewManager() *Manager {
+	return &Manager{runner: dockerRunner{}, settings: hostsettings.Load}
+}
 
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
-func NewManagerWithRunner(runner Runner) *Manager { return &Manager{runner: runner} }
+func NewManagerWithRunner(runner Runner) *Manager {
+	return &Manager{runner: runner, settings: hostsettings.Load}
+}
+
+// WithSettings replaces the policy source, for tests and for callers that have
+// already resolved it.
+func (m *Manager) WithSettings(settings func() (hostsettings.Settings, error)) *Manager {
+	m.settings = settings
+	return m
+}
+
+// Budget resolves what this project is allowed to cost: the machine policy, with
+// the project's own mode layered on top when it has one.
+func (m *Manager) Budget(project projectregistry.Project) hostsettings.Budget {
+	load := hostsettings.Defaults
+	if m.settings != nil {
+		if resolved, err := m.settings(); err == nil {
+			load = resolved
+		}
+	}
+	return load.Resources.WithProjectMode(hostsettings.Mode(project.ResourceMode)).Budget()
+}
 
 // RuntimeAvailable reports whether the container runtime answers and can run the
 // Linux containers LCTK needs.
@@ -192,7 +220,7 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 		return Status{}, err
 	}
 
-	composePath, err := Write(project)
+	composePath, err := Write(project, m.Budget(project))
 	if err != nil {
 		return Status{}, err
 	}
