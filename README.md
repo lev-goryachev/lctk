@@ -39,7 +39,8 @@ The index follows edits on its own. Saving a file makes it searchable without an
 Around that:
 
 - `lctk daemon` hosts the gateway, the per-project grants, and the filesystem watcher;
-- `lctk project status/stop/restart/remove/reindex/watch` and `lctk grant`, `lctk image`, `lctk settings`, `lctk doctor` for the rest of the lifecycle;
+- `lctk project status/stop/restart/remove/reindex/watch/resources` and `lctk grant`, `lctk image`, `lctk settings`, `lctk doctor` for the rest of the lifecycle;
+- `lctk admin open` for a local page with the same operations, over an API a project credential cannot reach;
 - the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
 
 Automated tests cover the CLI, the gateway and its scope guarantees, the search adapter, the watcher, and the change journal. CI builds and tests on hosted Windows and macOS runners, and the containerized search service on Linux. Container-dependent tests run against real Docker on a developer machine and skip explicitly on hosted runners rather than being simulated.

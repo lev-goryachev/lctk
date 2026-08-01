@@ -35,6 +35,7 @@ Usage:
   lctk project watch [--follow] [--json] PROJECT
   lctk project resources [--mode quiet|normal|fast|default] [--json] PROJECT
   lctk settings show [--json]
+  lctk admin open [--listen ADDRESS] [--print]
   lctk image build [--context DIR] [--json]
   lctk image status [--json]
   lctk grant show [--json] [--reveal] PROJECT
@@ -65,6 +66,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runProject(args[1:], stdout, stderr)
 	case "settings":
 		return runSettings(args[1:], stdout, stderr)
+	case "admin":
+		return runAdmin(args[1:], stdout, stderr)
 	case "image":
 		return runImage(args[1:], stdout, stderr)
 	case "grant":

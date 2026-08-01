@@ -98,6 +98,15 @@ Modes are `quiet`, `normal`, and `fast`; see [indexing](indexing.md#resource-mod
 
 `start` and `restart` refuse when the volume is short of space, and `--yes` overrides that.
 
+## The admin page
+
+```sh
+./lctk admin open            # open the local admin page, signed in once
+./lctk admin open --print    # print the link instead
+```
+
+The link carries a code that is spent the moment the page uses it, and the page clears it from the address bar. A new code is issued on every daemon start and removed when the daemon stops, so signing in again after a restart means running the command again. See [ADR-0016](adr/0016-admin-surface-and-local-session.md).
+
 ## The code-intel service
 
 [`images/code-intel`](../images/code-intel) is a separate Go module that builds the per-project search service. It links Zoekt, whose low-level index package is Unix-specific, so it is excluded from the root module's build on purpose and never compiles into the host executable.
