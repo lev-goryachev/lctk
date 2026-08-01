@@ -100,14 +100,38 @@ typed error without parsing that string.
 - **No reload is needed after a restart.** The stateless JSON endpoint from
   ADR-0012 means a project that comes back is simply reachable again.
 
+## Second client: Claude Code
+
+The harness drives one client. A protocol contract verified against a single
+implementation is weak evidence that it is the protocol, and not that
+implementation, that LCTK satisfies. The chain was therefore repeated by hand
+against a second, unrelated MCP client — Claude Code — connected to the same live
+endpoint serving this repository as a registered project.
+
+| Check | Outcome |
+|---|---|
+| Handshake | **pass.** `initialize` returned protocol `2025-06-18` and `serverInfo.name` `lctk-project-<id>`; `tools/list` returned `project_info`. |
+| Credential shape | **pass.** The client stored `Bearer ${LCTK_TOKEN_…}` — a variable reference, not a value — and resolved it at connect time. The ADR-0014 shape transferred to a client with an entirely different configuration format. |
+| Connected | **pass.** The client's own health check reported the project server as connected. |
+| Missing credential | **pass.** With the variable unset, the client refused to connect and named the missing variable: "Missing environment variables: `LCTK_TOKEN_…`". LCTK knows nothing about this client, yet the failure is self-explaining. |
+| Cross-project refusal | **pass.** A second entry pointing at another project's route while carrying this project's token failed to connect, while the correctly paired entry connected in the same check. |
+| Stopped project | **pass.** After `lctk project stop`, the client failed to connect and the wire response carried the full typed envelope: `PROJECT_STOPPED`, `retryable: false`, recommended action, `project_id`, `request_id`. |
+| Restart | **pass.** After `lctk project start`, the same entry connected again with no configuration change. |
+| **Agent tool call** | **pass.** A real agent session called `project_info` with `project_id` deliberately set to *another* registered project. The answer was the routed project, with `scope_source: route_and_registry`, `root: /workspace`, and no host path. |
+
+The last row is the result worth stating plainly. Route-bound scope was not merely
+asserted by a test harness; an actual coding agent tried to name a different
+project and the endpoint answered for the one its route was bound to.
+
 ## Limits of this evidence
 
-- **The extension user interface was not exercised.** The harness drives the
-  Codex binary directly. It is the same binary the extension runs, given the same
-  generated configuration and the same credential delivery, but no result here
-  covers the extension's own panels, indicators, or controls. ADR-0012 named this
-  as a Slice 1.4 obligation and it is **not discharged**. The manual steps below
-  close it.
+- **The Codex extension user interface was not exercised.** The harness drives
+  the Codex binary directly. It is the same binary the extension runs, given the
+  same generated configuration and the same credential delivery, and a second
+  independent client now corroborates the endpoint — but no result here covers
+  the extension's own panels, indicators, or controls. What is verified is the
+  protocol boundary, not that particular editor's presentation of it. The manual
+  steps below close the remaining gap for anyone who wants it closed.
 - **One host, one platform.** Windows amd64 only. macOS is unverified for this
   boundary, as it was for Slice 0.4.
 - **One Codex build, and it is an alpha.** A materially different Codex version
