@@ -111,15 +111,16 @@ type Response struct {
 
 // Status is the project service's own view of its index.
 type Status struct {
-	Ready          bool   `json:"ready"`
-	Indexing       bool   `json:"indexing"`
-	Generation     uint64 `json:"generation"`
-	FileCount      int    `json:"file_count"`
-	SkippedBig     int    `json:"skipped_too_large"`
-	SkippedIgnored int    `json:"skipped_ignored"`
-	DeltaDepth     int    `json:"delta_depth"`
-	IndexedAt      string `json:"indexed_at,omitempty"`
-	Reason         string `json:"reason,omitempty"`
+	Ready          bool     `json:"ready"`
+	Indexing       bool     `json:"indexing"`
+	Generation     uint64   `json:"generation"`
+	FileCount      int      `json:"file_count"`
+	SkippedBig     int      `json:"skipped_too_large"`
+	SkippedIgnored int      `json:"skipped_ignored"`
+	IgnoreSources  []string `json:"ignore_sources,omitempty"`
+	DeltaDepth     int      `json:"delta_depth"`
+	IndexedAt      string   `json:"indexed_at,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
 }
 
 // Client talks to one project's service.

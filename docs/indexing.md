@@ -136,11 +136,33 @@ Updates must support atomic commit or swap where the backend permits. After a cr
 
 ## Exclusions
 
-The project's own `.gitignore` is the primary source of exclusions, including nested ignore files, which apply to their own subtree, and negations, which re-include. This is as implemented in Slice 1.5.
+Rules come from three files, each using the familiar ignore syntax, applied in this order within every directory. A later rule beats an earlier one, so a file further down the list can both add exclusions and re-include with `!`.
 
-Enumeration comes from the filesystem rather than from Git objects, so a file that is saved but never committed is indexed. That is a statement about content, not about scope: a directory the project has told its tooling to ignore is not part of the project.
+| File | Role | Tracked |
+|---|---|---|
+| `.gitignore` | A default, not an authority | yes |
+| `.lctkignore` | The project's decision about **indexing** | yes |
+| `.lctkignore.local` | The same decision for one machine | no |
 
-LCTK adds a short default list, applied *before* the project's rules so the project can overrule any of it:
+A version-control ignore file answers "what should not be committed". That is a different question from "what should not be indexed", and the two disagree in a specific and common way: a local scratch directory is deliberately uncommitted and is exactly the sort of thing its owner wants to search. So `.gitignore` is consulted because it is usually right and always present, and `.lctkignore` has the last word because only the project knows what it wants searched:
+
+```gitignore
+# .lctkignore
+!.work/        # uncommitted, but I search it constantly
+fixtures/big/  # committed, but nothing here is worth a match
+```
+
+`.lctkignore.local` is untracked by convention and is applied last, so a personal choice does not end up in a shared file. It mirrors the manifest's local override described in [security](security.md).
+
+A project whose version-control rules say nothing useful about indexing can start from a clean slate: a first line of `!/**` in `.lctkignore` re-includes everything, and the rules after it narrow the set again.
+
+All three are honoured in nested directories, where they apply to their own subtree and not to siblings.
+
+Enumeration comes from the filesystem rather than from Git objects, so a file that is saved but never committed is indexed. That is a statement about content, not about scope: a directory the project has told LCTK to ignore is not part of the project.
+
+The index status reports which of the three files were actually found, so the rules in effect are visible rather than inferred from what went missing.
+
+LCTK adds a short default list, applied *before* all of them so the project can overrule any of it:
 
 ```text
 node_modules  .venv  venv  __pycache__  .mypy_cache  .pytest_cache

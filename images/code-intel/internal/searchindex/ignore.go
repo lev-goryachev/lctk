@@ -7,8 +7,22 @@ import (
 	"strings"
 )
 
-// ignoreFileName is the ignore file LCTK honours.
-const ignoreFileName = ".gitignore"
+// Ignore file names, in the order their rules are applied within a directory.
+// Later files win, because the last matching rule decides.
+const (
+	// GitIgnoreFile is consulted as a default, not as an authority.
+	GitIgnoreFile = ".gitignore"
+	// LctkIgnoreFile is the project's statement about indexing specifically. It
+	// overrides the version-control file, including by re-including something
+	// that file excluded.
+	LctkIgnoreFile = ".lctkignore"
+	// LctkIgnoreLocalFile is the same for one machine, and is expected to be
+	// untracked. It mirrors the manifest's local override in
+	// docs/security.md: a personal decision does not belong in a shared file.
+	LctkIgnoreLocalFile = ".lctkignore.local"
+)
+
+var ignoreFileNames = []string{GitIgnoreFile, LctkIgnoreFile, LctkIgnoreLocalFile}
 
 // Honouring ignore rules is a correctness requirement, not an optimization.
 //
@@ -22,6 +36,16 @@ const ignoreFileName = ".gitignore"
 // The rule was learned the hard way. Run against a real checkout, the first
 // implementation walked an ignored local directory holding hundreds of
 // thousands of cached files and never finished its first build.
+//
+// But a version-control ignore file answers "what should not be committed",
+// which is a different question from "what should not be indexed". A local
+// scratch directory is deliberately uncommitted and is exactly the sort of thing
+// its owner wants to search. So .gitignore is a sensible default and a poor
+// authority: .lctkignore is layered after it and can re-include anything, and
+// .lctkignore.local does the same for one machine. A project that wants to
+// disregard the version-control rules entirely starts its .lctkignore with a
+// "!/**" line, which re-includes everything before its own rules narrow it
+// again.
 
 // pattern is one parsed ignore rule.
 type pattern struct {
@@ -51,41 +75,41 @@ type ignoreSet struct {
 // rootIgnoreSet is the starting set: LCTK's defaults, then the project's own
 // root rules. Order matters, because the last match decides and the project must
 // be able to overrule a default.
-func rootIgnoreSet(root *os.Root) ignoreSet {
+func rootIgnoreSet(root *os.Root, seen *sourceSet) ignoreSet {
 	defaults := make([]pattern, 0, len(defaultIgnorePatterns))
 	for _, line := range defaultIgnorePatterns {
 		if parsed, ok := parsePattern(line, ""); ok {
 			defaults = append(defaults, parsed)
 		}
 	}
-	return ignoreSet{patterns: defaults}.withFile(root, "")
+	return ignoreSet{patterns: defaults}.withFiles(root, "", seen)
 }
 
-// withFile returns a set extended by the ignore file in a directory, if any.
+// withFiles returns a set extended by the ignore files in a directory.
 //
-// The directory is named relative to the workspace and read through the root, so
-// an ignore file cannot be picked up from outside the project.
+// Each name is read in order, so a later file's rule beats an earlier one's. The
+// directory is named relative to the workspace and read through the root, so an
+// ignore file cannot be picked up from outside the project.
 //
 // The receiver is not modified, because sibling directories must not inherit one
 // another's rules. Sharing the underlying array would do exactly that, so the
 // slice is copied.
-func (s ignoreSet) withFile(root *os.Root, relativeBase string) ignoreSet {
-	name := ignoreFileName
-	if relativeBase != "" {
-		name = path.Join(relativeBase, ignoreFileName)
-	}
-	file, err := root.Open(name)
-	if err != nil {
-		return s
-	}
-	defer file.Close()
-
+//
+// Any file names it actually found are appended to seen, so the sources in
+// effect can be reported rather than guessed at.
+func (s ignoreSet) withFiles(root *os.Root, relativeBase string, seen *sourceSet) ignoreSet {
 	var added []pattern
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		if parsed, ok := parsePattern(scanner.Text(), relativeBase); ok {
-			added = append(added, parsed)
+	for _, fileName := range ignoreFileNames {
+		name := fileName
+		if relativeBase != "" {
+			name = path.Join(relativeBase, fileName)
 		}
+		found, ok := readPatterns(root, name, relativeBase)
+		if !ok {
+			continue
+		}
+		seen.add(fileName)
+		added = append(added, found...)
 	}
 	if len(added) == 0 {
 		return s
@@ -95,6 +119,82 @@ func (s ignoreSet) withFile(root *os.Root, relativeBase string) ignoreSet {
 	combined = append(combined, s.patterns...)
 	combined = append(combined, added...)
 	return ignoreSet{patterns: combined}
+}
+
+// readPatterns parses one ignore file, reporting whether it existed. An existing
+// file with no usable rule still counts as present, because "the project has an
+// empty .lctkignore" is a meaningful statement.
+func readPatterns(root *os.Root, name, relativeBase string) ([]pattern, bool) {
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+
+	var parsed []pattern
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		if rule, ok := parsePattern(scanner.Text(), relativeBase); ok {
+			parsed = append(parsed, rule)
+		}
+	}
+	return parsed, true
+}
+
+// isIgnoreFile reports whether a project-relative path names an ignore file.
+func isIgnoreFile(relative string) bool {
+	base := path.Base(path.Clean(strings.ReplaceAll(relative, `\`, "/")))
+	for _, name := range ignoreFileNames {
+		if base == name {
+			return true
+		}
+	}
+	return false
+}
+
+// touchesIgnoreRules reports whether a batch changes any ignore file.
+func touchesIgnoreRules(changes []Change) bool {
+	for _, change := range changes {
+		if isIgnoreFile(change.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceSet records which ignore files were found, in a stable order.
+type sourceSet struct {
+	names []string
+}
+
+func (s *sourceSet) add(name string) {
+	if s == nil {
+		return
+	}
+	for _, existing := range s.names {
+		if existing == name {
+			return
+		}
+	}
+	s.names = append(s.names, name)
+}
+
+func (s *sourceSet) list() []string {
+	if s == nil || len(s.names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ignoreFileNames))
+	// Reported in declaration order rather than discovery order, so the output
+	// reads as the precedence chain it is.
+	for _, candidate := range ignoreFileNames {
+		for _, found := range s.names {
+			if found == candidate {
+				out = append(out, candidate)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ignored reports whether a workspace-relative path is excluded.

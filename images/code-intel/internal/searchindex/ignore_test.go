@@ -221,3 +221,220 @@ func TestAnUpdateCannotReadThroughASymlinkOutOfTheWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestLctkIgnoreOverridesTheVersionControlFile(t *testing.T) {
+	// The motivating case: a local scratch directory is deliberately uncommitted
+	// and is exactly what its owner wants to search. A version-control ignore
+	// file answers a different question, so it must not have the last word.
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, ".work/\n*.tmp\n")
+	f.write(t, LctkIgnoreFile, "!.work/\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, ".work/notes.go", "// Needle local notes\n")
+	f.write(t, "scratch.tmp", "Needle temporary\n")
+
+	state := f.rebuild(t)
+	found := map[string]bool{}
+	for _, path := range paths(f.search(t, Request{Pattern: "Needle"})) {
+		found[path] = true
+	}
+	if !found[".work/notes.go"] {
+		t.Error("the local directory re-included by .lctkignore was not indexed")
+	}
+	if found["scratch.tmp"] {
+		t.Error("a rule .lctkignore did not touch stopped applying")
+	}
+	if !found["app.go"] {
+		t.Error("an ordinary file was lost")
+	}
+
+	sources := state.IgnoreSources
+	if len(sources) != 2 || sources[0] != GitIgnoreFile || sources[1] != LctkIgnoreFile {
+		t.Errorf("ignore sources = %v, want the precedence chain", sources)
+	}
+}
+
+func TestLctkIgnoreCanAddExclusionsOfItsOwn(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, LctkIgnoreFile, "fixtures/\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "fixtures/huge.go", "// Needle fixture\n")
+	f.rebuild(t)
+
+	found := paths(f.search(t, Request{Pattern: "Needle"}))
+	if len(found) != 1 || found[0] != "app.go" {
+		t.Errorf("files = %v, want only app.go", found)
+	}
+}
+
+func TestTheLocalIgnoreFileHasTheFinalWord(t *testing.T) {
+	// A personal decision does not belong in a shared file, so the untracked
+	// local override is applied last and can undo the committed one.
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, "notes/\n")
+	f.write(t, LctkIgnoreFile, "notes/\n")
+	f.write(t, LctkIgnoreLocalFile, "!notes/\napp.go\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "notes/todo.go", "// Needle notes\n")
+
+	state := f.rebuild(t)
+	found := paths(f.search(t, Request{Pattern: "Needle"}))
+	if len(found) != 1 || found[0] != "notes/todo.go" {
+		t.Errorf("files = %v, want only notes/todo.go", found)
+	}
+	if len(state.IgnoreSources) != 3 {
+		t.Errorf("ignore sources = %v, want all three", state.IgnoreSources)
+	}
+}
+
+func TestAProjectCanStartFromACleanSlate(t *testing.T) {
+	// The documented escape hatch for a project whose version-control rules say
+	// nothing useful about indexing.
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, "*\n")
+	f.write(t, LctkIgnoreFile, "!/**\nsecrets/\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "generated/out.go", "// Needle generated\n")
+	f.write(t, "secrets/token.go", "// Needle secret\n")
+	f.rebuild(t)
+
+	found := map[string]bool{}
+	for _, path := range paths(f.search(t, Request{Pattern: "Needle"})) {
+		found[path] = true
+	}
+	if !found["app.go"] || !found["generated/out.go"] {
+		t.Errorf("the clean slate did not re-include everything: %v", found)
+	}
+	if found["secrets/token.go"] {
+		t.Error("a rule after the clean slate did not apply")
+	}
+}
+
+func TestNestedLctkIgnoreFilesApply(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, "generated.go\n")
+	f.write(t, "pkg/"+LctkIgnoreFile, "!generated.go\n")
+	f.write(t, "pkg/generated.go", "// Needle generated\n")
+	f.write(t, "other/generated.go", "// Needle other\n")
+	f.rebuild(t)
+
+	found := map[string]bool{}
+	for _, path := range paths(f.search(t, Request{Pattern: "Needle"})) {
+		found[path] = true
+	}
+	if !found["pkg/generated.go"] {
+		t.Error("a nested .lctkignore did not re-include a file its parent excluded")
+	}
+	if found["other/generated.go"] {
+		t.Error("the nested re-inclusion leaked into a sibling directory")
+	}
+}
+
+func TestNoIgnoreFilesMeansNoReportedSources(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, "app.go", "// Needle app\n")
+	state := f.rebuild(t)
+	if len(state.IgnoreSources) != 0 {
+		t.Errorf("ignore sources = %v, want none", state.IgnoreSources)
+	}
+}
+
+func TestEditingAnIgnoreFileRebuildsTheWholeIndex(t *testing.T) {
+	// A new rule changes what belongs in the index everywhere beneath it. A delta
+	// could only act on the batch it was handed, so an already-indexed file that
+	// the new rule excludes would linger.
+	f := newFixture(t, smallLimits)
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "fixtures/data.go", "// Needle fixture\n")
+	f.rebuild(t)
+	if got := len(paths(f.search(t, Request{Pattern: "Needle"}))); got != 2 {
+		t.Fatalf("baseline files = %d, want 2", got)
+	}
+
+	f.write(t, LctkIgnoreFile, "fixtures/\n")
+	state, err := f.Update(context.Background(), []Change{{Path: LctkIgnoreFile}})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !state.FullBuild {
+		t.Error("an ignore-file change was applied as a delta")
+	}
+
+	found := paths(f.search(t, Request{Pattern: "Needle"}))
+	if len(found) != 1 || found[0] != "app.go" {
+		t.Errorf("files = %v, want only app.go once the new rule applies", found)
+	}
+	if len(state.IgnoreSources) != 1 || state.IgnoreSources[0] != LctkIgnoreFile {
+		t.Errorf("ignore sources = %v", state.IgnoreSources)
+	}
+}
+
+func TestReconcileNoticesANewIgnoreFile(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "fixtures/data.go", "// Needle fixture\n")
+	f.rebuild(t)
+
+	// Written while nothing was watching, which is the case reconciliation exists
+	// for.
+	f.write(t, LctkIgnoreFile, "fixtures/\n")
+	state, _, err := f.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !state.FullBuild {
+		t.Error("a new ignore file did not trigger a rebuild")
+	}
+	found := paths(f.search(t, Request{Pattern: "Needle"}))
+	if len(found) != 1 || found[0] != "app.go" {
+		t.Errorf("files = %v, want only app.go", found)
+	}
+}
+
+func TestAnIgnoreFileIsNeverItselfIgnored(t *testing.T) {
+	// A rule that hides its own edits is a rule that silently stops matching what
+	// is indexed. The local override is the case that matters: projects normally
+	// add it to .gitignore, and if that hid it, a change to it would go unnoticed
+	// and reconciliation would never re-apply the rules.
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, ".lctkignore.local\n*.cfg\n")
+	f.write(t, LctkIgnoreLocalFile, "notes/\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "notes/todo.go", "// Needle notes\n")
+	f.write(t, "settings.cfg", "Needle config\n")
+
+	state := f.rebuild(t)
+	if _, present := state.Files[LctkIgnoreLocalFile]; !present {
+		t.Error("the local ignore file is missing from the inventory, so a change to it would go unnoticed")
+	}
+	if _, present := state.Files["settings.cfg"]; present {
+		t.Error("an ordinary ignored file was indexed")
+	}
+	if _, present := state.Files["notes/todo.go"]; present {
+		t.Error("the local override did not apply")
+	}
+	if len(state.IgnoreSources) != 2 {
+		t.Errorf("ignore sources = %v, want both files", state.IgnoreSources)
+	}
+}
+
+func TestAChangeToAnIgnoredIgnoreFileStillForcesARebuild(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, GitIgnoreFile, ".lctkignore.local\n")
+	f.write(t, "app.go", "// Needle app\n")
+	f.write(t, "fixtures/data.go", "// Needle fixture\n")
+	f.rebuild(t)
+
+	f.write(t, LctkIgnoreLocalFile, "fixtures/\n")
+	state, changes, err := f.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !state.FullBuild {
+		t.Errorf("a gitignored ignore file did not trigger a rebuild; changes = %+v", changes)
+	}
+	found := paths(f.search(t, Request{Pattern: "Needle"}))
+	if len(found) != 1 || found[0] != "app.go" {
+		t.Errorf("files = %v, want only app.go", found)
+	}
+}

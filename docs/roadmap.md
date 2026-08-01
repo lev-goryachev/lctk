@@ -207,7 +207,7 @@ Implemented:
 - a per-project search service running in the project's Linux container, built as a separate Go module so the engine cannot enter the portable host executable, which is what [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires rather than merely asks for;
 - a staged generation store: a build writes aside and publishes by replacing one symlink, so a live query sees a whole generation or the previous one and never a half-written index;
 - delta builds that hard-link the previous shards, with a bounded delta depth that escalates to a full rebuild, and generation pruning;
-- the project's own `.gitignore` honoured, including nested files and negations, with a short overridable default list and unconditional exclusion of version-control metadata;
+- ignore rules from `.gitignore`, then `.lctkignore`, then an untracked `.lctkignore.local`, each honoured in nested directories and each able to re-include what an earlier one excluded, with a short overridable default list and unconditional exclusion of version-control metadata;
 - literal and regular-expression search, case sensitivity, path globs, language filters, bounded previews, pagination, and limits;
 - an `exact_search` tool on the project route behind [`internal/codeintel`](../internal/codeintel), the stable adapter [ADR-0004](adr/0004-stable-aggregated-tool-api.md) requires, reporting backend, schema version, index generation, index time, and file count as provenance;
 - the service published on an ephemeral loopback port assigned by the runtime, discovered from the same inspect call that reports lifecycle state, so many projects run at once with nothing to coordinate;
@@ -229,6 +229,8 @@ Measured against this repository through a real container and the live endpoint:
 A second agent query demonstrated the property that makes filesystem enumeration a requirement rather than a preference. Asked for a regular expression, it returned 8 matches across three files. `git grep` finds only 4 across two, because the third file was saved but not yet committed. A filesystem count agrees with the index exactly.
 
 The ignore policy was not a planned item. It came from running against a real checkout: the first build walked a gitignored local directory of 278,000 cached files and never finished. A fixture would not have found it.
+
+Its second half came from the observation that a version-control ignore file answers "what should not be committed", which is not the question the indexer is asking. `.lctkignore` exists so a deliberately uncommitted local directory can still be searched, and so the project rather than Git decides what is worth indexing.
 
 This closes the [ADR-0011](adr/0011-zoekt-exact-search-backend.md) follow-up to define and test compaction thresholds before persistent search is declared complete. Its remaining follow-ups — watcher-driven scheduling, and published multi-architecture images from a release pipeline — belong to Slice 2.2 and to releasing.
 
