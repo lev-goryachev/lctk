@@ -329,7 +329,7 @@ Bulk escalation is covered by automated tests rather than measured live: this re
 
 ### Slice 2.3: Resource policies and Admin UI baseline
 
-**Status:** resource policies complete; the Admin UI baseline is the remaining half.
+**Status:** complete.
 
 Implemented:
 
@@ -343,13 +343,15 @@ Verified live against this repository, by inspecting the running container rathe
 
 The disk estimate was wrong before it was measured. A guessed ratio of 2× would have predicted 2.4 MiB against an actual 10 MiB, because a shard carries fixed metadata that dominates on a small project and two generations are retained. The model now has that shape, and the roadmap records that it is anchored to one repository and is a guess about large ones.
 
-Remaining:
+The admin surface, decided in [ADR-0016](adr/0016-admin-surface-and-local-session.md), closes the [security](security.md) open question about how a local admin session is bootstrapped:
 
-- add, start, stop, status, and index progress;
-- logs/doctor;
-- client grants.
+- an Admin API at `/admin` on the daemon's loopback listener, with two independent credential systems rather than one with a capability flag — no admin handler reads a project grant, and no project route reads an admin session;
+- a session established by an exchange code that is spent on first use, delivered by `lctk admin open` in a one-time link and cleared from the address bar by the page, reissued on every daemon start and removed when the daemon stops;
+- three independent defences against a browser being turned against the daemon, all required: a `SameSite=Strict` `HttpOnly` cookie, a `Host` header that must name loopback, and a CSRF token on every state-changing request;
+- one embedded HTML page, no build step and no remote asset, served with `default-src 'none'`, inserting every API value as text because a project name is a folder name and a folder can be named anything;
+- projects with state, index, and change record; start, stop, restart, and reindex; the resource mode; client grants and revocation; the container-runtime diagnostic; and the daemon's recent log, kept in a bounded ring in memory.
 
-These are the Admin UI baseline: a minimal local web surface over an Admin API separate from the project `code` endpoint, whose session bootstrap [security](security.md) still records as an open question.
+Verified live against a real daemon: an unauthenticated request refused with 401, sign-in with the code accepted, **the same code refused on replay**, a project grant refused on the admin surface, a state-changing request refused without the CSRF header and accepted with it, grants listed with no token anywhere in the payload, and lifecycle actions reaching the runtime. The page itself was opened in a real browser against the live daemon and rendered the project, its 187 indexed files, its up-to-date change record, the grant list including a revoked entry, and the daemon log.
 
 ## Stage 3 — Safe coding operations
 

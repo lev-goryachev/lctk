@@ -19,6 +19,7 @@ The current implementation is deliberately narrower than the target architecture
 - the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
 - persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter;
 - the host change journal from Slice 2.1: a native filesystem watcher per running project, normalized project-relative events, a configurable debounce, a persistent per-project journal that is either complete since its checkpoint or explicitly incomplete, and freshness reported through `project_info`;
+- resource policy and the admin surface from Slice 2.3: background-load modes that change what a project costs, disk reporting with a refusal to start on a nearly full volume, and a local admin page over an API a project credential cannot reach;
 - incremental indexing from Slice 2.2: a settled batch applied to the index automatically, a gap reconciled instead of applied, a removed directory retracting everything beneath it, bulk changes rebuilt rather than applied, and a search that flushes pending changes before answering so an edit made a moment ago is already searchable.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
@@ -175,6 +176,8 @@ The minimal local web UI must support:
 - client grants and revocation.
 
 The Admin API is not exposed through the regular project `code` endpoint.
+
+As implemented in Slice 2.3, it is served at `/admin` on the daemon's loopback listener: one embedded HTML page with no build step and no remote asset, over a JSON API that lists projects with their state, index, and change record; starts, stops, restarts, and reindexes them; sets a project's resource mode; lists and revokes client grants; and shows the container-runtime diagnostic and the daemon's recent log. Grant tokens are never served to it. The session is decided in [ADR-0016](adr/0016-admin-surface-and-local-session.md).
 
 ## Runtime modes
 

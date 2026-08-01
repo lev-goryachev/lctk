@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/adminapi"
+	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/gateway"
+	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
@@ -36,6 +41,13 @@ func NewHandler() http.Handler {
 // status probe instead of requiring a container runtime.
 func NewHandlerWithGateway(options gateway.Options) http.Handler {
 	mux := http.NewServeMux()
+	registerCore(mux)
+	gateway.New(options).Register(mux)
+	return mux
+}
+
+// registerCore attaches the endpoints every daemon has, whatever else it serves.
+func registerCore(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(Health{
@@ -44,8 +56,6 @@ func NewHandlerWithGateway(options gateway.Options) http.Handler {
 		})
 	})
 	mux.Handle("/mcp", mcpserver.NewHTTPHandler())
-	gateway.New(options).Register(mux)
-	return mux
 }
 
 // changeReporter adapts the watch supervisor to the gateway's vocabulary, so the
@@ -76,19 +86,41 @@ func Run(ctx context.Context, address string) error {
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
 
+	// Recent log records are kept in memory so the admin surface can show what
+	// just happened without an operator having to find a file.
+	history := logring.New(slog.NewTextHandler(os.Stderr, nil), logring.DefaultCapacity)
+	logger := slog.New(history)
+	slog.SetDefault(logger)
+
 	// The watcher lives in the daemon rather than in the CLI because it must
 	// outlive any one command, and on the host rather than in the container
 	// because that is where the native events are reliable.
-	supervisor := watchsupervisor.New(watchsupervisor.Options{})
+	supervisor := watchsupervisor.New(watchsupervisor.Options{Logger: logger})
 	go supervisor.Run(ctx)
 
+	sessions, err := adminsession.New(adminsession.Options{})
+	if err != nil {
+		return fmt.Errorf("prepare the admin session: %w", err)
+	}
+	defer sessions.Close()
+
+	mux := http.NewServeMux()
+	registerCore(mux)
+	gateway.New(gateway.Options{
+		RequireRunning: true,
+		Logger:         logger,
+		Wake:           supervisor.Wake,
+		Changes:        changeReporter(supervisor),
+		Flush:          supervisor.Flush,
+	}).Register(mux)
+	adminapi.New(adminapi.Options{
+		Sessions: sessions,
+		Watch:    supervisor.View,
+		Logs:     history.Records,
+	}).Register(mux)
+
 	server := &http.Server{
-		Handler: NewHandlerWithGateway(gateway.Options{
-			RequireRunning: true,
-			Wake:           supervisor.Wake,
-			Changes:        changeReporter(supervisor),
-			Flush:          supervisor.Flush,
-		}),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)
