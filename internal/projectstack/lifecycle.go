@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +56,13 @@ var (
 	ErrImageMissing = errors.New("reusable code-intel image is not available")
 )
 
+// serviceHost is where a published project port is reachable. It is loopback
+// only: a project service must not be exposed to the network.
+const serviceHost = "127.0.0.1"
+
+// servicePortKey is how the runtime names the container port in its port map.
+var servicePortKey = strconv.Itoa(ServicePort) + "/tcp"
+
 // Status is the runtime view of one project stack.
 type Status struct {
 	ProjectID string `json:"project_id"`
@@ -63,8 +72,24 @@ type Status struct {
 	Image     string `json:"image"`
 	Network   string `json:"network"`
 	Volume    string `json:"volume"`
+	// ServiceAddress is the loopback host address the project's code-intel
+	// service is published on, empty when the project is not running. The port is
+	// assigned by the runtime rather than chosen by LCTK, so it changes across a
+	// restart and must be read rather than remembered.
+	ServiceAddress string `json:"service_address,omitempty"`
 	// Detail explains an error or transitional state in one line.
 	Detail string `json:"detail,omitempty"`
+}
+
+// parseInspect splits the delimited inspect output, tolerating the older
+// whitespace-separated form so a container started by a previous build is still
+// readable rather than reported as unparseable.
+func parseInspect(stdout string) []string {
+	trimmed := strings.TrimSpace(stdout)
+	if strings.Contains(trimmed, "|") {
+		return strings.Split(trimmed, "|")
+	}
+	return strings.Fields(trimmed)
 }
 
 // Runner executes container-runtime commands. It is an interface so the lifecycle
@@ -254,9 +279,13 @@ func (m *Manager) inspect(ctx context.Context, names Names) (Status, error) {
 		Container: names.ContainerName,
 	}
 
-	// The template prints an empty health string for a container without a
-	// healthcheck, which is why health alone cannot decide the state.
-	const format = "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}"
+	// One inspect answers three questions, so a search does not cost an extra
+	// runtime call to find the service. Fields are separated explicitly rather
+	// than by whitespace because health and the published port are both allowed
+	// to be empty, and positional parsing would silently shift.
+	format := "{{.State.Status}}|" +
+		"{{if .State.Health}}{{.State.Health.Status}}{{end}}|" +
+		`{{with index .NetworkSettings.Ports "` + servicePortKey + `"}}{{(index . 0).HostPort}}{{end}}`
 	stdout, stderr, err := m.runner.Run(ctx, "inspect", names.ContainerName, "--format", format)
 	if err != nil {
 		if isNoSuchContainer(stdout, stderr) {
@@ -269,13 +298,16 @@ func (m *Manager) inspect(ctx context.Context, names Names) (Status, error) {
 		return status, fmt.Errorf("inspect %s: %s", names.ContainerName, status.Detail)
 	}
 
-	fields := strings.Fields(strings.TrimSpace(stdout))
+	fields := parseInspect(stdout)
 	containerState := ""
 	if len(fields) > 0 {
 		containerState = fields[0]
 	}
 	if len(fields) > 1 {
 		status.Health = fields[1]
+	}
+	if len(fields) > 2 && fields[2] != "" {
+		status.ServiceAddress = net.JoinHostPort(serviceHost, fields[2])
 	}
 
 	switch containerState {

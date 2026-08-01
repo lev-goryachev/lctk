@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -38,6 +39,7 @@ type composeService struct {
 	Restart       string             `yaml:"restart"`
 	Environment   []string           `yaml:"environment"`
 	Volumes       []composeMount     `yaml:"volumes"`
+	Ports         []string           `yaml:"ports"`
 	Networks      []string           `yaml:"networks"`
 	Healthcheck   composeHealthcheck `yaml:"healthcheck"`
 	Labels        []string           `yaml:"labels"`
@@ -127,6 +129,12 @@ func Render(project projectregistry.Project) ([]byte, error) {
 						Target: StateMount,
 					},
 				},
+				// The published port has no number on the host side, so the
+				// runtime assigns a free one and two projects can never collide.
+				// It is bound to loopback: the project service is reachable from
+				// this machine's daemon and from nowhere else. Short syntax is
+				// unambiguous here because a port specification contains no paths.
+				Ports:    []string{"127.0.0.1::" + strconv.Itoa(ServicePort)},
 				Networks: []string{"project"},
 				Healthcheck: composeHealthcheck{
 					Test:        []string{"CMD", "test", "-f", StateMount + "/ready"},

@@ -46,8 +46,7 @@ else
     printf 'missing\n' >"$STATE_DIR/workspace_mode"
 fi
 
-touch "$STATE_DIR/ready"
-
-# Stay alive so the stack has a long-running service to report health for, and so
-# a stop is a real container stop rather than an exit.
-exec tail -f /dev/null
+# Readiness is written by the service once its listener is accepting, not here.
+# That keeps the health status a statement about the service being reachable
+# rather than about this script having run.
+exec /usr/local/bin/lctk-code-intel

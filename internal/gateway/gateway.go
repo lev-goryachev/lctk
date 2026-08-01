@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/codeintel"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -41,6 +42,10 @@ type Options struct {
 	// RequireRunning gates tool calls on the project's stack being healthy. It is
 	// disabled in tests that exercise routing and scope without containers.
 	RequireRunning bool
+	// NewSearchClient builds the adapter to a project's code-intelligence
+	// service. It is injectable so search behavior can be tested against a
+	// stand-in service without a container.
+	NewSearchClient func(address string) *codeintel.Client
 }
 
 // Gateway serves /projects/{project_id}/mcp.
@@ -98,11 +103,58 @@ type projectInfoOutput struct {
 	State       string `json:"state"`
 	Health      string `json:"health,omitempty"`
 	Retryable   bool   `json:"retryable"`
-	// Capabilities is empty in Slice 1.3: the project runtime carries no search or
-	// language tooling yet, and saying so beats implying otherwise.
+	// Capabilities names the tools this project can actually serve right now, so
+	// a caller does not have to discover by failure that search is unavailable.
 	Capabilities []string `json:"capabilities"`
 	ServerTime   string   `json:"server_time"`
 	Version      string   `json:"version"`
+	// Index describes the project's search index when there is one.
+	Index *indexInfo `json:"index,omitempty"`
+}
+
+// indexInfo is the freshness ADR-0004 requires a project answer to carry.
+type indexInfo struct {
+	Ready      bool   `json:"ready"`
+	Indexing   bool   `json:"indexing"`
+	Generation uint64 `json:"generation"`
+	FileCount  int    `json:"file_count"`
+	IndexedAt  string `json:"indexed_at,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// exactSearchInput is the public request schema for exact_search.
+//
+// The scope-like fields are declared and documented as ignored for the same
+// reason project_info declares them: a model will supply them, and an explicit
+// "this is ignored" is a better contract than silence.
+type exactSearchInput struct {
+	Pattern string `json:"pattern" jsonschema:"The text or regular expression to find. Required."`
+	Mode    string `json:"mode,omitempty" jsonschema:"literal (default) or regex."`
+
+	CaseSensitive bool     `json:"case_sensitive,omitempty" jsonschema:"Match case exactly. Defaults to false."`
+	PathGlobs     []string `json:"path_globs,omitempty" jsonschema:"Project-relative globs such as **/*.go. An absolute or escaping glob is refused."`
+	Languages     []string `json:"languages,omitempty" jsonschema:"Restrict to languages such as Go or TypeScript."`
+	Limit         int      `json:"limit,omitempty" jsonschema:"Maximum matches per page. Defaults to 50, maximum 500."`
+	Cursor        string   `json:"cursor,omitempty" jsonschema:"Continue from a previous response's next_cursor. A cursor is only valid for the index generation that produced it."`
+
+	ProjectID      string `json:"project_id,omitempty" jsonschema:"Ignored. The authoritative project comes from the endpoint."`
+	RepositoryRoot string `json:"repository_root,omitempty" jsonschema:"Ignored. The authoritative root comes from the registry."`
+	Path           string `json:"path,omitempty" jsonschema:"Ignored. Use path_globs to filter within the project."`
+}
+
+// exactSearchOutput is the public response schema.
+type exactSearchOutput struct {
+	ProjectID string            `json:"project_id"`
+	Matches   []codeintel.Match `json:"matches"`
+	Total     int               `json:"total"`
+	Truncated bool              `json:"truncated"`
+	// NextCursor is present only when more results exist.
+	NextCursor string `json:"next_cursor,omitempty"`
+	// ScopeSource states where the searched project came from, so a caller can
+	// verify that its own arguments did not influence it.
+	ScopeSource string               `json:"scope_source"`
+	Root        string               `json:"root"`
+	Provenance  codeintel.Provenance `json:"provenance"`
 }
 
 // serveContext is everything resolved for one authenticated request.
@@ -279,8 +331,8 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 		Description: "Return the project this endpoint is bound to. " +
 			"The scope comes from the endpoint and the server-side registry; " +
 			"arguments naming a project or path are ignored.",
-	}, func(context.Context, *mcp.CallToolRequest, projectInfoInput) (*mcp.CallToolResult, projectInfoOutput, error) {
-		return nil, projectInfoOutput{
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ projectInfoInput) (*mcp.CallToolResult, projectInfoOutput, error) {
+		output := projectInfoOutput{
 			ProjectID:    resolved.project.ID,
 			Name:         resolved.project.Name,
 			Profile:      string(resolved.project.Profile),
@@ -289,13 +341,113 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			State:        string(resolved.status.State),
 			Health:       resolved.status.Health,
 			Retryable:    resolved.status.State.Retryable(),
-			Capabilities: []string{},
+			Capabilities: []string{"project_info"},
 			ServerTime:   g.options.Now().UTC().Format(time.RFC3339),
 			Version:      buildinfo.Version,
+		}
+		if resolved.status.ServiceAddress != "" {
+			output.Capabilities = append(output.Capabilities, "exact_search")
+			// The index status is reported best-effort. A project that is up but
+			// whose service is still starting should still answer project_info.
+			if status, err := g.searchClient(resolved).Status(ctx); err == nil {
+				output.Index = &indexInfo{
+					Ready:      status.Ready,
+					Indexing:   status.Indexing,
+					Generation: status.Generation,
+					FileCount:  status.FileCount,
+					IndexedAt:  status.IndexedAt,
+					Reason:     status.Reason,
+				}
+			}
+		}
+		return nil, output, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "exact_search",
+		Description: "Search this project's saved working tree for an exact literal or regular expression. " +
+			"Results are indexed and include files that are saved but not committed. " +
+			"Paths are project-relative; the scope comes from the endpoint, and arguments naming " +
+			"a project or an absolute path are ignored or refused.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input exactSearchInput) (*mcp.CallToolResult, exactSearchOutput, error) {
+		if resolved.status.ServiceAddress == "" {
+			return nil, exactSearchOutput{}, &searchToolError{
+				code:    codeintel.CodeSearchUnsupported,
+				message: "This project does not expose a code-intelligence service.",
+				action:  "Restart it with lctk project restart so it is recreated with the current stack definition.",
+			}
+		}
+
+		response, err := g.searchClient(resolved).Search(ctx, codeintel.Request{
+			Pattern:       input.Pattern,
+			Mode:          input.Mode,
+			CaseSensitive: input.CaseSensitive,
+			PathGlobs:     input.PathGlobs,
+			Languages:     input.Languages,
+			Limit:         input.Limit,
+			Cursor:        input.Cursor,
+		})
+		if err != nil {
+			return nil, exactSearchOutput{}, asSearchToolError(err)
+		}
+
+		return nil, exactSearchOutput{
+			ProjectID:   resolved.project.ID,
+			Matches:     response.Matches,
+			Total:       response.Total,
+			Truncated:   response.Truncated,
+			NextCursor:  response.NextCursor,
+			ScopeSource: "route_and_registry",
+			Root:        projectstack.WorkspaceMount,
+			Provenance:  response.Provenance,
 		}, nil
 	})
 
 	return server
+}
+
+// searchClient builds a client for the resolved project's published service.
+func (g *Gateway) searchClient(resolved serveContext) *codeintel.Client {
+	if g.options.NewSearchClient != nil {
+		return g.options.NewSearchClient(resolved.status.ServiceAddress)
+	}
+	return codeintel.New(resolved.status.ServiceAddress)
+}
+
+// searchToolError carries a typed failure out through a tool result.
+//
+// A tool error reaches the model as text, so the text has to contain everything
+// the model needs: what happened, whether waiting helps, and what to do. The
+// alternative, an opaque "tool failed", makes an agent guess.
+type searchToolError struct {
+	code      string
+	message   string
+	action    string
+	retryable bool
+}
+
+func (e *searchToolError) Error() string {
+	parts := []string{e.code + ": " + e.message}
+	if e.retryable {
+		parts = append(parts, "This is retryable.")
+	}
+	if e.action != "" {
+		parts = append(parts, e.action)
+	}
+	return strings.Join(parts, " ")
+}
+
+func asSearchToolError(err error) error {
+	var typed *codeintel.Error
+	if !errors.As(err, &typed) {
+		return &searchToolError{code: codeintel.CodeInternalError, message: err.Error()}
+	}
+	return &searchToolError{
+		code:      typed.Code,
+		message:   typed.Message,
+		action:    typed.Action,
+		retryable: typed.Retryable,
+	}
 }
 
 // bearerToken extracts the credential from an Authorization header, tolerating

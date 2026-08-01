@@ -136,16 +136,33 @@ Updates must support atomic commit or swap where the backend permits. After a cr
 
 ## Exclusions
 
-At minimum, the following paths are excluded by default:
+The project's own `.gitignore` is the primary source of exclusions, including nested ignore files, which apply to their own subtree, and negations, which re-include. This is as implemented in Slice 1.5.
+
+Enumeration comes from the filesystem rather than from Git objects, so a file that is saved but never committed is indexed. That is a statement about content, not about scope: a directory the project has told its tooling to ignore is not part of the project.
+
+LCTK adds a short default list, applied *before* the project's rules so the project can overrule any of it:
 
 ```text
-.git
-node_modules
-dist
-build
-coverage
-.venv
-vendor
+node_modules  .venv  venv  __pycache__  .mypy_cache  .pytest_cache
+.tox  .gradle  .turbo  .next  .nuxt  .parcel-cache
 ```
 
+The list is deliberately short. Names like `dist`, `build`, `target`, and `vendor` are derived output in some projects and real source in others; excluding them by default would lose code silently, and a project that treats them as output has already said so in its ignore file.
+
+Version-control metadata — `.git`, `.hg`, `.svn` — is excluded unconditionally and cannot be re-included.
+
+Symbolic links are skipped rather than followed. Following one is the ordinary way out of a read-only mount, and the mount is the boundary the project service is trusted to stay inside.
+
+The number of entries excluded by ignore rules and by the file-size limit is reported in the index status, so the effect of an exclusion is visible rather than silent.
+
 The manifest may add project-specific exclusions. Generated and dependency paths generally must not reset the idle timer or create an indexing storm, but the precise relationship among watcher exclusions, test artifacts, and explicitly included generated code requires a separate policy.
+
+## Persistent exact index
+
+As implemented in Slice 1.5, the exact-search index is a directory of published generations inside the project volume, with a `current` link naming the live one.
+
+A build never writes into the published generation. It stages a new directory, hard-links the previous shards where a delta build needs them, writes its state, and then replaces one symlink. A concurrent search therefore reads either the whole previous generation or the whole new one, and a crash mid-build leaves the previous generation intact rather than a half-written index.
+
+Delta depth is bounded. The engine resolves a query across every shard in the generation, so an unbounded pile of deltas would slow every future search, not only the next update. Past the threshold the next update is escalated to a full rebuild. The shipped policy is 32 delta generations, 2 retained generations, and a 1 MiB per-file limit; a project may raise the file limit and the delta threshold through the environment.
+
+A published generation written by a different schema version is treated as corrupt rather than read, because the shard format belongs to the engine and LCTK does not attempt to migrate it. A corrupt index is reported as a typed error, never as an empty result: answering "no matches" would look like a correct answer about the project.

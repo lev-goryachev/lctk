@@ -15,9 +15,13 @@ The current implementation is deliberately narrower than the target architecture
 - a read-only Moby API diagnostic for Docker Desktop availability;
 - the local project registry from Slice 1.1: canonical host paths, stable project identities, `lctk project add/status/remove`, and manifest parsing, none of which start a service;
 - the per-project container stack from Slice 1.2: deterministic Compose generation, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, `lctk project start/stop/restart`, and typed lifecycle state with health;
-- the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs.
+- the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs;
+- the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
+- persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter.
 
-There is no persistent search index or durable change journal yet, and a running stack carries no code-intelligence capability: the image exists to prove the runtime boundary, and backends arrive in later slices. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
+There is no durable change journal yet, so the index catches up on start and on an explicit `lctk project reindex` rather than following edits as they happen; the watcher arrives in Slice 2.1. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
+
+The search engine runs only inside the project container. It is built as a separate Go module, which keeps it out of the portable host executable by construction rather than by convention, as [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires. The host reaches it on a loopback port the container runtime assigns, so no port allocation is coordinated and no project service is reachable from the network.
 
 ## Principles
 
