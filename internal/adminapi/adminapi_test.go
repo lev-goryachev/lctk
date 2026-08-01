@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -59,6 +58,14 @@ type fixture struct {
 	grants   *projectgrant.Set
 	csrf     string
 	client   *http.Client
+	// session is the cookie the server issued, replayed by hand.
+	//
+	// Go's cookiejar implements RFC 6265 literally and will not return a Secure
+	// cookie over http, while browsers exempt loopback as a potentially
+	// trustworthy origin. The cookie is Secure on purpose, and a real browser was
+	// verified to send it back, so the jar is the wrong tool here rather than the
+	// cookie being wrong.
+	session *http.Cookie
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -141,6 +148,9 @@ func (f *fixture) do(t *testing.T, method, path string, body string) (*http.Resp
 	if err != nil {
 		t.Fatal(err)
 	}
+	if f.session != nil {
+		request.AddCookie(f.session)
+	}
 	if f.csrf != "" && method != http.MethodGet {
 		request.Header.Set(adminsession.HeaderCSRF, f.csrf)
 	}
@@ -160,18 +170,18 @@ func (f *fixture) do(t *testing.T, method, path string, body string) (*http.Resp
 // signIn exchanges the code and keeps the cookie, the way a browser would.
 func (f *fixture) signIn(t *testing.T) {
 	t.Helper()
-	// A real cookie jar, so the test exercises what a browser would actually
-	// send back rather than a hand-built header.
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.client.Jar = jar
-
 	code := f.sessions.Code()
 	response, body := f.do(t, http.MethodPost, "/admin/session", `{"code":"`+code+`"}`)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("sign in returned %d: %v", response.StatusCode, body)
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == adminsession.CookieName {
+			f.session = cookie
+		}
+	}
+	if f.session == nil {
+		t.Fatal("sign in issued no session cookie")
 	}
 	csrf, _ := body["csrf"].(string)
 	if csrf == "" {
