@@ -51,23 +51,30 @@ type ignoreSet struct {
 // rootIgnoreSet is the starting set: LCTK's defaults, then the project's own
 // root rules. Order matters, because the last match decides and the project must
 // be able to overrule a default.
-func rootIgnoreSet(workspace string) ignoreSet {
+func rootIgnoreSet(root *os.Root) ignoreSet {
 	defaults := make([]pattern, 0, len(defaultIgnorePatterns))
 	for _, line := range defaultIgnorePatterns {
 		if parsed, ok := parsePattern(line, ""); ok {
 			defaults = append(defaults, parsed)
 		}
 	}
-	return ignoreSet{patterns: defaults}.withFile(workspace, "")
+	return ignoreSet{patterns: defaults}.withFile(root, "")
 }
 
 // withFile returns a set extended by the ignore file in a directory, if any.
 //
+// The directory is named relative to the workspace and read through the root, so
+// an ignore file cannot be picked up from outside the project.
+//
 // The receiver is not modified, because sibling directories must not inherit one
 // another's rules. Sharing the underlying array would do exactly that, so the
 // slice is copied.
-func (s ignoreSet) withFile(directory, relativeBase string) ignoreSet {
-	file, err := os.Open(path.Join(directory, ignoreFileName))
+func (s ignoreSet) withFile(root *os.Root, relativeBase string) ignoreSet {
+	name := ignoreFileName
+	if relativeBase != "" {
+		name = path.Join(relativeBase, ignoreFileName)
+	}
+	file, err := root.Open(name)
 	if err != nil {
 		return s
 	}

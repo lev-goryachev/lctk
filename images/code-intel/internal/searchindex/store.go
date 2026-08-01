@@ -210,6 +210,12 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		return s.Rebuild(ctx)
 	}
 
+	root, err := s.openWorkspace()
+	if err != nil {
+		return State{}, err
+	}
+	defer root.Close()
+
 	files := make(map[string]string, len(state.Files))
 	for name, digest := range state.Files {
 		files[name] = digest
@@ -235,20 +241,22 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		}
 		// A targeted update must agree with what a full build would do, or an
 		// ignored file added here would vanish again at the next rebuild.
-		if !s.eligible(name) {
+		if !s.eligible(root, name) {
 			delete(files, name)
 			continue
 		}
-		digest, size, err := s.digestFile(name)
+		digest, size, err := digestFile(root, name, s.Limits.MaxFileBytes)
 		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			// A change that names a file which is now gone is a delete. The
-			// watcher cannot promise otherwise, and treating it as an error would
-			// make a normal race fatal.
+		case err != nil:
+			// The file is not a regular file inside the project right now. That
+			// covers three cases which all have the same correct outcome: it was
+			// deleted between the change being reported and this read, it is a
+			// symbolic link, or the root refused because the path leaves the
+			// mount. None of them belongs in the index, and none should abort a
+			// batch: a watcher cannot promise a file still exists, and one
+			// hostile entry must not stop the other changes from being applied.
 			delete(files, name)
 			continue
-		case err != nil:
-			return State{}, internal("read "+name, err)
 		case size > s.Limits.MaxFileBytes:
 			delete(files, name)
 			continue
@@ -356,6 +364,12 @@ func (s *Store) build(ctx context.Context, plan buildPlan) (State, error) {
 		}
 	}
 
+	workspace, err := s.openWorkspace()
+	if err != nil {
+		return State{}, err
+	}
+	defer workspace.Close()
+
 	builder, err := index.NewBuilder(s.options(staging, !plan.full))
 	if err != nil {
 		return State{}, internal("create the index builder", err)
@@ -367,7 +381,7 @@ func (s *Store) build(ctx context.Context, plan buildPlan) (State, error) {
 		if err := ctx.Err(); err != nil {
 			return State{}, err
 		}
-		content, err := os.ReadFile(filepath.Join(s.Workspace, filepath.FromSlash(name)))
+		content, err := readWithin(workspace, name)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

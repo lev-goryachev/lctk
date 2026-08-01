@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 )
 
@@ -52,29 +51,30 @@ type inventoryResult struct {
 // convenience: a file the user has saved but not committed, or not even added,
 // is exactly the file an agent is most likely to be asking about.
 func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
+	root, err := s.openWorkspace()
+	if err != nil {
+		return inventoryResult{}, err
+	}
+	defer root.Close()
+
 	result := inventoryResult{files: map[string]string{}}
 
 	// Ignore rules are collected per directory as the walk descends, because a
 	// nested ignore file adds rules for its own subtree only.
-	rules := map[string]ignoreSet{"": rootIgnoreSet(s.Workspace)}
+	rules := map[string]ignoreSet{"": rootIgnoreSet(root)}
 
-	err := filepath.WalkDir(s.Workspace, func(name string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if name == s.Workspace {
+		if name == "." {
 			return nil
 		}
 
-		relative, err := filepath.Rel(s.Workspace, name)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		parent := path.Dir(relative)
+		parent := path.Dir(name)
 		if parent == "." {
 			parent = ""
 		}
@@ -82,23 +82,23 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 
 		if entry.IsDir() {
 			if _, excluded := excludedDirectories[entry.Name()]; excluded {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
-			if inherited.ignored(relative, true) {
+			if inherited.ignored(name, true) {
 				result.skippedIgnored++
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
-			rules[relative] = inherited.withFile(name, relative)
+			rules[name] = inherited.withFile(root, name)
 			return nil
 		}
 
-		// Only regular files. A symlink is skipped rather than followed, because
-		// following one is the classic way out of a mount, and the read-only
-		// workspace is the boundary this service is trusted to stay inside.
+		// Only regular files. A symlink is skipped rather than followed: the
+		// read-only workspace is the boundary this service is trusted to stay
+		// inside, and a link is the ordinary way out of one.
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		if inherited.ignored(relative, false) {
+		if inherited.ignored(name, false) {
 			result.skippedIgnored++
 			return nil
 		}
@@ -112,11 +112,11 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 			return nil
 		}
 
-		content, err := os.ReadFile(name)
+		content, err := readWithin(root, name)
 		if err != nil {
 			return err
 		}
-		result.files[relative] = digestOf(content)
+		result.files[name] = digestOf(content)
 		return nil
 	})
 	if err != nil {
@@ -134,9 +134,9 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 // A targeted update has to agree with a full build, or a change to an ignored
 // file would add it to the index and the next rebuild would silently drop it
 // again.
-func (s *Store) eligible(relative string) bool {
+func (s *Store) eligible(root *os.Root, relative string) bool {
 	segments := strings.Split(relative, "/")
-	rules := rootIgnoreSet(s.Workspace)
+	rules := rootIgnoreSet(root)
 	prefix := ""
 
 	for depth, segment := range segments {
@@ -153,26 +153,25 @@ func (s *Store) eligible(relative string) bool {
 			return false
 		}
 		if isDir {
-			rules = rules.withFile(filepath.Join(s.Workspace, filepath.FromSlash(prefix)), prefix)
+			rules = rules.withFile(root, prefix)
 		}
 	}
 	return true
 }
 
 // digestFile returns the digest and size of one workspace-relative file.
-func (s *Store) digestFile(relative string) (string, int64, error) {
-	absolute := filepath.Join(s.Workspace, filepath.FromSlash(relative))
-	info, err := os.Lstat(absolute)
+func digestFile(root *os.Root, relative string, maxBytes int64) (string, int64, error) {
+	info, err := statWithin(root, relative)
 	if err != nil {
 		return "", 0, err
 	}
 	if !info.Mode().IsRegular() {
 		return "", 0, fs.ErrNotExist
 	}
-	if info.Size() > s.Limits.MaxFileBytes {
+	if info.Size() > maxBytes {
 		return "", info.Size(), nil
 	}
-	content, err := os.ReadFile(absolute)
+	content, err := readWithin(root, relative)
 	if err != nil {
 		return "", 0, err
 	}
@@ -196,17 +195,17 @@ func normalizeRelative(name string) (string, error) {
 		return "", fmt.Errorf("the path is empty")
 	}
 	// Windows-style separators and drive letters are rejected before cleaning:
-	// on Linux, filepath.Clean would treat "C:\x" as one ordinary file name.
-	if strings.ContainsAny(trimmed, "\\") || looksAbsoluteWindows(trimmed) {
+	// on Linux, path.Clean would treat "C:\x" as one ordinary file name.
+	if strings.ContainsAny(trimmed, `\`) || looksAbsoluteWindows(trimmed) {
 		return "", fmt.Errorf("the path must be project-relative and use forward slashes: %q", name)
 	}
-	cleaned := path.Clean(filepath.ToSlash(trimmed))
+	cleaned := path.Clean(trimmed)
 	switch {
 	case path.IsAbs(cleaned):
 		return "", fmt.Errorf("the path must be project-relative, not absolute: %q", name)
 	case cleaned == "." || cleaned == "..":
 		return "", fmt.Errorf("the path must name a file: %q", name)
-	case cleaned == ".." || strings.HasPrefix(cleaned, "../"):
+	case strings.HasPrefix(cleaned, "../"):
 		return "", fmt.Errorf("the path must stay inside the project: %q", name)
 	}
 	return cleaned, nil

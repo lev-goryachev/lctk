@@ -2,6 +2,8 @@ package searchindex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -186,6 +188,36 @@ func TestCommentsAndBlankLinesAreNotRules(t *testing.T) {
 	for _, line := range []string{"", "   ", "\t", "# a comment", "#"} {
 		if _, ok := parsePattern(line, ""); ok {
 			t.Errorf("%q was parsed as a rule", line)
+		}
+	}
+}
+
+func TestAnUpdateCannotReadThroughASymlinkOutOfTheWorkspace(t *testing.T) {
+	f := newFixture(t, smallLimits)
+	f.write(t, "inside.go", "// Needle inside\n")
+	f.rebuild(t)
+
+	outsideDir := filepath.Join(filepath.Dir(f.workspace), "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.go"), []byte("// Needle secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(f.workspace, "linkdir")); err != nil {
+		t.Skipf("symlinks are unavailable here: %v", err)
+	}
+
+	// The path contains no traversal and no absolute prefix, so validation alone
+	// accepts it. Only opening through a root refuses to leave the mount, which
+	// is why the guarantee lives at the read and not in a check.
+	if _, err := f.Update(context.Background(), []Change{{Path: "linkdir/secret.go"}}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	for _, match := range f.search(t, Request{Pattern: "Needle"}).Matches {
+		if match.Path != "inside.go" {
+			t.Errorf("content from outside the workspace was indexed: %+v", match)
 		}
 	}
 }

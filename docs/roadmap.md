@@ -224,7 +224,9 @@ Verified:
 - delta escalation loses nothing, and pruning never breaks the published generation;
 - a targeted update applies the same ignore rules as a full build, so an ignored file cannot be added by one and dropped by the other.
 
-Measured against this repository through a real container and the live endpoint: 155 files indexed after ignore rules, literal and regular-expression queries with path globs, pagination walking a result set exactly once, create/rename/delete reflected across generations 1 to 4, and an index reused across a restart at generation 4 with the service on a new port the daemon rediscovered without being restarted. A real agent session called `exact_search` through a second MCP client and returned 9 matches with the first at `internal/gateway/gateway.go:286`; `git grep` independently reports the same 9 and the same first location.
+Measured against this repository through a real container and the live endpoint: about 155 files indexed after ignore rules, literal and regular-expression queries with path globs, pagination walking a result set exactly once, create/rename/delete reflected across successive generations, and an index reused across a restart with the service on a new port the daemon rediscovered without being restarted. A real agent session called `exact_search` through a second MCP client and returned 9 matches with the first at `internal/gateway/gateway.go:286`; `git grep` independently reports the same 9 and the same first location.
+
+A second agent query demonstrated the property that makes filesystem enumeration a requirement rather than a preference. Asked for a regular expression, it returned 8 matches across three files. `git grep` finds only 4 across two, because the third file was saved but not yet committed. A filesystem count agrees with the index exactly.
 
 The ignore policy was not a planned item. It came from running against a real checkout: the first build walked a gitignored local directory of 278,000 cached files and never finished. A fixture would not have found it.
 
