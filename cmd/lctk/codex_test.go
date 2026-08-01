@@ -293,15 +293,22 @@ func fakeEditor(t *testing.T) (name, outputPath string) {
 	outputPath = filepath.Join(dir, "environment.txt")
 	t.Setenv("LCTK_FAKE_EDITOR_OUT", outputPath)
 
+	// The recording is written to a temporary name and moved into place, so a
+	// reader that finds the file always finds it complete. Polling for a
+	// non-empty file would otherwise race a partially written one.
 	name = "lctkfakeeditor"
 	var script string
 	var path string
 	if runtime.GOOS == "windows" {
 		path = filepath.Join(dir, name+".bat")
-		script = "@echo off\r\nset > \"%LCTK_FAKE_EDITOR_OUT%\"\r\n"
+		script = "@echo off\r\n" +
+			"set > \"%LCTK_FAKE_EDITOR_OUT%.tmp\"\r\n" +
+			"move /y \"%LCTK_FAKE_EDITOR_OUT%.tmp\" \"%LCTK_FAKE_EDITOR_OUT%\" >nul\r\n"
 	} else {
 		path = filepath.Join(dir, name)
-		script = "#!/bin/sh\nenv > \"$LCTK_FAKE_EDITOR_OUT\"\n"
+		script = "#!/bin/sh\n" +
+			"env > \"$LCTK_FAKE_EDITOR_OUT.tmp\"\n" +
+			"mv \"$LCTK_FAKE_EDITOR_OUT.tmp\" \"$LCTK_FAKE_EDITOR_OUT\"\n"
 	}
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -346,11 +353,11 @@ func TestCodexLaunchDeliversTheTokenToTheChildEnvironment(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	if !strings.Contains(string(recorded), token) {
-		t.Error("the child process did not receive the grant token")
-	}
 	if !strings.Contains(string(recorded), projectgrant.EnvVarName(id)) {
-		t.Error("the child process did not receive the credential variable")
+		t.Errorf("the child process did not receive the credential variable; it recorded %d bytes:\n%s",
+			len(recorded), lctkLines(string(recorded)))
+	} else if !strings.Contains(string(recorded), token) {
+		t.Error("the child process received the variable but not the token value")
 	}
 	// Delivery must be scoped to the started process and leave nothing behind.
 	if _, present := os.LookupEnv(projectgrant.EnvVarName(id)); present {
@@ -390,4 +397,21 @@ func TestCodexLaunchReportsAMissingEditor(t *testing.T) {
 	if !strings.Contains(err.Error(), "PATH") {
 		t.Errorf("the error does not explain the failure: %v", err)
 	}
+}
+
+// lctkLines reduces a recorded environment to the LCTK entries, so a failure
+// reports what the child actually received without printing the whole
+// environment or the token value of an unrelated variable.
+func lctkLines(recorded string) string {
+	var kept []string
+	for _, line := range strings.Split(strings.ReplaceAll(recorded, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(strings.ToUpper(line), "LCTK") {
+			name, _, _ := strings.Cut(line, "=")
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == 0 {
+		return "(no LCTK variables recorded)"
+	}
+	return strings.Join(kept, "\n")
 }
