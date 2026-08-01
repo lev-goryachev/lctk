@@ -86,6 +86,7 @@ func Run(ctx context.Context, address string) error {
 			RequireRunning: true,
 			Wake:           supervisor.Wake,
 			Changes:        changeReporter(supervisor),
+			Flush:          supervisor.Flush,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

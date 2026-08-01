@@ -124,6 +124,58 @@ func TestARefusedRequestDoesNotWakeAnything(t *testing.T) {
 	}
 }
 
+// An agent that writes a file and immediately searches for it is the common
+// case. Waiting a moment for the change to reach the index beats telling the
+// agent the code it just wrote does not exist.
+func TestASearchBringsTheIndexUpToDateFirst(t *testing.T) {
+	f := newFixture(t, true, "alpha-aaaaaaaa")
+	service := newFakeService(t)
+	f.service["alpha-aaaaaaaa"] = service.address()
+	f.changes["alpha-aaaaaaaa"] = ChangeState{Watching: true, Pending: 1}
+
+	session := f.connect(t, "alpha-aaaaaaaa", f.tokens["alpha-aaaaaaaa"])
+	output, _ := callExactSearch(t, session, map[string]any{"pattern": "Needle"})
+
+	if len(f.flushed) == 0 {
+		t.Fatal("a search answered from the index without asking for pending changes first")
+	}
+	for _, id := range f.flushed {
+		if id != "alpha-aaaaaaaa" {
+			t.Fatalf("flushed %q, which is not the routed project", id)
+		}
+	}
+	// The flush applied everything, so there is nothing left to warn about.
+	if output.Provenance.Freshness != freshnessFresh {
+		t.Fatalf("freshness = %q, want %q after a successful flush",
+			output.Provenance.Freshness, freshnessFresh)
+	}
+	if output.Changes != nil {
+		t.Fatalf("changes = %+v, want nothing reported once the index is current", output.Changes)
+	}
+}
+
+// When the flush cannot catch up, the result still comes back — with the
+// freshness verdict attached, so the caller can judge it rather than assume it.
+func TestASearchThatCouldNotCatchUpSaysSo(t *testing.T) {
+	f := newFixture(t, true, "alpha-aaaaaaaa")
+	service := newFakeService(t)
+	f.service["alpha-aaaaaaaa"] = service.address()
+	f.changes["alpha-aaaaaaaa"] = ChangeState{Watching: true, GapReason: "watcher_overflow"}
+
+	session := f.connect(t, "alpha-aaaaaaaa", f.tokens["alpha-aaaaaaaa"])
+	output, _ := callExactSearch(t, session, map[string]any{"pattern": "Needle"})
+
+	if output.Provenance.Freshness != freshnessStale {
+		t.Fatalf("freshness = %q, want %q", output.Provenance.Freshness, freshnessStale)
+	}
+	if output.Changes == nil || output.Changes.Complete {
+		t.Fatalf("changes = %+v, want the incomplete record reported with the result", output.Changes)
+	}
+	if len(output.Matches) == 0 {
+		t.Fatal("the search returned nothing; a stale answer is still an answer")
+	}
+}
+
 func TestDescribeChangesIsPessimisticWhileIndexing(t *testing.T) {
 	state := ChangeState{Watching: true}
 	if _, freshness := describeChanges(state, true, true); freshness != freshnessUpdating {

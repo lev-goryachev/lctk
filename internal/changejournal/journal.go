@@ -107,6 +107,16 @@ type Mark struct {
 	GapSeq   uint64
 }
 
+// Mark returns the point this snapshot describes.
+//
+// A consumer should take it from the snapshot it is about to act on rather than
+// asking the journal separately. The snapshot is consistent; two calls are not,
+// and the difference is a change observed between them that would be committed
+// without being applied.
+func (s Snapshot) Mark() Mark {
+	return Mark{Sequence: s.Sequence, GapSeq: s.GapSeq}
+}
+
 // Journal is the in-memory record for one project, persisted on demand.
 type Journal struct {
 	path       string

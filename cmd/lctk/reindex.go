@@ -33,9 +33,10 @@ type reindexView struct {
 
 // runProjectReindex asks a running project to bring its index up to date.
 //
-// Slice 2.1 adds a watcher that does this continuously. Until then this is the
-// explicit way to catch up, and it is also the documented recovery for a corrupt
-// index, which is why the typed error from the adapter names it.
+// A running daemon does this continuously, so the command is no longer how an
+// index keeps up with editing. It remains the way to catch up without a daemon,
+// and the documented recovery for a corrupt index, which is why the typed error
+// from the adapter names it.
 func runProjectReindex(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("project reindex", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

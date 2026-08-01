@@ -68,6 +68,8 @@ A running daemon watches each running project and records what it sees in a per-
 
 `watch` reads the journal from disk, so it answers even when no daemon is running — which is when the last recorded state is most worth seeing. `--follow` starts a watcher of its own for diagnosis and does not write to the journal.
 
+A running daemon applies what it observes to the index by itself, so `lctk project reindex` is no longer part of an editing loop. It remains useful without a daemon, and it is the documented recovery for a corrupt index.
+
 The machine policy lives in `settings.json` in the LCTK home, and `settings show` prints its path whether or not the file exists:
 
 ```json

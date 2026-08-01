@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,21 +51,31 @@ func (c *clock) Advance(d time.Duration) {
 	c.at = c.at.Add(d)
 }
 
+// fakeService stands in for a project's code-intelligence container. It records
+// what actually crossed the adapter, so a test asserts on the request the index
+// received rather than only on what the journal believes.
 type fakeService struct {
 	server *httptest.Server
 
-	mu        sync.Mutex
-	truncated bool
+	mu         sync.Mutex
+	truncated  bool
+	failIndex  bool
+	generation uint64
+	applies    [][]codeintel.Change
+	reconciles int
+}
+
+type indexRequestBody struct {
+	Mode    string             `json:"mode"`
+	Changes []codeintel.Change `json:"changes"`
 }
 
 func newFakeService(t *testing.T, directories []string) *fakeService {
 	t.Helper()
-	service := &fakeService{}
-	service.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/watchset" {
-			http.NotFound(w, r)
-			return
-		}
+	service := &fakeService{generation: 1}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /watchset", func(w http.ResponseWriter, _ *http.Request) {
 		service.mu.Lock()
 		truncated := service.truncated
 		service.mu.Unlock()
@@ -76,9 +87,59 @@ func newFakeService(t *testing.T, directories []string) *fakeService {
 			"truncated":   truncated,
 			"limit":       100,
 		})
-	}))
+	})
+	mux.HandleFunc("POST /index", func(w http.ResponseWriter, r *http.Request) {
+		var body indexRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		service.mu.Lock()
+		if service.failIndex {
+			service.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"code":"INTERNAL_ERROR","message":"no","retryable":true}}`)
+			return
+		}
+		if body.Mode == "apply" {
+			service.applies = append(service.applies, body.Changes)
+		} else {
+			service.reconciles++
+		}
+		service.generation++
+		generation := service.generation
+		service.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"generation": generation,
+			"file_count": 7,
+			"applied":    len(body.Changes),
+			"full_build": body.Mode == "full",
+			"indexed_at": "2026-08-01T12:00:00Z",
+		})
+	})
+
+	service.server = httptest.NewServer(mux)
 	t.Cleanup(service.server.Close)
 	return service
+}
+
+func (f *fakeService) appliedPaths() [][]codeintel.Change {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]codeintel.Change{}, f.applies...)
+}
+
+func (f *fakeService) reconcileCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reconciles
+}
+
+func (f *fakeService) setFailing(failing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failIndex = failing
 }
 
 func (f *fakeService) address() string {
@@ -231,17 +292,42 @@ func (h *harness) awaitView(t *testing.T, what string, match func(View) bool) Vi
 	return View{}
 }
 
+// journalFor reaches the live journal of the running worker, so a test can record
+// an observation without depending on how fast a native event arrives.
+func (h *harness) journalFor(t *testing.T) *changejournal.Journal {
+	t.Helper()
+	h.Supervisor.mu.Lock()
+	defer h.Supervisor.mu.Unlock()
+	w, ok := h.Supervisor.workers[h.project.ID]
+	if !ok {
+		t.Fatal("the project is not being watched")
+	}
+	return w.journal
+}
+
+// storedJournal reads the document on disk, retrying while the writer holds it.
+// On Windows the rename that publishes a new journal briefly locks the target,
+// and a reader that happens to arrive then gets a sharing violation rather than
+// stale content.
 func (h *harness) storedJournal(t *testing.T) changejournal.Snapshot {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(h.journals, h.project.ID+".json"))
-	if err != nil {
-		t.Fatalf("read stored journal: %v", err)
+	deadline := time.Now().Add(testBudget)
+	var last error
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(filepath.Join(h.journals, h.project.ID+".json"))
+		if err != nil {
+			last = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		var snapshot changejournal.Snapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			t.Fatalf("decode stored journal: %v", err)
+		}
+		return snapshot
 	}
-	var snapshot changejournal.Snapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		t.Fatalf("decode stored journal: %v", err)
-	}
-	return snapshot
+	t.Fatalf("read stored journal: %v", last)
+	return changejournal.Snapshot{}
 }
 
 // awaitStored waits for the document on disk, which is what a restart or a status
@@ -302,48 +388,63 @@ func TestAWatchedProjectHasAJournalBeforeAnythingChanges(t *testing.T) {
 	h.Sweep(context.Background())
 
 	stored := h.awaitStored(t, "a journal written at startup", func(s changejournal.Snapshot) bool {
-		return s.Gap != nil
+		return s.ProjectID == h.project.ID
 	})
 	if len(stored.Pending) != 0 {
 		t.Fatalf("stored pending = %+v, want an empty record", stored.Pending)
 	}
 }
 
-func TestASavedFileIsJournaledAndSettles(t *testing.T) {
+func TestASavedFileIsObservedSequencedAndSettled(t *testing.T) {
 	service := newFakeService(t, []string{"."})
 	h := newHarness(t, service, nil)
 	h.Sweep(context.Background())
 
 	h.write(t, "main.go", "package main\n")
 
-	view := h.awaitView(t, "the saved file becoming a pending change", func(v View) bool {
-		return v.Pending == 1 && !v.SettledAt.IsZero()
+	view := h.awaitView(t, "the saved file being observed", func(v View) bool {
+		return v.Sequence > 0 && !v.SettledAt.IsZero() && !v.LastEventAt.IsZero()
 	})
 	if view.Sequence == 0 {
 		t.Fatal("the observation was not sequenced")
 	}
 
-	h.awaitStored(t, "the saved file persisted at settle", func(s changejournal.Snapshot) bool {
-		return len(s.Pending) == 1 && s.Pending[0].Path == "main.go"
+	// The pending list empties because the change reaches the index; what the
+	// journal must retain across a restart is the checkpoint that says so.
+	h.awaitStored(t, "the checkpoint recording the applied change", func(s changejournal.Snapshot) bool {
+		return len(s.Pending) == 0 && s.Checkpoint == s.Sequence && s.Sequence > 0
 	})
 }
 
 // The debounce window exists so an editor's save-then-format-then-save burst is
 // one update, not three.
-func TestABurstOfSavesCollapsesIntoOnePendingChange(t *testing.T) {
+// The debounce window exists so an editor's save-then-format-then-save burst
+// costs the index one update, not twenty. The assertion is on what the index
+// received, because that is the cost the window exists to avoid.
+func TestABurstOfSavesCostsTheIndexOneChange(t *testing.T) {
 	service := newFakeService(t, []string{"."})
 	h := newHarness(t, service, nil)
 	h.Sweep(context.Background())
+	h.awaitView(t, "the starting gap being closed", func(v View) bool { return v.Gap == nil })
 
 	for i := 0; i < 20; i++ {
-		h.write(t, "main.go", "package main // "+time.Duration(i).String()+"\n")
+		h.write(t, "main.go", "package main // "+strconv.Itoa(i)+"\n")
 	}
 
-	view := h.awaitView(t, "the burst settling", func(v View) bool {
-		return v.Pending == 1 && !v.SettledAt.IsZero()
+	view := h.awaitView(t, "the burst reaching the index", func(v View) bool {
+		return v.Sequence > 0 && v.Pending == 0 && v.Checkpoint == v.Sequence
 	})
-	if view.Pending != 1 {
-		t.Fatalf("pending = %d, want one change per path", view.Pending)
+	if view.Sequence < 20 {
+		t.Fatalf("sequence = %d, want the individual saves to have been observed", view.Sequence)
+	}
+
+	total := 0
+	for _, batch := range service.appliedPaths() {
+		total += len(batch)
+	}
+	if total > 2 {
+		t.Fatalf("the index received %d changes for %d saves of one file; the window collapsed nothing",
+			total, view.Sequence)
 	}
 }
 

@@ -1,20 +1,31 @@
 package watchsupervisor
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/changejournal"
+	"github.com/lev-goryachev/lctk/internal/codeintel"
 	"github.com/lev-goryachev/lctk/internal/fswatch"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 )
 
-// worker observes one project and keeps its journal.
+// DrainTimeout bounds one attempt to bring an index up to date.
+//
+// It is generous because the operation it bounds is not fixed in size: a batch
+// the service escalates to a full rebuild costs what a rebuild costs. The point
+// of the bound is to stop a hung service from holding the drain lock forever, not
+// to express an expected duration.
+const DrainTimeout = 15 * time.Minute
+
+// worker observes one project, keeps its journal, and applies it to the index.
 type worker struct {
 	projectID string
 	journal   *changejournal.Journal
 	watcher   *fswatch.Watcher
+	index     indexClient
 	watch     hostsettings.Watch
 	logger    *slog.Logger
 	now       func() time.Time
@@ -23,9 +34,23 @@ type worker struct {
 	done     chan struct{}
 	finished chan struct{}
 
+	// drainMu serializes index updates. Two concurrent drains would read the same
+	// pending list and apply it twice, and the second would commit a checkpoint
+	// covering work the first had already retracted.
+	drainMu sync.Mutex
+
 	mu        sync.Mutex
 	lastUse   time.Time
 	settledAt time.Time
+	appliedAt time.Time
+	lastError string
+}
+
+// indexClient is the part of the code-intelligence adapter a worker drives. It is
+// an interface so the drain can be tested without a container.
+type indexClient interface {
+	Apply(ctx context.Context, changes []codeintel.Change) (codeintel.IndexResult, error)
+	Reconcile(ctx context.Context, full bool) (codeintel.IndexResult, error)
 }
 
 // run applies the debounce policy to the event stream.
@@ -64,12 +89,14 @@ func (w *worker) run() {
 	for {
 		select {
 		case <-w.done:
-			w.settle()
+			// The worker is going away, so the journal is written but no index
+			// update is started: a drain would outlive the thing that owns it.
+			w.persist()
 			return
 
 		case event, ok := <-w.watcher.Events():
 			if !ok {
-				w.settle()
+				w.persist()
 				return
 			}
 			w.journal.Record(event)
@@ -78,7 +105,7 @@ func (w *worker) run() {
 
 		case gap, ok := <-w.watcher.Gaps():
 			if !ok {
-				w.settle()
+				w.persist()
 				return
 			}
 			w.journal.MarkGap(gap.Reason, gap.Detail, gap.At)
@@ -104,8 +131,14 @@ func (w *worker) run() {
 	}
 }
 
-// settle persists the journal and records when the batch became quiet.
+// settle persists the journal and starts bringing the index up to date.
 func (w *worker) settle() {
+	w.persist()
+	w.drainAsync()
+}
+
+// persist writes the journal and records when the batch became quiet.
+func (w *worker) persist() {
 	if err := w.journal.Save(); err != nil {
 		w.logger.Warn("change journal could not be written", slog.String("error", err.Error()))
 		return
@@ -113,6 +146,124 @@ func (w *worker) settle() {
 	w.mu.Lock()
 	w.settledAt = w.now()
 	w.mu.Unlock()
+}
+
+// drainAsync brings the index up to date without holding up the event loop.
+//
+// A rebuild can take minutes, and the goroutine reading native events must not be
+// one of the things waiting for it: a blocked reader is how the kernel buffer
+// overflows. If a drain is already running, this one is dropped rather than
+// queued — the running drain will pick up whatever arrived, and if it does not,
+// the next settle will.
+func (w *worker) drainAsync() {
+	go func() {
+		if !w.drainMu.TryLock() {
+			return
+		}
+		defer w.drainMu.Unlock()
+		w.drain()
+	}()
+}
+
+// flush brings the index up to date and waits, bounded by the caller's context.
+//
+// It is what makes a search see an edit that has not waited out its debounce
+// window. The caller's deadline bounds the wait, not the work: giving up on
+// waiting must not cancel a rebuild halfway, or a caller with a short deadline
+// could stop the index from ever advancing.
+func (w *worker) flush(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.drainMu.Lock()
+		defer w.drainMu.Unlock()
+		w.drain()
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+// drain applies what has been observed to the project index.
+//
+// The choice between applying and reconciling is the journal's to make, not this
+// function's: an incomplete record cannot be applied, because the pending list is
+// then a lower bound and applying it would leave the index wrong while the
+// checkpoint claimed otherwise.
+func (w *worker) drain() {
+	snapshot := w.journal.Snapshot()
+	if snapshot.Gap == nil && len(snapshot.Pending) == 0 {
+		return
+	}
+	// The mark comes from the snapshot being acted on. Asking the journal
+	// separately would let a change observed in between be committed without ever
+	// being applied.
+	mark := snapshot.Mark()
+
+	ctx, cancel := context.WithTimeout(context.Background(), DrainTimeout)
+	defer cancel()
+
+	var (
+		result codeintel.IndexResult
+		err    error
+	)
+	if snapshot.Gap != nil {
+		result, err = w.index.Reconcile(ctx, false)
+	} else {
+		result, err = w.index.Apply(ctx, indexChanges(snapshot.Pending))
+	}
+	if err != nil {
+		// The checkpoint is not advanced, so nothing is lost: the same batch is
+		// tried again at the next settle or flush.
+		w.mu.Lock()
+		w.lastError = err.Error()
+		w.mu.Unlock()
+		w.logger.Warn("index could not be brought up to date", slog.String("error", err.Error()))
+		return
+	}
+
+	if snapshot.Gap != nil {
+		w.journal.Reconciled(mark, result.Generation)
+	} else {
+		w.journal.Commit(mark.Sequence, result.Generation)
+	}
+
+	w.mu.Lock()
+	w.appliedAt = w.now()
+	w.lastError = ""
+	w.mu.Unlock()
+
+	w.logger.Info("index brought up to date",
+		slog.Uint64("generation", result.Generation),
+		slog.Int("applied", result.Applied),
+		slog.Int("files", result.FileCount),
+		slog.Bool("full_build", result.FullBuild),
+		slog.Bool("reconciled", snapshot.Gap != nil))
+	w.persist()
+}
+
+// indexChanges translates observations into index operations.
+func indexChanges(entries []changejournal.Entry) []codeintel.Change {
+	changes := make([]codeintel.Change, 0, len(entries))
+	for _, entry := range entries {
+		switch {
+		case entry.Kind == fswatch.Removed:
+			// A removed directory takes its files with it, and only the service
+			// can name them: by now the directory is gone.
+			changes = append(changes, codeintel.Change{
+				Path: entry.Path, Deleted: true, Subtree: entry.Directory,
+			})
+		case entry.Directory:
+			// A created directory has no content of its own. Whatever is inside it
+			// arrives as its own entry, including the files the watcher found
+			// already there when it adopted the directory.
+		default:
+			changes = append(changes, codeintel.Change{Path: entry.Path})
+		}
+	}
+	return changes
 }
 
 // touch records recent activity, which is what keeps a busy project's watcher
@@ -158,7 +309,7 @@ func (w *worker) view() View {
 	snapshot := w.journal.Snapshot()
 
 	w.mu.Lock()
-	settledAt := w.settledAt
+	settledAt, appliedAt, lastError := w.settledAt, w.appliedAt, w.lastError
 	w.mu.Unlock()
 
 	return View{
@@ -168,6 +319,9 @@ func (w *worker) view() View {
 		Pending:         len(snapshot.Pending),
 		Sequence:        snapshot.Sequence,
 		Checkpoint:      snapshot.Checkpoint,
+		Generation:      snapshot.Generation,
+		AppliedAt:       appliedAt,
+		LastError:       lastError,
 		Gap:             snapshot.Gap,
 		LastEventAt:     snapshot.LastEventAt,
 		SettledAt:       settledAt,

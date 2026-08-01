@@ -292,10 +292,40 @@ The journal has no consumer until Slice 2.2, so every project currently reports 
 
 ### Slice 2.2: Incremental exact index
 
-- batch update;
-- bulk-change detection;
-- reconciliation after downtime or overflow;
-- freshness metadata in the tool response.
+**Status:** complete. This is the slice that makes the journal do something: search follows edits with nothing asked of the user.
+
+The scenario: a developer saves a file and an agent searches for what was just written, without any reindex command and without knowing a watcher exists.
+
+Implemented:
+
+- a settled batch applied to the project index automatically, with the journal deciding the path — a complete record is applied as a delta, an incomplete one is reconciled, and the second is never mistaken for the first;
+- a checkpoint that advances only on success, carrying the index generation it produced, so a failed update leaves the work outstanding and retries at the next settle instead of being lost;
+- subtree deletion: a removed directory retracts everything beneath it, because once it is gone nothing can enumerate what was in it;
+- bulk detection on batch size as well as on delta depth, at a quarter of the index with a floor of 500 files, so a branch checkout is rebuilt rather than applied one tombstone at a time;
+- reconciliation after downtime, which is what closes the gap every daemon start records;
+- a search that flushes pending changes before answering, bounded so that giving up on the wait degrades to a reported-stale answer rather than a hung call or a cancelled rebuild;
+- freshness in the tool response: `exact_search` carries the same verdict `project_info` does, and reports what is outstanding whenever the answer is not current.
+
+Verified:
+
+- an incomplete record is reconciled and never applied as a batch;
+- a created directory is not sent to the index, and a removed one is sent as a subtree;
+- a failed update does not advance the checkpoint, and the next flush recovers without an operator;
+- a twenty-save burst costs the index one change;
+- the flush reaches the index without waiting out the debounce window;
+- a file rewritten in the same batch that removed its directory survives the expansion of that removal.
+
+Measured against this repository through a real daemon, a real container, and the live MCP endpoint:
+
+| | |
+|---|---|
+| Daemon start | reconciled to generation 13, 172 files, gap closed, record complete |
+| Write then search | found **0.2 s** after the write, against a 3 s debounce window |
+| Delete then search | gone, one generation later |
+| Directory of two files, then removed | both files left the index |
+| File written while the daemon was down | picked up by the reconciliation on the next start and found by search |
+
+Bulk escalation is covered by automated tests rather than measured live: this repository has 173 indexed files, so a batch reaching the 500-file floor would mean rewriting it several times over.
 
 ### Slice 2.3: Resource policies and Admin UI baseline
 

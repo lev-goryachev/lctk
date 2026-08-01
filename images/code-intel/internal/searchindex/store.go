@@ -44,6 +44,13 @@ type Limits struct {
 	// one is kept so a search already in flight is not reading a deleted
 	// directory when a new generation is published.
 	KeepGenerations int
+	// BulkChangeFloor is the batch size below which size alone never forces a
+	// rebuild. Without a floor, the first few edits to a small project would each
+	// trip the proportional rule and rebuild the whole index.
+	BulkChangeFloor int
+	// BulkChangePercent is the share of the index a batch may touch before a
+	// rebuild is cheaper than a delta.
+	BulkChangePercent int
 }
 
 // DefaultLimits are the shipped policy.
@@ -51,6 +58,8 @@ var DefaultLimits = Limits{
 	MaxFileBytes:        1 << 20,
 	MaxDeltaGenerations: 32,
 	KeepGenerations:     2,
+	BulkChangeFloor:     500,
+	BulkChangePercent:   25,
 }
 
 func (l Limits) withDefaults() Limits {
@@ -63,7 +72,29 @@ func (l Limits) withDefaults() Limits {
 	if l.KeepGenerations <= 0 {
 		l.KeepGenerations = DefaultLimits.KeepGenerations
 	}
+	if l.BulkChangeFloor <= 0 {
+		l.BulkChangeFloor = DefaultLimits.BulkChangeFloor
+	}
+	if l.BulkChangePercent <= 0 {
+		l.BulkChangePercent = DefaultLimits.BulkChangePercent
+	}
 	return l
+}
+
+// bulk reports whether a batch is large enough that rebuilding beats applying.
+//
+// Both conditions must hold. The proportional rule is what actually matters — a
+// batch touching a quarter of the index is a branch checkout or a code generator,
+// not editing — and the floor keeps it from firing on a small project where a
+// quarter is three files.
+func (l Limits) bulk(count, indexed int) bool {
+	if count < l.BulkChangeFloor {
+		return false
+	}
+	if indexed <= 0 {
+		return true
+	}
+	return count*100 >= indexed*l.BulkChangePercent
 }
 
 // State is the metadata published alongside one generation's shards.
@@ -94,6 +125,13 @@ type State struct {
 type Change struct {
 	Path    string `json:"path"`
 	Deleted bool   `json:"deleted,omitempty"`
+	// Subtree says the path names a directory rather than a file. It matters only
+	// for a deletion, and it matters a great deal: a removed directory takes every
+	// file beneath it, and once it is gone nothing can enumerate them from the
+	// filesystem. Without this flag the batch would delete one entry named after a
+	// directory, which the index does not hold, and leave every file that was
+	// inside it searchable forever.
+	Subtree bool `json:"subtree,omitempty"`
 }
 
 // Store owns the persistent index for a single project.
@@ -212,6 +250,13 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 	if state.DeltaDepth+1 > s.Limits.MaxDeltaGenerations {
 		return s.Rebuild(ctx)
 	}
+	// A batch touching much of the index is cheaper to rebuild than to apply. Each
+	// changed path leaves a tombstone that every later query has to resolve, so a
+	// large delta is not a one-time cost: it is a tax on every search until the
+	// next full build.
+	if s.Limits.bulk(len(changes), state.FileCount) {
+		return s.Rebuild(ctx)
+	}
 	// An edited ignore file changes what belongs in the index everywhere beneath
 	// it, not just for the files in this batch. A delta could only add or remove
 	// the entries it was handed, so a file the new rules now exclude would linger
@@ -232,21 +277,37 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 	}
 
 	var (
-		touched = make(map[string]struct{}, len(changes))
-		add     []string
+		// seen deduplicates the batch by the path each change literally names.
+		seen = make(map[string]struct{}, len(changes))
+		// tombstone is every path the delta must retract, which is a superset of
+		// seen: expanding a removed directory adds paths no change named. It is
+		// deliberately not folded into seen, or a file deleted with its directory
+		// and written again in the same batch would be skipped as already handled.
+		tombstone = make(map[string]struct{}, len(changes))
+		add       []string
 	)
 	for _, change := range changes {
 		name, err := normalizeRelative(change.Path)
 		if err != nil {
 			return State{}, fail(CodeInvalidPattern, err.Error(), false, nil)
 		}
-		if _, seen := touched[name]; seen {
+		if _, already := seen[name]; already {
 			continue
 		}
-		touched[name] = struct{}{}
+		seen[name] = struct{}{}
+		tombstone[name] = struct{}{}
 
 		if change.Deleted {
 			delete(files, name)
+			if change.Subtree {
+				prefix := name + "/"
+				for indexed := range files {
+					if strings.HasPrefix(indexed, prefix) {
+						delete(files, indexed)
+						tombstone[indexed] = struct{}{}
+					}
+				}
+			}
 			continue
 		}
 		// A targeted update must agree with what a full build would do, or an
@@ -286,7 +347,7 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		ignored:    state.SkippedIgnored,
 		sources:    state.IgnoreSources,
 		add:        add,
-		tombstone:  sortedSet(touched),
+		tombstone:  sortedSet(tombstone),
 	})
 }
 
