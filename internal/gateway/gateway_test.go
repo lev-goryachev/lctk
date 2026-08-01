@@ -38,6 +38,11 @@ type fixture struct {
 	// service is the address the fixture reports as the project's published
 	// code-intelligence service, empty unless a test installs a stand-in.
 	service map[string]string
+	// changes stands in for the host watch supervisor. A project absent from the
+	// map is one nothing is watching.
+	changes map[string]ChangeState
+	// woken records which projects the route asked the host to observe.
+	woken []string
 }
 
 func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixture {
@@ -50,6 +55,7 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 		logs:     &bytes.Buffer{},
 		state:    map[string]projectstack.State{},
 		service:  map[string]string{},
+		changes:  map[string]ChangeState{},
 	}
 
 	// The registry is populated directly rather than through Add, so the test
@@ -91,6 +97,13 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 		Logger:         slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now:            func() time.Time { return testNow },
 		RequireRunning: requireRunning,
+		Wake: func(project projectregistry.Project, _ projectstack.Status) {
+			f.woken = append(f.woken, project.ID)
+		},
+		Changes: func(projectID string) (ChangeState, bool) {
+			state, ok := f.changes[projectID]
+			return state, ok
+		},
 	})
 
 	mux := http.NewServeMux()

@@ -27,6 +27,7 @@ const projectUsage = `Usage:
   lctk project restart [--wait DURATION] [--json] PROJECT
   lctk project remove [--json] PROJECT
   lctk project reindex [--full] [--json] PROJECT
+  lctk project watch [--follow] [--json] PROJECT
 
 PROJECT accepts a project id, a project name, an unambiguous id prefix, or the
 path of a registered folder.
@@ -145,6 +146,8 @@ func runProject(args []string, stdout, stderr io.Writer) error {
 		return runProjectRemove(args[1:], stdout)
 	case "reindex":
 		return runProjectReindex(args[1:], stdout)
+	case "watch":
+		return runProjectWatch(context.Background(), args[1:], stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, projectUsage)
 		return nil

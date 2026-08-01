@@ -24,11 +24,59 @@ The watcher runs in the host daemon because native Windows and macOS events are 
 
 The watcher is an accelerator, not the sole source of truth. After downtime, overflow, or a restart, the daemon reconciles the filesystem with the persistent index manifest.
 
+## The change journal
+
+As implemented in Slice 2.1, the host keeps one journal per project in the LCTK home. It makes a single claim: **every change since its checkpoint is in the pending list, or a gap says otherwise.** [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md) records why that claim is the whole design.
+
+The journal holds a monotonic sequence, a checkpoint the consumer advances, the index generation that existed at the checkpoint, one pending entry per changed path, and an optional gap.
+
+Deduplication is by path. A file saved fifty times is one change to apply, not fifty.
+
+A gap is recorded whenever observation *could* have been incomplete — not when something is proven lost:
+
+| Reason | What happened |
+|---|---|
+| `observation_started` | The journal was loaded, so the period before it was unobserved |
+| `observation_suspended` | The watcher was released because the project stopped or went idle |
+| `watcher_overflow` | The native watcher lost events |
+| `watch_capacity_exceeded` | The project has more directories than the watch budget |
+| `watch_set_incomplete` | The service would not describe the whole project |
+| `directory_unwatchable` | A directory exists but could not be registered |
+| `consumer_backlog` | Events arrived faster than they were taken |
+| `bulk_change` | More paths changed than the journal will track |
+| `journal_unreadable` | The stored document was reset |
+
+A gap is a latch. It keeps the earliest reason, since that is the moment from which the record stopped being complete, and it is cleared only by a consumer that reconciled the filesystem with the index — and only when the gap it closes is the one it set out to close, not one that opened while it worked.
+
+Loading a journal always records a gap. Nothing on disk can establish that a project was unchanged while the daemon was not running. What persistence buys is that a continuously running daemon never has to reconcile, and that work observed but not yet applied is not lost when the process ends.
+
+`lctk project watch PROJECT` reads the journal, and `--follow` streams normalized events for diagnosis without writing anything.
+
+## What is watched
+
+The host asks the project's own service which directories to observe. The service owns the exclusion policy, so it is the only thing that can answer without disagreeing with the indexer; see [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md).
+
+The host hard-codes only `.git`, `.hg`, and `.svn`, which is safe because those are exactly the rules a project cannot override.
+
+A newly created directory is adopted immediately, together with whatever is already inside it. That walk is not tidiness: a tool that writes a whole tree at once fills the directory before a watch can be placed on it, and without the walk those files stay invisible until something else touches them.
+
+Watching costs one native handle per directory, so a project may hold at most `watch.max_watched_directories` of them, 20,000 by default. Past the budget the watcher observes part of the tree and records a capacity gap, which routes the project to reconciliation rather than to either failure or silence.
+
 ## Configurable debounce
 
-Debounce must be user-configurable. The range and configuration scope (machine default and/or project override) still need to be formalized.
+The shipped default is **3 seconds** after the most recent change, with each new change restarting the wait, and a 30-second ceiling on how long continuous editing may defer an update.
 
-The practical default under discussion is 3–5 seconds after the most recent change. Each new relevant event restarts the timer. The exact default has not yet been accepted.
+Three layers, each narrower than the last:
+
+| Layer | Where | Role |
+|---|---|---|
+| Shipped default | `internal/hostsettings` | 3 s window, 30 s ceiling |
+| Machine policy | `settings.json` in the LCTK home | What the machine owner wants |
+| Project proposal | `index.debounce_ms` in the manifest | What the repository suggests |
+
+The project's value is a proposal, not a setting: the host clamps it to between 200 ms and 60 seconds. The floor exists because an editor save is often a write to a temporary file followed by a rename, and reacting between the two indexes a file that is about to be replaced. The ceiling exists because the point of watching is that an agent's next question sees the edit it just made.
+
+`lctk settings show` prints the policy in force and the path of the file that would change it.
 
 Debounce delays updates to persistent indexes, but not file saves or ordinary source reads. While a batch is pending or being processed, responses show pending changes and freshness lag.
 
@@ -98,9 +146,26 @@ Every index-dependent response must report the following compactly:
 - dirty state;
 - index generation/version;
 - pending file count or lag;
-- freshness (`fresh`, `updating`, `stale`, `partial`);
+- freshness (`fresh`, `updating`, `stale`, `unknown`);
 - backend provenance;
 - timestamp of the last successful update.
+
+Freshness is never optimistic. `unknown` is reported for a project nothing is watching, because "nobody looked" is not evidence that nothing changed, and an agent told `fresh` will not check again. An incomplete record reports `stale` with the gap reason attached, and the pending count is then a lower bound rather than a total.
+
+`project_info` carries this as an `index.freshness` verdict alongside a `changes` block naming what the host has observed:
+
+```json
+{
+  "index": { "ready": true, "generation": 12, "file_count": 169, "freshness": "stale" },
+  "changes": {
+    "watching": true,
+    "pending": 1,
+    "complete": false,
+    "gap_reason": "observation_started",
+    "debounce_seconds": 3
+  }
+}
+```
 
 Example state:
 
@@ -133,6 +198,8 @@ Project volumes store:
 - rebuild reason and status.
 
 Updates must support atomic commit or swap where the backend permits. After a crash, the previous committed generation remains readable, or the index is explicitly marked as corrupt.
+
+The change journal itself lives on the host rather than in the project volume, one owner-only document per project under `journals/` in the LCTK home. It belongs with the registry and the grants for the reason given in [security](security.md): it is host state about a project, not project content, and it must not be reachable from inside a repository. It is written atomically at each settle, so an interrupted write cannot leave a shorter pending list that would read as complete.
 
 ## Exclusions
 

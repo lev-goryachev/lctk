@@ -109,7 +109,9 @@ The local registry stores and confirms:
 - host resource limits;
 - applied command and network permissions.
 
-The repository manifest cannot mount arbitrary host directories, grant the admin capability, or provide secrets.
+The repository manifest cannot mount arbitrary host directories, grant the admin capability, or provide secrets. It may propose an indexing debounce window, which the host clamps rather than adopts, because the setting costs the machine resources and host policy owns that.
+
+Two further documents live in the owner-only LCTK home for the same reason as the registry: they are host state about a project rather than project content, and nothing inside a repository may reach them. `settings.json` holds machine-wide watcher and resource policy. One change journal per project holds project-relative paths the host observed, and no file content.
 
 ## Guarantees not claimed
 

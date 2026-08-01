@@ -28,6 +28,7 @@ type Indexer interface {
 	Rebuild(ctx context.Context) (searchindex.State, error)
 	Reconcile(ctx context.Context) (searchindex.State, []searchindex.Change, error)
 	Update(ctx context.Context, changes []searchindex.Change) (searchindex.State, error)
+	WatchSet(ctx context.Context) ([]string, bool, error)
 }
 
 // Server exposes the indexer over HTTP.
@@ -89,6 +90,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("POST /search", s.handleSearch)
 	mux.HandleFunc("POST /index", s.handleIndex)
+	mux.HandleFunc("GET /watchset", s.handleWatchSet)
 	return mux
 }
 
@@ -149,6 +151,32 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	view.DeltaDepth = state.DeltaDepth
 	view.IndexedAt = state.BuiltAt.Format(time.RFC3339)
 	writeJSON(w, http.StatusOK, view)
+}
+
+// WatchSetView tells the host which directories it must watch to see every
+// change that could reach this index.
+type WatchSetView struct {
+	Directories []string `json:"directories"`
+	Count       int      `json:"count"`
+	// Truncated reports that the project has more directories than the service
+	// will describe. The caller must read it as "this set is incomplete", not as
+	// the whole project, and fall back to reconciliation.
+	Truncated bool `json:"truncated"`
+	Limit     int  `json:"limit"`
+}
+
+func (s *Server) handleWatchSet(w http.ResponseWriter, r *http.Request) {
+	directories, truncated, err := s.indexer.WatchSet(r.Context())
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, WatchSetView{
+		Directories: directories,
+		Count:       len(directories),
+		Truncated:   truncated,
+		Limit:       searchindex.MaxWatchDirectories,
+	})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

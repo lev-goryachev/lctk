@@ -257,11 +257,38 @@ After this end-to-end boundary is reproducibly verified, open the documented ext
 
 ### Slice 2.1: Host change journal
 
-- native watcher adapters;
-- normalized events;
-- configurable debounce;
-- persistent checkpoint;
-- on-demand wakeup and idle activity.
+**Status:** complete. The honesty rule the slice is built around is recorded in [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md), and it closes the [ADR-0005](adr/0005-host-watcher-and-incremental-indexing.md) follow-ups on normalization, coalescing, overflow, and debounce configuration.
+
+The scenario: a developer edits files in an ordinary editor, and LCTK knows what changed without being told, or says plainly that it does not.
+
+Implemented:
+
+- a host watcher over native OS events, with recursion, coalescing, and normalization owned by LCTK rather than by the library: a project-relative path with forward slashes, a rename delivered as a removal of the old path and a write of the new one, a removed directory reported as a directory because once it is gone the filesystem can no longer say what it was, and a newly created directory adopted together with whatever a tool already wrote into it before a watch could be placed;
+- a per-project change journal that makes one claim — every change since its checkpoint is in the pending list, or a gap says otherwise — deduplicated by path, atomically written, and versioned;
+- a gap for every condition under which observation could have been incomplete, latched at the earliest reason, cleared only by a consumer that can prove it is closing the gap it set out to close rather than one that opened while it worked;
+- the project service as the single authority on what belongs to the project, so the watcher derives its directory list from the same code that decides what is indexed instead of holding a second copy of the ignore engine;
+- a watch budget that degrades to a capacity gap and reconciliation, rather than to failure or to exhausting the process's handles;
+- configurable debounce, accepted at 3 seconds with a 30-second ceiling, as a machine default in the host settings file and a project proposal in the manifest that the host clamps;
+- observation that follows use: a watcher is started for a running project, woken by a request to its route, and released when the project stops or goes idle, with the lapse recorded;
+- freshness in the tool response — `project_info` reports a `changes` block and an `index.freshness` verdict that is never optimistic, so a project nothing is watching reports `unknown` rather than `fresh`;
+- `lctk project watch`, which reads the journal from disk so it answers when no daemon is running, with `--follow` to stream events for diagnosis, and `lctk settings show`.
+
+Verified:
+
+- a burst of saves to one path is one pending change, and a repeated save does not lose the newest observation;
+- a directory removal is distinguishable from a file removal, and a directory is never reported as written;
+- version-control metadata produces no events at all;
+- a gap that opens during a reconciliation is not cleared by it, which is the case that would otherwise declare an index current about changes nobody looked at;
+- an oversized change set becomes a bulk gap rather than a pending list too large to be worth applying;
+- an unreadable journal, or one written for another project, is reset with the reset visible as a gap rather than treated as fatal;
+- a refused request wakes nothing, so observation cannot be provoked by an unauthenticated caller;
+- the tests run clean under the race detector.
+
+Measured against this repository through a real daemon on Windows 10: 42 watched directories out of 56,077 on disk, a save settled 3.0 seconds after the write against a 3-second window, 62 raw observations of one path collapsed into one pending change, a deletion recorded as such, the pending list surviving a hard kill of the daemon, the reload recording a fresh `observation_started` gap while the sequence counter continued, and a deliberately reduced watch budget producing exactly one capacity gap and ten registered directories.
+
+Two defects surfaced only on that live run, neither reachable from a fixture. A quiet project had no journal on disk at all, because the document was written on settle and a project nobody had touched never settled — so `lctk project watch` reported "never observed" about a project being observed at that moment. And Windows reports a write against the containing directory as well as the file, so every save produced two pending changes, the second for a path the indexer is certain to discard.
+
+The journal has no consumer until Slice 2.2, so every project currently reports an incomplete record. That is the accurate reading rather than a defect: nothing has yet brought an index up to date from the journal.
 
 ### Slice 2.2: Incremental exact index
 

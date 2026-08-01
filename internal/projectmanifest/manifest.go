@@ -74,6 +74,12 @@ var ErrForbiddenField = errors.New("manifest field is not allowed")
 type Index struct {
 	MaxFileSizeKB    int  `yaml:"max_file_size_kb"`
 	IncludeGenerated bool `yaml:"include_generated"`
+	// DebounceMS proposes how long to wait after the last save before updating
+	// the index. A repository may know its own editing shape better than the host
+	// default does. It is a proposal: the host clamps it into the range in
+	// hostsettings, so a manifest cannot ask for either a busy loop or a window
+	// long enough to make search look broken.
+	DebounceMS int `yaml:"debounce_ms"`
 }
 
 // Commands holds proposed project commands. They are proposals only: per
@@ -295,6 +301,9 @@ func overlay(base, override Manifest) Manifest {
 	if override.Index.IncludeGenerated {
 		merged.Index.IncludeGenerated = true
 	}
+	if override.Index.DebounceMS != 0 {
+		merged.Index.DebounceMS = override.Index.DebounceMS
+	}
 	if override.Commands.Build != "" {
 		merged.Commands.Build = override.Commands.Build
 	}
@@ -333,6 +342,9 @@ func validate(m *Manifest) error {
 
 	if m.Index.MaxFileSizeKB < 0 {
 		return fmt.Errorf("index.max_file_size_kb must not be negative, got %d", m.Index.MaxFileSizeKB)
+	}
+	if m.Index.DebounceMS < 0 {
+		return fmt.Errorf("index.debounce_ms must not be negative, got %d", m.Index.DebounceMS)
 	}
 
 	for i, pattern := range m.Excludes {

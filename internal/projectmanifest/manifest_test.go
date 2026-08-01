@@ -82,6 +82,25 @@ commands:
 	}
 }
 
+func TestTheDebounceProposalIsReadAndOverridable(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, FileName, "index:\n  debounce_ms: 4000\n")
+	writeManifest(t, dir, LocalFileName, "index:\n  debounce_ms: 1500\n")
+
+	result, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest.Index.DebounceMS != 1500 {
+		t.Fatalf("debounce_ms = %d, want the local override to win", result.Manifest.Index.DebounceMS)
+	}
+
+	writeManifest(t, dir, LocalFileName, "index:\n  debounce_ms: -1\n")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("a negative debounce proposal was accepted")
+	}
+}
+
 // TestManifestCannotDeclareAHostPath is the roadmap's required check that the
 // manifest cannot replace the authoritative host path.
 func TestManifestCannotDeclareAHostPath(t *testing.T) {

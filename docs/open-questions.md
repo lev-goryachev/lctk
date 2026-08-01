@@ -42,14 +42,19 @@ Open items:
 
 ## Watcher/indexing policy
 
+Settled in Slice 2.1 by [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md):
+
+- debounce default: 3 seconds, with a 30-second ceiling on deferral by continuous editing;
+- debounce configuration scope: machine default in the host settings file, project proposal in the manifest, clamped by the host to between 200 ms and 60 seconds;
+- what happens when observation is incomplete: an explicit gap, never an optimistic answer.
+
 Open items:
 
-- debounce default: 3 or 5 seconds;
-- debounce configuration scope: machine only, or machine default plus project override;
-- bulk-change thresholds;
+- bulk-change thresholds are set at 10,000 pending paths by value, not by measurement;
 - which generated or excluded paths count as activity;
 - how to handle project configurations that intentionally index generated code;
-- the atomic consistency model across multiple backends.
+- the atomic consistency model across multiple backends;
+- whether macOS warrants FSEvents, and the cgo dependency it would add to the host binary, in place of one kqueue descriptor per watched directory.
 
 ## Resource planning
 
