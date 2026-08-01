@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). Storage for the change journal, index metadata, and semantic and graph state remains open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Storage for index metadata and for semantic and graph state remains open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
 ## Current implementation
 
@@ -17,9 +17,12 @@ The current implementation is deliberately narrower than the target architecture
 - the per-project container stack from Slice 1.2: deterministic Compose generation, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, `lctk project start/stop/restart`, and typed lifecycle state with health;
 - the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs;
 - the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
-- persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter.
+- persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter;
+- the host change journal from Slice 2.1: a native filesystem watcher per running project, normalized project-relative events, a configurable debounce, a persistent per-project journal that is either complete since its checkpoint or explicitly incomplete, and freshness reported through `project_info`.
 
-There is no durable change journal yet, so the index catches up on start and on an explicit `lctk project reindex` rather than following edits as they happen; the watcher arrives in Slice 2.1. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
+The journal has no consumer yet: the index still catches up on start and on an explicit `lctk project reindex` rather than following the journal, so every project reports an incomplete record. That is accurate rather than a defect — nothing has yet brought an index up to date from the journal — and Slice 2.2 is what changes it. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
+
+The watcher derives what it observes from the project's own service rather than reading ignore files itself, so the exclusion policy has exactly one implementation. On this repository that is 42 watched directories out of 56,077 on disk.
 
 The search engine runs only inside the project container. It is built as a separate Go module, which keeps it out of the portable host executable by construction rather than by convention, as [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires. The host reaches it on a loopback port the container runtime assigns, so no port allocation is coordinated and no project service is reachable from the network.
 

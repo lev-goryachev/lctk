@@ -32,6 +32,8 @@ Usage:
   lctk project restart [--wait DURATION] [--json] PROJECT
   lctk project remove [--json] PROJECT
   lctk project reindex [--full] [--json] PROJECT
+  lctk project watch [--follow] [--json] PROJECT
+  lctk settings show [--json]
   lctk image build [--context DIR] [--json]
   lctk image status [--json]
   lctk grant show [--json] [--reveal] PROJECT
@@ -60,6 +62,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runWatchOnce(ctx, args[1:], stdout)
 	case "project":
 		return runProject(args[1:], stdout, stderr)
+	case "settings":
+		return runSettings(args[1:], stdout, stderr)
 	case "image":
 		return runImage(args[1:], stdout, stderr)
 	case "grant":

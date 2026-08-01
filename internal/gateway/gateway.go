@@ -31,6 +31,29 @@ type GrantLoader func() (*projectgrant.Set, error)
 // StatusProbe reports the runtime state of a project.
 type StatusProbe func(ctx context.Context, project projectregistry.Project) (projectstack.Status, error)
 
+// Waker tells the host that a client is using a project.
+//
+// It is how "on-demand wakeup" reaches the watcher: a project nobody has talked
+// to for a while releases its filesystem watches, and the request that brings it
+// back into use is the right moment to take them again. It must not block, since
+// it runs on the request path.
+type Waker func(project projectregistry.Project, status projectstack.Status)
+
+// ChangeState is what the host watcher knows about a project right now.
+type ChangeState struct {
+	Watching bool
+	Pending  int
+	// GapReason is set when the host's record of changes is known to be
+	// incomplete, in which case the pending count is a lower bound.
+	GapReason       string
+	LastEventAt     time.Time
+	DebounceSeconds float64
+}
+
+// ChangeReporter returns the watcher's view of a project, and false when no
+// watcher is running for it.
+type ChangeReporter func(projectID string) (ChangeState, bool)
+
 // Options configures a gateway.
 type Options struct {
 	Registry RegistryLoader
@@ -46,6 +69,11 @@ type Options struct {
 	// service. It is injectable so search behavior can be tested against a
 	// stand-in service without a container.
 	NewSearchClient func(address string) *codeintel.Client
+	// Wake and Changes connect the route to the host change watcher. Both are
+	// optional: a gateway without them serves every tool, and reports that
+	// freshness is unknown rather than implying it is current.
+	Wake    Waker
+	Changes ChangeReporter
 }
 
 // Gateway serves /projects/{project_id}/mcp.
@@ -110,6 +138,9 @@ type projectInfoOutput struct {
 	Version      string   `json:"version"`
 	// Index describes the project's search index when there is one.
 	Index *indexInfo `json:"index,omitempty"`
+	// Changes describes what the host watcher has seen since the index was last
+	// brought up to date.
+	Changes *changeInfo `json:"changes,omitempty"`
 }
 
 // indexInfo is the freshness ADR-0004 requires a project answer to carry.
@@ -119,7 +150,78 @@ type indexInfo struct {
 	Generation uint64 `json:"generation"`
 	FileCount  int    `json:"file_count"`
 	IndexedAt  string `json:"indexed_at,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	// Freshness is one of fresh, updating, stale, or unknown. It is never
+	// optimistic: a project whose changes nobody is watching reports unknown
+	// rather than fresh, because "nothing was observed" is not evidence that
+	// nothing changed.
+	Freshness string `json:"freshness"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// changeInfo is the host watcher's view, reported so a caller can judge a search
+// result rather than assume it.
+type changeInfo struct {
+	// Watching says a native watcher is registered for this project right now.
+	Watching bool `json:"watching"`
+	// Pending counts files changed since the index was last brought up to date.
+	Pending int `json:"pending"`
+	// Complete says the record of those changes is known to be whole. When it is
+	// false, Pending is a lower bound and GapReason says why.
+	Complete    bool   `json:"complete"`
+	GapReason   string `json:"gap_reason,omitempty"`
+	LastEventAt string `json:"last_event_at,omitempty"`
+	// DebounceSeconds is how long after the last save an update is expected, so a
+	// caller that just wrote a file knows whether to wait or to search now.
+	DebounceSeconds float64 `json:"debounce_seconds,omitempty"`
+}
+
+// Freshness values.
+const (
+	freshnessFresh    = "fresh"
+	freshnessUpdating = "updating"
+	freshnessStale    = "stale"
+	freshnessUnknown  = "unknown"
+)
+
+// describeChanges turns the watcher's view into the reported block and the
+// freshness verdict.
+//
+// The verdict is deliberately pessimistic in every uncertain case. An agent that
+// is told "fresh" will not re-check, so claiming freshness without evidence is
+// the one answer that causes silent wrong work.
+func describeChanges(state ChangeState, watching bool, indexing bool) (*changeInfo, string) {
+	freshness := freshnessUnknown
+	if indexing {
+		freshness = freshnessUpdating
+	}
+	if !watching {
+		return nil, freshness
+	}
+
+	info := &changeInfo{
+		Watching:        state.Watching,
+		Pending:         state.Pending,
+		Complete:        state.GapReason == "",
+		GapReason:       state.GapReason,
+		DebounceSeconds: state.DebounceSeconds,
+	}
+	if !state.LastEventAt.IsZero() {
+		info.LastEventAt = state.LastEventAt.UTC().Format(time.RFC3339)
+	}
+
+	switch {
+	case indexing:
+		freshness = freshnessUpdating
+	case !info.Complete:
+		// The record is incomplete, so the index may be behind by an unknown
+		// amount. Stale is the honest verdict; the reason says why.
+		freshness = freshnessStale
+	case state.Pending > 0:
+		freshness = freshnessStale
+	default:
+		freshness = freshnessFresh
+	}
+	return info, freshness
 }
 
 // exactSearchInput is the public request schema for exact_search.
@@ -315,6 +417,12 @@ func (g *Gateway) resolve(r *http.Request, projectID, requestID string) (*serveC
 		}
 	}
 
+	// The request is accepted, so the project is in use. Waking the watcher here
+	// rather than on a timer is what makes observation follow actual use.
+	if g.options.Wake != nil {
+		g.options.Wake(project, status)
+	}
+
 	return &serveContext{project: project, grant: grant, status: status, requestID: requestID}, nil
 }
 
@@ -345,20 +453,34 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			ServerTime:   g.options.Now().UTC().Format(time.RFC3339),
 			Version:      buildinfo.Version,
 		}
+		var state ChangeState
+		watching := false
+		if g.options.Changes != nil {
+			state, watching = g.options.Changes(resolved.project.ID)
+		}
+
 		if resolved.status.ServiceAddress != "" {
 			output.Capabilities = append(output.Capabilities, "exact_search")
 			// The index status is reported best-effort. A project that is up but
 			// whose service is still starting should still answer project_info.
 			if status, err := g.searchClient(resolved).Status(ctx); err == nil {
+				changes, freshness := describeChanges(state, watching, status.Indexing)
+				output.Changes = changes
 				output.Index = &indexInfo{
 					Ready:      status.Ready,
 					Indexing:   status.Indexing,
 					Generation: status.Generation,
 					FileCount:  status.FileCount,
 					IndexedAt:  status.IndexedAt,
+					Freshness:  freshness,
 					Reason:     status.Reason,
 				}
 			}
+		}
+		if output.Changes == nil {
+			// No index to describe, but the watcher's view still tells a caller
+			// whether anything is being observed at all.
+			output.Changes, _ = describeChanges(state, watching, false)
 		}
 		return nil, output, nil
 	})

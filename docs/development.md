@@ -36,7 +36,7 @@ The foreground daemon listens on `127.0.0.1:4444` by default. Slice 0.1 provides
 
 - `GET /health`;
 - Streamable HTTP MCP at `/mcp` with temporary compatibility tool `foundation_info`;
-- `lctk watch-once <directory>` for the basic watcher proof;
+- `lctk watch-once <directory>` for a raw single-event probe on any directory, registered or not; the project watcher is `lctk project watch --follow`;
 - `lctk doctor` for a read-only Docker API probe.
 
 These commands are foundation evidence, not the complete project lifecycle described elsewhere.
@@ -55,6 +55,34 @@ These commands are foundation evidence, not the complete project lifecycle descr
 `config` writes only inside a marker-delimited region of a file LCTK does not own, takes a backup, and refuses to overwrite a same-named entry it did not generate. No generated file contains a token.
 
 `launch` is how the credential arrives. Codex reads the token from an environment variable, and an editor that is already running keeps the environment it started with, so the editor must be closed first. To set the variable durably instead, `lctk codex env --reveal PROJECT` prints the command; LCTK does not run it.
+
+## Watching a project
+
+A running daemon watches each running project and records what it sees in a per-project change journal. See [indexing](indexing.md#the-change-journal) for what the journal claims and [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md) for why.
+
+```sh
+./lctk project watch PROJECT             # what the daemon has recorded
+./lctk project watch --follow PROJECT    # stream normalized events, writing nothing
+./lctk settings show                     # the debounce and watch policy in force
+```
+
+`watch` reads the journal from disk, so it answers even when no daemon is running — which is when the last recorded state is most worth seeing. `--follow` starts a watcher of its own for diagnosis and does not write to the journal.
+
+The machine policy lives in `settings.json` in the LCTK home, and `settings show` prints its path whether or not the file exists:
+
+```json
+{
+  "schema_version": 1,
+  "watch": {
+    "debounce_ms": 3000,
+    "max_debounce_ms": 30000,
+    "max_watched_directories": 20000,
+    "idle_stop_seconds": 900
+  }
+}
+```
+
+A project may propose its own window with `index.debounce_ms` in the manifest. The host clamps it.
 
 ## The code-intel service
 

@@ -1,6 +1,6 @@
 # Local Code ToolKit (LCTK)
 
-> **Status:** public pre-alpha. Slice 0.1 provides a working, tested Go foundation. Project registration, persistent `exact_search`, route-bound project servers, and the Codex end-to-end lifecycle remain planned work.
+> **Status:** public pre-alpha. Project registration, per-project containers, route-bound project MCP endpoints, persistent `exact_search`, the client end-to-end lifecycle, and the host change journal are implemented and measured against real components. Incremental indexing driven by that journal, symbol and semantic intelligence, and safe command execution remain planned work. See the [roadmap](docs/roadmap.md) for what each slice claims and how it was verified.
 
 Local Code ToolKit is a local, extensible MCP platform for software development. It decouples code intelligence, indexing, project memory, and command execution from any specific LLM or IDE.
 
@@ -21,17 +21,26 @@ The official Codex extension for VS Code is the first target client. The public 
 
 Compatibility targets are not certified configurations yet. Hosted Windows and macOS CI provides build and test evidence on GitHub runner environments; it does not certify the exact target operating systems or Docker Desktop integration.
 
-## Current foundation
+## What works today
 
-The current executable provides:
+```sh
+lctk project add PATH          # register a folder; nothing is started
+lctk project start PROJECT     # bring up its isolated container stack
+lctk codex launch PROJECT      # start an editor with the project's grant in its environment
+```
 
-- `lctk version` for build metadata;
-- `lctk daemon` with `GET /health` and a Streamable HTTP endpoint at `/mcp`;
-- `foundation_info`, a temporary Slice 0.1 MCP compatibility tool rather than the future stable project API;
-- `lctk watch-once`, an `fsnotify` event-delivery proof rather than the complete persistent change journal;
-- `lctk doctor`, a read-only Moby API diagnostic for Docker Desktop availability.
+The project is then reachable at `http://127.0.0.1:4444/projects/{project_id}/mcp`, serving two tools:
 
-Automated tests exercise the CLI, health handler, MCP transport/tool call, and watcher proof. CI builds and tests on hosted Windows and macOS runners. A manually triggered workflow constructs non-publishing Windows amd64 and Darwin arm64 archives plus `SHA256SUMS`.
+- `project_info` — what this endpoint is bound to, what it can do, and how fresh its index is;
+- `exact_search` — indexed literal and regular-expression search over the saved working tree, including files that are saved but not committed.
+
+Around that:
+
+- `lctk daemon` hosts the gateway, the per-project grants, and the filesystem watcher;
+- `lctk project status/stop/restart/remove/reindex/watch` and `lctk grant`, `lctk image`, `lctk settings`, `lctk doctor` for the rest of the lifecycle;
+- the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
+
+Automated tests cover the CLI, the gateway and its scope guarantees, the search adapter, the watcher, and the change journal. CI builds and tests on hosted Windows and macOS runners, and the containerized search service on Linux. Container-dependent tests run against real Docker on a developer machine and skip explicitly on hosted runners rather than being simulated.
 
 ## Documentation
 

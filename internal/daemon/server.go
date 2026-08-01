@@ -12,6 +12,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/gateway"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
+	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
 
 const DefaultAddress = "127.0.0.1:4444"
@@ -47,14 +48,45 @@ func NewHandlerWithGateway(options gateway.Options) http.Handler {
 	return mux
 }
 
+// changeReporter adapts the watch supervisor to the gateway's vocabulary, so the
+// gateway does not need to know that a supervisor exists.
+func changeReporter(supervisor *watchsupervisor.Supervisor) gateway.ChangeReporter {
+	return func(projectID string) (gateway.ChangeState, bool) {
+		view, ok := supervisor.View(projectID)
+		if !ok {
+			return gateway.ChangeState{}, false
+		}
+		state := gateway.ChangeState{
+			Watching:        view.Watching,
+			Pending:         view.Pending,
+			LastEventAt:     view.LastEventAt,
+			DebounceSeconds: view.DebounceSeconds,
+		}
+		if view.Gap != nil {
+			state.GapReason = view.Gap.Reason
+		}
+		return state, true
+	}
+}
+
 func Run(ctx context.Context, address string) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
 
+	// The watcher lives in the daemon rather than in the CLI because it must
+	// outlive any one command, and on the host rather than in the container
+	// because that is where the native events are reliable.
+	supervisor := watchsupervisor.New(watchsupervisor.Options{})
+	go supervisor.Run(ctx)
+
 	server := &http.Server{
-		Handler:           NewHandler(),
+		Handler: NewHandlerWithGateway(gateway.Options{
+			RequireRunning: true,
+			Wake:           supervisor.Wake,
+			Changes:        changeReporter(supervisor),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

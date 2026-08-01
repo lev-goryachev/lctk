@@ -39,6 +39,11 @@ const Backend = "zoekt"
 // owns the deadline.
 const DefaultSearchTimeout = 30 * time.Second
 
+// DefaultWatchSetTimeout bounds the directory enumeration a watcher needs before
+// it can start. It is longer than a search because it is a whole-tree walk, and
+// shorter than an index build because nothing is being written.
+const DefaultWatchSetTimeout = 2 * time.Minute
+
 // Error codes the adapter reports. They are LCTK's, not the service's, though
 // the two vocabularies deliberately coincide where the meaning is the same.
 const (
@@ -123,6 +128,22 @@ type Status struct {
 	Reason         string   `json:"reason,omitempty"`
 }
 
+// WatchSet is the set of project-relative directories a host watcher must
+// observe to see every change that could reach the index.
+//
+// The service computes it, because the service owns the exclusion policy. A
+// host-side reimplementation would be a second answer to "what belongs to this
+// project", and the one that drifted would be the watcher, quietly missing edits.
+type WatchSet struct {
+	Directories []string `json:"directories"`
+	Count       int      `json:"count"`
+	// Truncated says the project has more directories than the service will
+	// describe, so the set is a prefix rather than the whole project. A caller
+	// must fall back to reconciliation instead of trusting it.
+	Truncated bool `json:"truncated"`
+	Limit     int  `json:"limit"`
+}
+
 // Client talks to one project's service.
 type Client struct {
 	// Address is the loopback host:port the service is published on. It is
@@ -188,6 +209,21 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	return status, nil
+}
+
+// WatchSet asks the service which directories a host watcher should observe.
+func (c *Client) WatchSet(ctx context.Context) (WatchSet, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultWatchSetTimeout)
+		defer cancel()
+	}
+
+	var set WatchSet
+	if err := c.get(ctx, "/watchset", &set); err != nil {
+		return WatchSet{}, err
+	}
+	return set, nil
 }
 
 // Reindex asks the service to catch up with the workspace.

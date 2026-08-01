@@ -40,7 +40,8 @@ A new change to an indexed file counts as user activity, resets the on-demand id
 
 ### Follow-up
 
-- Use `fsnotify v1.10.1` for the Go watcher adapter. The Slice 0.1 proof verifies basic event delivery; NTFS/APFS rename, coalescing, overflow, normalization, debounce, and reconciliation behavior remain to be validated.
-- Measure rename and coalescing semantics on NTFS and APFS.
-- Accept a default debounce and configuration scope.
-- Define bulk-change thresholds and the excluded-path activity policy.
+- Use `fsnotify` for the Go watcher adapter. Slice 2.1 implements the normalization, coalescing, overflow handling, and debounce this ADR describes, and [ADR-0015](0015-change-observation-is-complete-or-declared-incomplete.md) settles the questions it left open: what happens when observation is incomplete, who decides what is watched, and how debounce is configured.
+- Rename and coalescing semantics are covered by automated tests on both target platforms; a rename arrives as a removal of the old path and a write of the new one. Deletion of a whole directory is reported as such, because once it is gone the filesystem can no longer say what it was.
+- Debounce default and configuration scope: accepted in ADR-0015 as 3 seconds, machine default in the host settings file, project proposal in the manifest, clamped by the host.
+- Reconciliation after downtime, and the excluded-path activity policy, belong to Slice 2.2 and are not yet implemented.
+- Bulk-change thresholds are set by value rather than by measurement, and remain open.
