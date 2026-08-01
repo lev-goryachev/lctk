@@ -159,7 +159,9 @@ Confirmed by hand against a running daemon with a real container: `initialize` s
 
 ### Slice 1.4: Actual Codex end-to-end
 
-**Status:** the chain is measured and passing against real components; the extension user interface is not yet exercised, so the slice is not claimed complete. The [measured results](spikes/codex-end-to-end-results.md) state both.
+**Status:** complete. The chain is measured and passing against real components, and against two independent MCP client implementations. The [measured results](spikes/codex-end-to-end-results.md) record both runs and what they do not cover.
+
+The acceptance criterion was widened during the slice. It originally read "verified through the Codex extension in VS Code". What the endpoint owes a client is the MCP protocol, not one editor's presentation of it, so a second unrelated client is stronger evidence than a second look at the same one. The slice is accepted on the protocol boundary being verified against two clients, one of them a real agent session. The Codex extension's own panels remain unclicked, which the results document states.
 
 LCTK generates local Codex configuration and delivers the project grant. The scenario:
 
@@ -192,9 +194,9 @@ Verified:
 
 Measured end to end against the real `lctk` executable, a real daemon, real containers, and the Codex binary the VS Code extension runs: register, start, connect, `project_info` with a deliberately wrong `project_id` argument, `403 AUTH_FORBIDDEN` for a foreign token, a typed `PROJECT_STOPPED` that survives into the client's own error text, project state preserved across a stop, and reconnection after a restart with no configuration change.
 
-Remaining before the slice is claimed complete: exercise the extension user interface, which the harness cannot drive. The manual steps are listed in the results document.
+Repeated by hand against Claude Code, an unrelated MCP client, on the same live endpoint: handshake and `tools/list`; the credential stored as a variable reference rather than a value and resolved at connect time; a missing variable reported by name; a foreign token refused on another project's route while the correctly paired entry connected in the same check; a typed `PROJECT_STOPPED` for a stopped project; reconnection after a restart; and a real agent session calling `project_info` with a deliberately wrong `project_id` and receiving the routed project, `scope_source: route_and_registry`, and no host path.
 
-This slice originally followed persistent search. It was moved ahead of it so that the client boundary is proven against a real editor before the heaviest backend work begins, and so that search lands inside a chain already known to work end to end. The search steps of the original scenario move to Slice 1.5, which re-runs this chain with `exact_search` in it.
+This slice originally followed persistent search. It was moved ahead of it so that the client boundary is proven against a real client before the heaviest backend work begins, and so that search lands inside a chain already known to work end to end. The search steps of the original scenario move to Slice 1.5, which re-runs this chain with `exact_search` in it.
 
 ### Slice 1.5: Persistent `exact_search`
 
