@@ -161,7 +161,18 @@ func (s *Supervisor) Sweep(ctx context.Context) {
 	live := map[string]struct{}{}
 	for _, project := range registry.List() {
 		status, err := s.options.Status(ctx, project)
-		if err != nil || status.State != projectstack.StateRunning || status.ServiceAddress == "" {
+		if err != nil {
+			// The container runtime did not answer. That is not evidence the
+			// project stopped, and releasing a watcher over it would cost a
+			// reconciliation on the next sweep. An existing watcher is kept; a
+			// missing one is not started, because there is nothing to ask for a
+			// watch set.
+			if s.watching(project.ID) {
+				live[project.ID] = struct{}{}
+			}
+			continue
+		}
+		if status.State != projectstack.StateRunning || status.ServiceAddress == "" {
 			continue
 		}
 		live[project.ID] = struct{}{}
@@ -347,6 +358,13 @@ func (s *Supervisor) resolveWatch(project projectregistry.Project) hostsettings.
 		return watch
 	}
 	return watch.WithProjectDebounce(manifest.Manifest.Index.DebounceMS)
+}
+
+func (s *Supervisor) watching(projectID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.workers[projectID]
+	return ok
 }
 
 func (s *Supervisor) workerIDs() []string {

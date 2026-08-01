@@ -3,6 +3,7 @@ package watchsupervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -111,6 +112,28 @@ func registryWith(t *testing.T, project projectregistry.Project) *projectregistr
 	return loaded
 }
 
+// control lets a test steer what the container runtime appears to say.
+type control struct {
+	mu      sync.Mutex
+	stopped bool
+	err     error
+}
+
+func (c *control) set(stopped bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopped, c.err = stopped, err
+}
+
+func (c *control) read() (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopped, c.err
+}
+
 type harness struct {
 	*Supervisor
 	root     string
@@ -120,7 +143,7 @@ type harness struct {
 	clock    *clock
 }
 
-func newHarness(t *testing.T, service *fakeService, running *bool) *harness {
+func newHarness(t *testing.T, service *fakeService, runtime *control) *harness {
 	t.Helper()
 
 	root := t.TempDir()
@@ -134,7 +157,11 @@ func newHarness(t *testing.T, service *fakeService, running *bool) *harness {
 	supervisor := New(Options{
 		Registry: func() (*projectregistry.Registry, error) { return registry, nil },
 		Status: func(context.Context, projectregistry.Project) (projectstack.Status, error) {
-			if running != nil && !*running {
+			stopped, err := runtime.read()
+			switch {
+			case err != nil:
+				return projectstack.Status{ProjectID: project.ID, State: projectstack.StateUnknown}, err
+			case stopped:
 				return projectstack.Status{ProjectID: project.ID, State: projectstack.StateStopped}, nil
 			}
 			return status, nil
@@ -322,15 +349,15 @@ func TestABurstOfSavesCollapsesIntoOnePendingChange(t *testing.T) {
 
 func TestAStoppedProjectReleasesItsWatcherAndRecordsAGap(t *testing.T) {
 	service := newFakeService(t, []string{"."})
-	running := true
-	h := newHarness(t, service, &running)
+	runtime := &control{}
+	h := newHarness(t, service, runtime)
 
 	h.Sweep(context.Background())
 	if _, ok := h.View(h.project.ID); !ok {
 		t.Fatal("the project was not being watched to begin with")
 	}
 
-	running = false
+	runtime.set(true, nil)
 	h.Sweep(context.Background())
 
 	if _, ok := h.View(h.project.ID); ok {
@@ -402,6 +429,27 @@ func TestAnIdleProjectReleasesItsWatcher(t *testing.T) {
 
 	if _, ok := h.View(h.project.ID); ok {
 		t.Fatal("a project nobody has used kept its watcher")
+	}
+}
+
+// Docker Desktop not answering is not the same as a project having stopped.
+// Releasing a watcher over it would cost a reconciliation on the next sweep for
+// a project that never went anywhere.
+func TestAnUnreachableRuntimeDoesNotReleaseAWatcher(t *testing.T) {
+	service := newFakeService(t, []string{"."})
+	runtime := &control{}
+	h := newHarness(t, service, runtime)
+
+	h.Sweep(context.Background())
+	if _, ok := h.View(h.project.ID); !ok {
+		t.Fatal("the project was not being watched to begin with")
+	}
+
+	runtime.set(false, errors.New("the container runtime is unavailable"))
+	h.Sweep(context.Background())
+
+	if _, ok := h.View(h.project.ID); !ok {
+		t.Fatal("a transient runtime failure released the watcher")
 	}
 }
 
