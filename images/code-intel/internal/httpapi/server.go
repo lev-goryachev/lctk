@@ -109,8 +109,11 @@ type StatusView struct {
 	Generation uint64 `json:"generation"`
 	FileCount  int    `json:"file_count"`
 	SkippedBig int    `json:"skipped_too_large"`
-	DeltaDepth int    `json:"delta_depth"`
-	IndexedAt  string `json:"indexed_at,omitempty"`
+	// SkippedIgnored counts entries the project's own ignore rules excluded, so
+	// a caller can tell "the project has 155 files" from "LCTK only looked at 155".
+	SkippedIgnored int    `json:"skipped_ignored"`
+	DeltaDepth     int    `json:"delta_depth"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
 	// Reason explains a not-ready state, so the condition is diagnosable without
 	// reading container logs.
 	Reason string `json:"reason,omitempty"`
@@ -138,6 +141,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	view.Generation = state.Generation
 	view.FileCount = state.FileCount
 	view.SkippedBig = state.SkippedBig
+	view.SkippedIgnored = state.SkippedIgnored
 	view.DeltaDepth = state.DeltaDepth
 	view.IndexedAt = state.BuiltAt.Format(time.RFC3339)
 	writeJSON(w, http.StatusOK, view)

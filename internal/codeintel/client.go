@@ -33,8 +33,11 @@ const SchemaVersion = 1
 // nothing in the protocol depends on the value.
 const Backend = "zoekt"
 
-// DefaultTimeout bounds one call to a project service.
-const DefaultTimeout = 30 * time.Second
+// DefaultSearchTimeout bounds a search when the caller sets no deadline of its
+// own. Index operations are deliberately not bounded here: a full rebuild of a
+// large project legitimately takes minutes, and the caller that asked for one
+// owns the deadline.
+const DefaultSearchTimeout = 30 * time.Second
 
 // Error codes the adapter reports. They are LCTK's, not the service's, though
 // the two vocabularies deliberately coincide where the meaning is the same.
@@ -108,14 +111,15 @@ type Response struct {
 
 // Status is the project service's own view of its index.
 type Status struct {
-	Ready      bool   `json:"ready"`
-	Indexing   bool   `json:"indexing"`
-	Generation uint64 `json:"generation"`
-	FileCount  int    `json:"file_count"`
-	SkippedBig int    `json:"skipped_too_large"`
-	DeltaDepth int    `json:"delta_depth"`
-	IndexedAt  string `json:"indexed_at,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	SkippedBig     int    `json:"skipped_too_large"`
+	SkippedIgnored int    `json:"skipped_ignored"`
+	DeltaDepth     int    `json:"delta_depth"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // Client talks to one project's service.
@@ -128,11 +132,14 @@ type Client struct {
 }
 
 // New returns a client for a published service address.
+//
+// The HTTP client carries no overall timeout on purpose. A single deadline
+// cannot suit both a search, which must not hang, and a full index rebuild,
+// which is allowed to take minutes; each call site sets its own instead.
 func New(address string) *Client {
 	return &Client{
 		Address: address,
 		HTTP: &http.Client{
-			Timeout: DefaultTimeout,
 			// The service is on loopback and is not a general-purpose endpoint;
 			// following a redirect out of it would be a bug, not a feature.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -144,6 +151,12 @@ func New(address string) *Client {
 
 // Search runs one query against the project service.
 func (c *Client) Search(ctx context.Context, request Request) (Response, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultSearchTimeout)
+		defer cancel()
+	}
+
 	var service serviceResponse
 	if err := c.call(ctx, "/search", request, &service); err != nil {
 		return Response{}, err
@@ -240,7 +253,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, ou
 
 	client := c.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: DefaultTimeout}
+		client = &http.Client{}
 	}
 	response, err := client.Do(request)
 	if err != nil {

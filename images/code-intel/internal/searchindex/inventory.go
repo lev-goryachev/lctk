@@ -12,21 +12,38 @@ import (
 	"strings"
 )
 
-// excludedDirectories are skipped wholesale during enumeration.
+// excludedDirectories are skipped whatever the project's ignore rules say.
 //
-// These are directories whose contents are derived, vendored, or private to a
-// tool. Indexing them costs space and answers questions about generated output
-// rather than about the project.
+// These hold version-control metadata. Nothing in them is source a caller would
+// search for, a repository does not normally list its own version-control
+// directory in its ignore file, and no project has a reason to re-include one.
 var excludedDirectories = map[string]struct{}{
 	".git": {}, ".hg": {}, ".svn": {},
-	"node_modules": {}, "vendor": {}, ".venv": {},
-	"dist": {}, "build": {}, "target": {}, "coverage": {},
-	".idea": {}, ".vscode": {}, ".gradle": {}, "__pycache__": {},
+}
+
+// defaultIgnorePatterns are applied before the project's own rules, so a project
+// that says nothing still avoids indexing its dependency and tool caches.
+//
+// They are ignore patterns rather than hard exclusions precisely so a project
+// can overrule them: a "!node_modules/" line in its own ignore file wins,
+// because the project knows its layout and LCTK does not.
+//
+// The list is deliberately short. Names like build, dist, target, and vendor are
+// derived output in many projects and real source in others; guessing wrong
+// there loses code silently, and a project that treats them as output has
+// already said so in its ignore file.
+var defaultIgnorePatterns = []string{
+	"node_modules/",
+	".venv/", "venv/", "__pycache__/", ".mypy_cache/", ".pytest_cache/", ".tox/",
+	".gradle/", ".turbo/", ".next/", ".nuxt/", ".parcel-cache/",
 }
 
 type inventoryResult struct {
 	files      map[string]string
 	skippedBig int
+	// skippedIgnored counts entries excluded by the project's own ignore rules,
+	// so the effect is reportable rather than invisible.
+	skippedIgnored int
 }
 
 // inventory walks the workspace and records a digest per eligible file.
@@ -37,6 +54,10 @@ type inventoryResult struct {
 func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 	result := inventoryResult{files: map[string]string{}}
 
+	// Ignore rules are collected per directory as the walk descends, because a
+	// nested ignore file adds rules for its own subtree only.
+	rules := map[string]ignoreSet{"": rootIgnoreSet(s.Workspace)}
+
 	err := filepath.WalkDir(s.Workspace, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -44,19 +65,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			if name == s.Workspace {
-				return nil
-			}
-			if _, excluded := excludedDirectories[entry.Name()]; excluded {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Only regular files. A symlink is skipped rather than followed, because
-		// following one is the classic way out of a mount, and the read-only
-		// workspace is the boundary this service is trusted to stay inside.
-		if !entry.Type().IsRegular() {
+		if name == s.Workspace {
 			return nil
 		}
 
@@ -65,6 +74,34 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
+		parent := path.Dir(relative)
+		if parent == "." {
+			parent = ""
+		}
+		inherited := rules[parent]
+
+		if entry.IsDir() {
+			if _, excluded := excludedDirectories[entry.Name()]; excluded {
+				return filepath.SkipDir
+			}
+			if inherited.ignored(relative, true) {
+				result.skippedIgnored++
+				return filepath.SkipDir
+			}
+			rules[relative] = inherited.withFile(name, relative)
+			return nil
+		}
+
+		// Only regular files. A symlink is skipped rather than followed, because
+		// following one is the classic way out of a mount, and the read-only
+		// workspace is the boundary this service is trusted to stay inside.
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		if inherited.ignored(relative, false) {
+			result.skippedIgnored++
+			return nil
+		}
 
 		info, err := entry.Info()
 		if err != nil {
@@ -89,6 +126,37 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 		return inventoryResult{}, internal("enumerate the workspace", err)
 	}
 	return result, nil
+}
+
+// eligible reports whether a single path would be indexed, applying the same
+// ignore rules the walk applies.
+//
+// A targeted update has to agree with a full build, or a change to an ignored
+// file would add it to the index and the next rebuild would silently drop it
+// again.
+func (s *Store) eligible(relative string) bool {
+	segments := strings.Split(relative, "/")
+	rules := rootIgnoreSet(s.Workspace)
+	prefix := ""
+
+	for depth, segment := range segments {
+		if _, excluded := excludedDirectories[segment]; excluded {
+			return false
+		}
+		if prefix == "" {
+			prefix = segment
+		} else {
+			prefix = prefix + "/" + segment
+		}
+		isDir := depth < len(segments)-1
+		if rules.ignored(prefix, isDir) {
+			return false
+		}
+		if isDir {
+			rules = rules.withFile(filepath.Join(s.Workspace, filepath.FromSlash(prefix)), prefix)
+		}
+	}
+	return true
 }
 
 // digestFile returns the digest and size of one workspace-relative file.

@@ -17,15 +17,16 @@ import (
 const reindexTimeout = 10 * time.Minute
 
 type reindexView struct {
-	ProjectID  string `json:"project_id"`
-	Full       bool   `json:"full"`
-	Ready      bool   `json:"ready"`
-	Indexing   bool   `json:"indexing"`
-	Generation uint64 `json:"generation"`
-	FileCount  int    `json:"file_count"`
-	SkippedBig int    `json:"skipped_too_large"`
-	IndexedAt  string `json:"indexed_at,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	ProjectID      string `json:"project_id"`
+	Full           bool   `json:"full"`
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	SkippedBig     int    `json:"skipped_too_large"`
+	SkippedIgnored int    `json:"skipped_ignored"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // runProjectReindex asks a running project to bring its index up to date.
@@ -72,15 +73,16 @@ func runProjectReindex(args []string, stdout io.Writer) error {
 	}
 
 	view := reindexView{
-		ProjectID:  project.ID,
-		Full:       *full,
-		Ready:      indexStatus.Ready,
-		Indexing:   indexStatus.Indexing,
-		Generation: indexStatus.Generation,
-		FileCount:  indexStatus.FileCount,
-		SkippedBig: indexStatus.SkippedBig,
-		IndexedAt:  indexStatus.IndexedAt,
-		Reason:     indexStatus.Reason,
+		ProjectID:      project.ID,
+		Full:           *full,
+		Ready:          indexStatus.Ready,
+		Indexing:       indexStatus.Indexing,
+		Generation:     indexStatus.Generation,
+		FileCount:      indexStatus.FileCount,
+		SkippedBig:     indexStatus.SkippedBig,
+		SkippedIgnored: indexStatus.SkippedIgnored,
+		IndexedAt:      indexStatus.IndexedAt,
+		Reason:         indexStatus.Reason,
 	}
 	if *asJSON {
 		return writeJSON(stdout, view)
@@ -91,6 +93,9 @@ func runProjectReindex(args []string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "  files:      %d\n", view.FileCount)
 	if view.SkippedBig > 0 {
 		fmt.Fprintf(stdout, "  skipped:    %d file(s) over the size limit\n", view.SkippedBig)
+	}
+	if view.SkippedIgnored > 0 {
+		fmt.Fprintf(stdout, "  ignored:    %d entries excluded by ignore rules\n", view.SkippedIgnored)
 	}
 	if view.IndexedAt != "" {
 		fmt.Fprintf(stdout, "  indexed at: %s\n", view.IndexedAt)

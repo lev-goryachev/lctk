@@ -77,11 +77,15 @@ type State struct {
 	DeltaDepth int `json:"delta_depth"`
 	// Files maps a project-relative path to a content digest. It is LCTK's own
 	// inventory, which is what allows an uncommitted saved file to be indexed.
-	Files      map[string]string `json:"files"`
-	FileCount  int               `json:"file_count"`
-	SkippedBig int               `json:"skipped_too_large"`
-	BuiltAt    time.Time         `json:"built_at"`
-	FullBuild  bool              `json:"full_build"`
+	Files     map[string]string `json:"files"`
+	FileCount int               `json:"file_count"`
+	// SkippedBig counts files above the size limit.
+	SkippedBig int `json:"skipped_too_large"`
+	// SkippedIgnored counts entries the project's own ignore rules excluded, so
+	// the effect of those rules is reportable rather than invisible.
+	SkippedIgnored int       `json:"skipped_ignored"`
+	BuiltAt        time.Time `json:"built_at"`
+	FullBuild      bool      `json:"full_build"`
 }
 
 // Change is one file event to apply.
@@ -181,6 +185,7 @@ func (s *Store) Rebuild(ctx context.Context) (State, error) {
 		full:       true,
 		files:      inventory.files,
 		skippedBig: inventory.skippedBig,
+		ignored:    inventory.skippedIgnored,
 		add:        sortedKeys(inventory.files),
 	})
 }
@@ -228,6 +233,12 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 			delete(files, name)
 			continue
 		}
+		// A targeted update must agree with what a full build would do, or an
+		// ignored file added here would vanish again at the next rebuild.
+		if !s.eligible(name) {
+			delete(files, name)
+			continue
+		}
 		digest, size, err := s.digestFile(name)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -254,6 +265,7 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		deltaDepth: state.DeltaDepth + 1,
 		files:      files,
 		skippedBig: state.SkippedBig,
+		ignored:    state.SkippedIgnored,
 		add:        add,
 		tombstone:  sortedSet(touched),
 	})
@@ -304,6 +316,7 @@ type buildPlan struct {
 	deltaDepth int
 	files      map[string]string
 	skippedBig int
+	ignored    int
 	add        []string
 	tombstone  []string
 }
@@ -370,14 +383,15 @@ func (s *Store) build(ctx context.Context, plan buildPlan) (State, error) {
 	}
 
 	state := State{
-		SchemaVersion: SchemaVersion,
-		Generation:    plan.generation,
-		DeltaDepth:    plan.deltaDepth,
-		Files:         plan.files,
-		FileCount:     len(plan.files),
-		SkippedBig:    plan.skippedBig,
-		BuiltAt:       time.Now().UTC().Truncate(time.Second),
-		FullBuild:     plan.full,
+		SchemaVersion:  SchemaVersion,
+		Generation:     plan.generation,
+		DeltaDepth:     plan.deltaDepth,
+		Files:          plan.files,
+		FileCount:      len(plan.files),
+		SkippedBig:     plan.skippedBig,
+		SkippedIgnored: plan.ignored,
+		BuiltAt:        time.Now().UTC().Truncate(time.Second),
+		FullBuild:      plan.full,
 	}
 	if err := writeState(filepath.Join(staging, stateName), state); err != nil {
 		return State{}, err
