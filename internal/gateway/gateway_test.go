@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lev-goryachev/lctk/internal/gitinfo"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
@@ -45,6 +46,8 @@ type fixture struct {
 	woken []string
 	// flushed records which projects a search asked the host to bring up to date.
 	flushed []string
+	// git stands in for the working-tree reader, nil unless a test installs one.
+	git GitReader
 }
 
 func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixture {
@@ -106,6 +109,7 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 			state, ok := f.changes[projectID]
 			return state, ok
 		},
+		Git: gitProxy{f},
 		Flush: func(_ context.Context, projectID string) {
 			f.flushed = append(f.flushed, projectID)
 			// A real flush applies what is pending, so the stand-in does too.
@@ -506,7 +510,7 @@ func TestToolListIsTheDocumentedCatalog(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	want := []string{"exact_search", "project_info"}
+	want := []string{"exact_search", "git_diff", "git_status", "project_info"}
 	if len(names) != len(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -624,4 +628,26 @@ func TestUnauthenticatedProbeIsTypedAndUniform(t *testing.T) {
 				bodies[0], bodies[i])
 		}
 	}
+}
+
+// gitProxy defers to whatever reader the fixture holds at call time, so a test
+// can install one after the gateway has already been built.
+//
+// The gateway asks whether a reader exists when it registers tools, which is
+// before a test can set the field; the proxy is always present and the fixture
+// decides what it does.
+type gitProxy struct{ fixture *fixture }
+
+func (p gitProxy) Status(ctx context.Context, root string, options gitinfo.Options) (gitinfo.Status, error) {
+	if p.fixture.git == nil {
+		return gitinfo.Status{}, gitinfo.ErrGitUnavailable
+	}
+	return p.fixture.git.Status(ctx, root, options)
+}
+
+func (p gitProxy) Diff(ctx context.Context, root string, options gitinfo.DiffOptions) (gitinfo.Diff, error) {
+	if p.fixture.git == nil {
+		return gitinfo.Diff{}, gitinfo.ErrGitUnavailable
+	}
+	return p.fixture.git.Diff(ctx, root, options)
 }

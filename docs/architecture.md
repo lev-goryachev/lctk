@@ -19,10 +19,13 @@ The current implementation is deliberately narrower than the target architecture
 - the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
 - persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter;
 - the host change journal from Slice 2.1: a native filesystem watcher per running project, normalized project-relative events, a configurable debounce, a persistent per-project journal that is either complete since its checkpoint or explicitly incomplete, and freshness reported through `project_info`;
+- Git awareness from Slice 3.1: `git_status` and `git_diff` on the project route, read-only and route-scoped, plus the branch, commit, and dirty state in `project_info`;
 - resource policy and the admin surface from Slice 2.3: background-load modes that change what a project costs, disk reporting with a refusal to start on a nearly full volume, and a local admin page over an API a project credential cannot reach;
 - incremental indexing from Slice 2.2: a settled batch applied to the index automatically, a gap reconciled instead of applied, a removed directory retracting everything beneath it, bulk changes rebuilt rather than applied, and a search that flushes pending changes before answering so an edit made a moment ago is already searchable.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
+
+Git runs on the host rather than in the project container. The container mounts the source read-only and Git wants to refresh its index when asked for status, and the host is where the user's Git configuration lives, so an answer computed elsewhere would be about a different repository than the one they see. A project registered below a repository root is scoped to its own subtree, so a project endpoint cannot report a sibling directory's changes.
 
 The watcher derives what it observes from the project's own service rather than reading ignore files itself, so the exclusion policy has exactly one implementation. On this repository that is 42 watched directories out of 56,077 on disk.
 

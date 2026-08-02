@@ -98,6 +98,12 @@ Modes are `quiet`, `normal`, and `fast`; see [indexing](indexing.md#resource-mod
 
 `start` and `restart` refuse when the volume is short of space, and `--yes` overrides that.
 
+## Git tools
+
+A running project serves `git_status` and `git_diff` alongside `project_info` and `exact_search`. They are read-only, bound to the project by the route, and they exist for the client that has no shell on the machine; an editor's own terminal does not need them.
+
+`git_status` reports the branch, commit, upstream position, and changed paths. `git_diff` returns a bounded unified diff, optionally of what is staged and optionally restricted to given paths. Paths are repository-relative, and `prefix` says where the project sits inside the repository when the two differ.
+
 ## The admin page
 
 ```sh
