@@ -212,6 +212,8 @@ Every index-dependent response must report the following compactly:
 - backend provenance;
 - timestamp of the last successful update.
 
+The source commit, branch, and dirty state come from Git, reported in `project_info` under `source` as of Slice 3.1. They are absent for a project that is not a repository, and on a machine without Git, which is a truthful "not known" rather than a fabricated clean state. A short-lived cache keeps repeated answers from costing a subprocess each.
+
 Freshness is never optimistic. `unknown` is reported for a project nothing is watching, because "nobody looked" is not evidence that nothing changed, and an agent told `fresh` will not check again. An incomplete record reports `stale` with the gap reason attached, and the pending count is then a lower bound rather than a total.
 
 `project_info` carries this as an `index.freshness` verdict alongside a `changes` block naming what the host has observed:

@@ -40,6 +40,8 @@ The precise safe file-opening strategy requires a separate ADR and OS-specific t
 
 As implemented in Slice 1.5, the search boundary holds these in a specific way. The project service has exactly one workspace mounted and no way to express a second, so scope is structural rather than checked. Enumeration skips symbolic links instead of following them, because following one is the ordinary way out of a read-only mount. An absolute path, a parent traversal, or a Windows-style path is refused rather than clamped, in both a path filter and a change batch: silently reinterpreting a request is worse than declining it, because the caller then believes it searched something it did not.
 
+As implemented in Slice 3.1, the Git surface is read-only by construction: it invokes only `status`, `diff`, and `rev-parse`, never a command that writes, and it disables optional locking so a query cannot collide with a Git operation the user is running. A path argument is refused when it is absolute, escapes the repository, or begins with a dash, rather than being reinterpreted. A project registered below a repository root is scoped to its own subtree, so its endpoint cannot report a sibling's changes. Git is executed on the host, which is the same exposure the daemon already accepts by invoking `docker` from PATH.
+
 ## Runner
 
 The runner is separated from the gateway and indexers. For the trusted-local profile, the minimum guardrails are:

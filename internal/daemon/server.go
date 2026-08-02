@@ -15,6 +15,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/gateway"
+	"github.com/lev-goryachev/lctk/internal/gitinfo"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
@@ -112,6 +113,7 @@ func Run(ctx context.Context, address string) error {
 		Wake:           supervisor.Wake,
 		Changes:        changeReporter(supervisor),
 		Flush:          supervisor.Flush,
+		Git:            gitinfo.New(),
 	}).Register(mux)
 	adminapi.New(adminapi.Options{
 		Sessions: sessions,

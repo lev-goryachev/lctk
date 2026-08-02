@@ -15,6 +15,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/codeintel"
+	"github.com/lev-goryachev/lctk/internal/gitinfo"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -93,6 +94,16 @@ type Options struct {
 	// Flush lets a search wait for observed changes to reach the index instead of
 	// answering from a generation it already knows is behind.
 	Flush Flusher
+	// Git reads the project's working tree through Git. It is optional: a build
+	// without it serves every other tool and reports that the project's source
+	// state is unknown, which is what a machine without git would produce anyway.
+	Git GitReader
+}
+
+// GitReader is the part of internal/gitinfo the gateway drives.
+type GitReader interface {
+	Status(ctx context.Context, root string, options gitinfo.Options) (gitinfo.Status, error)
+	Diff(ctx context.Context, root string, options gitinfo.DiffOptions) (gitinfo.Diff, error)
 }
 
 // Gateway serves /projects/{project_id}/mcp.
@@ -160,6 +171,29 @@ type projectInfoOutput struct {
 	// Changes describes what the host watcher has seen since the index was last
 	// brought up to date.
 	Changes *changeInfo `json:"changes,omitempty"`
+	// Source is what Git says about the working tree, absent when the project is
+	// not a repository or Git is unavailable.
+	Source *sourceInfo `json:"source,omitempty"`
+}
+
+// sourceInfo is the commit-and-dirty half of the freshness contract.
+type sourceInfo struct {
+	Branch      string `json:"branch,omitempty"`
+	Detached    bool   `json:"detached,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+	ShortCommit string `json:"short_commit,omitempty"`
+	Upstream    string `json:"upstream,omitempty"`
+	Ahead       int    `json:"ahead,omitempty"`
+	Behind      int    `json:"behind,omitempty"`
+	Dirty       bool   `json:"dirty"`
+	// ChangedFiles is how many paths differ from the commit, so a caller learns
+	// the size of the difference without asking for the list.
+	ChangedFiles int `json:"changed_files"`
+	// Unborn marks a repository with no commit yet.
+	Unborn bool `json:"unborn,omitempty"`
+	// Prefix is where the project sits inside the repository, so a caller can
+	// relate the repository-relative paths git_status returns to the project.
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // indexInfo is the freshness ADR-0004 requires a project answer to carry.
@@ -513,6 +547,10 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			// whether anything is being observed at all.
 			output.Changes, _ = describeChanges(state, watching, false)
 		}
+		output.Source = g.sourceOf(ctx, resolved)
+		if output.Source != nil {
+			output.Capabilities = append(output.Capabilities, "git_status", "git_diff")
+		}
 		return nil, output, nil
 	})
 
@@ -577,6 +615,7 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 		return nil, output, nil
 	})
 
+	g.registerGitTools(server, resolved)
 	return server
 }
 

@@ -355,15 +355,46 @@ Verified live against a real daemon: an unauthenticated request refused with 401
 
 ## Stage 3 — Safe coding operations
 
-- project-relative file-read helpers only where they complement client capabilities;
-- Git status/diff/changed files;
+LCTK does not duplicate built-in VS Code or Codex file-editing tools without adding value.
+
+### Slice 3.1: Git awareness
+
+**Status:** complete.
+
+The scenario: an agent talking to LCTK over HTTP has no shell on the machine. It can search the code but cannot see what has changed since the last commit, which is most of what "what is going on in this project" means.
+
+That absence is also what justifies the tools against the rule above. An editor's own terminal can already run `git`; a client that reaches LCTK across a socket cannot, and the answer it gets here is bound to one project by the route.
+
+Implemented:
+
+- `git_status` — branch, commit, upstream position, dirty state, and the changed paths with their state, whether each is staged, in the working tree, or both, and where a rename came from;
+- `git_diff` — a unified diff of the working tree or of what is staged, restricted to given paths, bounded in size and honest when truncated;
+- `project_info` gains a `source` block with branch, commit, dirty, and how many paths differ, which is the commit-and-branch half of the [freshness contract](indexing.md#freshness-contract) that had never been implemented;
+- a short-lived cache, so carrying the source state on more answers does not cost a subprocess each time;
+- Git run on the host rather than in the container: the container mounts the source read-only and Git wants to refresh its index, and the host is where the user's Git configuration actually lives.
+
+Verified:
+
+- a folder that is not a repository is an answer rather than a failure, and so is a repository with no commit yet;
+- every kind of change is reported with the right state, including a rename with where it came from, and a file both staged and edited afterwards reports both;
+- a path Git would normally C-quote parses verbatim, because the machine-readable NUL-separated form is used rather than the space-separated one;
+- a project registered **below** a repository root sees only its own changes, not a sibling directory's, and carries the prefix that relates repository-relative paths to it;
+- an absolute path, a parent traversal, and a leading dash are all refused rather than reinterpreted;
+- a machine without Git says so and names what still works;
+- nothing here writes: no commit, no checkout, no fetch, and locking is disabled so asking LCTK for status cannot collide with a Git command in a terminal.
+
+Measured live against this repository through the endpoint: `tools/list` returning all four tools, `project_info` carrying branch and commit, `git_status` reporting six changed paths with a deliberately wrong `project_id` argument and still answering for the routed project, a 58-line diff of one file, a diff bounded to 80 bytes and reported truncated, and three escaping paths refused with `INVALID_PATH`.
+
+The tests drive a real repository they create rather than a fixture of what Git's output was assumed to be. Porcelain v2 has corners — a rename carries its second path in a separate field — and a fixture only proves the parser agrees with whoever wrote it.
+
+### Slice 3.2: Constrained runner
+
 - a separate runner;
 - per-project network setting of `none` or `full`;
 - typed command policy generated through validated manifest;
 - timeout, cancellation, and output and resource limits;
+- project-relative file-read helpers only where they complement client capabilities;
 - tests at the project boundary.
-
-LCTK does not duplicate built-in VS Code or Codex file-editing tools without adding value.
 
 ## Stage 4 — Symbol and AST intelligence
 
