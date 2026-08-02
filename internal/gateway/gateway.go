@@ -16,6 +16,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/codeintel"
 	"github.com/lev-goryachev/lctk/internal/gitinfo"
+	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -94,6 +95,14 @@ type Options struct {
 	// Flush lets a search wait for observed changes to reach the index instead of
 	// answering from a generation it already knows is behind.
 	Flush Flusher
+	// Runner executes the project's approved commands, Manifest reads what the
+	// repository proposes, Budget says what a command may cost, and Audit records
+	// what ran. All are optional: without a Runner the project serves no
+	// run_command tool at all, which is better than serving one that must fail.
+	Runner   CommandRunner
+	Manifest ManifestLoader
+	Budget   func(project projectregistry.Project) hostsettings.Budget
+	Audit    Auditor
 	// Git reads the project's working tree through Git. It is optional: a build
 	// without it serves every other tool and reports that the project's source
 	// state is unknown, which is what a machine without git would produce anyway.
@@ -174,6 +183,9 @@ type projectInfoOutput struct {
 	// Source is what Git says about the working tree, absent when the project is
 	// not a repository or Git is unavailable.
 	Source *sourceInfo `json:"source,omitempty"`
+	// Commands names what run_command can actually run right now, so a caller
+	// does not have to discover by refusal that nothing has been approved.
+	Commands []string `json:"commands,omitempty"`
 }
 
 // sourceInfo is the commit-and-dirty half of the freshness contract.
@@ -551,6 +563,10 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 		if output.Source != nil {
 			output.Capabilities = append(output.Capabilities, "git_status", "git_diff")
 		}
+		if runnable := g.runnableNames(resolved); len(runnable) > 0 {
+			output.Capabilities = append(output.Capabilities, "run_command")
+			output.Commands = runnable
+		}
 		return nil, output, nil
 	})
 
@@ -616,6 +632,7 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 	})
 
 	g.registerGitTools(server, resolved)
+	g.registerRunTool(server, resolved)
 	return server
 }
 

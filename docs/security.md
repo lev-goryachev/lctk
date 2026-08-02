@@ -56,6 +56,14 @@ The runner is separated from the gateway and indexers. For the trusted-local pro
 - no Docker socket or other projects' volumes;
 - a local audit log of the command and result without secrets.
 
+As implemented in Slice 3.2, every one of those guardrails is a flag on a container created and destroyed around one command, which is why they hold against a command that ignores them. Verified from inside a running container: `pids.max` 512, `memory.max` 2 GiB, `cpu.max` 2 cores, `/workspace` writable and the only mount, no `/var/run/docker.sock`, and no network resolution under the `none` policy.
+
+What may run is decided before any of that, in [ADR-0017](adr/0017-command-policy-and-the-runner.md). A repository proposes `build`, `test`, and `lint` in its manifest; the machine owner approves each one; a client runs one **by name and only by name**, with no parameter that carries a command line. An approval is bound to the exact text approved, so a command rewritten in the repository is refused until a person approves it again — otherwise every approval would be a standing grant to run whatever that name later pointed at.
+
+The runner image is approved the same way and for the same reason: choosing the container is choosing what a command can do. A project with no approved image runs nothing.
+
+Every run is recorded in the LCTK home, one append-only line each, including the runs that were refused.
+
 These measures protect against mistakes and runaway processes; they do not guarantee safe execution of hostile malware.
 
 ## Client access

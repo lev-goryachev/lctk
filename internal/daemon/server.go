@@ -13,11 +13,14 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/adminapi"
 	"github.com/lev-goryachev/lctk/internal/adminsession"
+	"github.com/lev-goryachev/lctk/internal/auditlog"
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/gateway"
 	"github.com/lev-goryachev/lctk/internal/gitinfo"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
+	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/runner"
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
 
@@ -99,6 +102,15 @@ func Run(ctx context.Context, address string) error {
 	supervisor := watchsupervisor.New(watchsupervisor.Options{Logger: logger})
 	go supervisor.Run(ctx)
 
+	// A log that cannot be written is reported and then set aside. Refusing to
+	// run anything because the record is unwritable would be worse than running
+	// with a gap in it, and the gap is visible either way.
+	audit, err := auditlog.New()
+	if err != nil {
+		logger.Warn("commands will run without an audit record", slog.String("error", err.Error()))
+		audit = nil
+	}
+
 	sessions, err := adminsession.New(adminsession.Options{})
 	if err != nil {
 		return fmt.Errorf("prepare the admin session: %w", err)
@@ -114,6 +126,9 @@ func Run(ctx context.Context, address string) error {
 		Changes:        changeReporter(supervisor),
 		Flush:          supervisor.Flush,
 		Git:            gitinfo.New(),
+		Runner:         runner.New(),
+		Budget:         projectstack.NewManager().Budget,
+		Audit:          audit,
 	}).Register(mux)
 	adminapi.New(adminapi.Options{
 		Sessions: sessions,

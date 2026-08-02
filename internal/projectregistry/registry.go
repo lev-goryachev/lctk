@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/commandpolicy"
 	"github.com/lev-goryachev/lctk/internal/projectpath"
 )
 
@@ -71,6 +72,11 @@ type Project struct {
 	// registration time. The manifest's contents are read on demand rather than
 	// cached, so a repository edit cannot silently persist into host state.
 	ManifestPresent bool `json:"manifest_present"`
+	// Commands is what the machine owner has agreed this project may run, and in
+	// what container. It lives here rather than in the repository manifest for
+	// the reason the manifest cannot hold it: the manifest proposes, and the
+	// owner decides.
+	Commands commandpolicy.Set `json:"commands,omitzero"`
 	// ResourceMode overrides the machine-wide background-load policy for this
 	// project. Empty means the machine policy applies.
 	//
@@ -195,6 +201,17 @@ func (r *Registry) matching(c projectpath.Canonical) (project Project, sameFile 
 
 // Remove deletes a registration. Persistent project data is not touched, per the
 // remove versus purge distinction in docs/project-lifecycle.md.
+// SetCommands records what this project may run.
+func (r *Registry) SetCommands(projectID string, commands commandpolicy.Set) error {
+	for i := range r.projects {
+		if r.projects[i].ID == projectID {
+			r.projects[i].Commands = commands
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrNotFound, projectID)
+}
+
 // SetResourceMode records this project's background-load override. An empty mode
 // clears it, so the project follows the machine policy again.
 //
