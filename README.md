@@ -33,7 +33,8 @@ The project is then reachable at `http://127.0.0.1:4444/projects/{project_id}/mc
 
 - `project_info` — what this endpoint is bound to, what it can do, and how fresh its index is;
 - `exact_search` — indexed literal and regular-expression search over the saved working tree, including files that are saved but not committed;
-- `git_status` and `git_diff` — what has changed since the last commit, read-only, for a client that has no shell on the machine.
+- `git_status` and `git_diff` — what has changed since the last commit, read-only, for a client that has no shell on the machine;
+- `run_command` — the project's build, test, or lint, but only the ones the machine owner approved, and only by name.
 
 The index follows edits on its own. Saving a file makes it searchable without any command; measured on this repository, a file written was found by search 0.2 seconds later. When the index cannot be brought up to date, the answer says so rather than looking current.
 

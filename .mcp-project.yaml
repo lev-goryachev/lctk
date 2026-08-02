@@ -1,0 +1,16 @@
+# LCTK's own project manifest.
+#
+# This file proposes; it does not decide. The commands below become runnable only
+# after the machine owner approves each one with `lctk project commands
+# --approve`, and an approval lapses the moment the text here changes. See
+# docs/security.md for why the split exists.
+schema_version: 1
+profile: full
+
+languages:
+  - go
+
+commands:
+  build: go build ./...
+  test: go test ./...
+  lint: gofmt -l ./cmd ./internal

@@ -104,6 +104,22 @@ A running project serves `git_status` and `git_diff` alongside `project_info` an
 
 `git_status` reports the branch, commit, upstream position, and changed paths. `git_diff` returns a bounded unified diff, optionally of what is staged and optionally restricted to given paths. Paths are repository-relative, and `prefix` says where the project sits inside the repository when the two differ.
 
+## Running a project's commands
+
+A repository proposes commands in its manifest; nothing runs until the machine owner approves each one and names an image.
+
+```sh
+./lctk project commands PROJECT                          # what is proposed, approved, and runnable
+./lctk project commands --image golang:1.25 PROJECT      # what approved commands run in
+./lctk project commands --approve test PROJECT           # approve the text as it stands now
+./lctk project commands --network full PROJECT           # give commands network access
+./lctk project commands --revoke test PROJECT
+```
+
+An approval is bound to the exact command text. Edit it in the manifest and the approval lapses, which the status line reports as `CHANGED`. See [ADR-0017](adr/0017-command-policy-and-the-runner.md).
+
+This repository has its own [`.mcp-project.yaml`](../.mcp-project.yaml), so `lctk project commands lctk` shows the mechanism against a real project.
+
 ## The admin page
 
 ```sh

@@ -389,12 +389,38 @@ The tests drive a real repository they create rather than a fixture of what Git'
 
 ### Slice 3.2: Constrained runner
 
-- a separate runner;
-- per-project network setting of `none` or `full`;
-- typed command policy generated through validated manifest;
-- timeout, cancellation, and output and resource limits;
-- project-relative file-read helpers only where they complement client capabilities;
-- tests at the project boundary.
+**Status:** complete. The policy is recorded in [ADR-0017](adr/0017-command-policy-and-the-runner.md).
+
+This is the first part of LCTK that executes code rather than reading it, which changes the trust question entirely. Two failures had to be prevented, and they are different: a client must not run something nobody agreed to, and a repository must not change what "the tests" means after somebody agreed to it.
+
+Implemented:
+
+- three parties with three roles — the repository **proposes** `build`, `test`, and `lint` in its manifest, the machine owner **approves** each one, and a client **runs one by name**. `run_command` has no parameter that carries a command line, so the set a client can execute is exactly the set a human read;
+- an approval bound to the exact text approved, by digest. A command rewritten in the repository is refused until a person approves it again, and the manifest is read per request so the lapse is immediate rather than at the next restart;
+- the runner image approved the same way, because choosing the container is choosing what a command can do. A project without one runs nothing, which is the deliberate default: LCTK cannot know a toolchain, and guessing wrong would build in an environment that silently differs from the developer's;
+- one container per run, which is how the guardrails exist at all — process-tree cleanup is removing the container, and the PID, memory, and CPU caps, the single writable mount, the fixed working directory, and the network policy are the runtime's own flags;
+- `none` as the network default, with `full` meaning the project's *own* network rather than the default bridge, so a command with egress still cannot reach another project's services;
+- a non-zero exit reported as a result rather than an error, with a timeout reported separately, because "the tests failed" and "the tests never finished" call for different things;
+- an append-only audit line per run in the LCTK home, recording what was asked for, what ran, in which image, on which network, which client asked, and the outcome — including the runs that were refused;
+- `lctk project commands` to see and change what a project may run, and `project_info` advertising only the commands that are actually runnable.
+
+Verified from inside a running container, which is where a guardrail either exists or does not:
+
+| | |
+|---|---|
+| `pids.max` | 512 |
+| `memory.max` | 2 GiB |
+| `cpu.max` | 2 cores, matching the project's resource mode |
+| `/workspace` | writable, and the only mount |
+| `/var/run/docker.sock` | absent |
+| network under `none` | no resolution |
+| network under `full` | resolution works |
+
+And through the endpoint against this repository: `lint` ran in a real container in 0.6 s; `test` was refused as not approved and reached no runtime; an invented `deploy` was refused as unknown; a `command` argument supplied alongside the name was ignored and the approved text ran; the manifest's `lint` was rewritten and the command was refused as `COMMAND_CHANGED`, then accepted again once the text was put back. All six outcomes, refusals included, are in the audit log.
+
+The repository now carries its own [`.mcp-project.yaml`](../.mcp-project.yaml), so the mechanism can be exercised against a real project rather than a fixture.
+
+Not done here: project-relative file-read helpers. The rule is that LCTK adds them only where they complement what a client already does, and no case has been identified that `exact_search` and `git_diff` do not already cover. Adding them speculatively would be exactly the duplication this stage forbids.
 
 ## Stage 4 — Symbol and AST intelligence
 

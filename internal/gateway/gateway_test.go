@@ -17,11 +17,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lev-goryachev/lctk/internal/auditlog"
+	"github.com/lev-goryachev/lctk/internal/commandpolicy"
 	"github.com/lev-goryachev/lctk/internal/gitinfo"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
+	"github.com/lev-goryachev/lctk/internal/projectmanifest"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/runner"
 )
 
 var testNow = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
@@ -48,6 +52,13 @@ type fixture struct {
 	flushed []string
 	// git stands in for the working-tree reader, nil unless a test installs one.
 	git GitReader
+	// runner, audit, manifest, and commands stand in for the command surface.
+	// They are fields rather than options so a test can install them after the
+	// gateway is built, the same way git is.
+	runner   CommandRunner
+	audit    Auditor
+	manifest ManifestLoader
+	commands commandpolicy.Set
 }
 
 func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixture {
@@ -85,7 +96,10 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 	f.registry = registryWith(t, stored)
 
 	gateway := New(Options{
-		Registry: func() (*projectregistry.Registry, error) { return f.registry, nil },
+		// The registry is read per request in production, so the fixture rebuilds
+		// it here with whatever approvals a test has installed. Building it once
+		// up front would freeze the approvals before the test could set any.
+		Registry: func() (*projectregistry.Registry, error) { return f.registryWithCommands(t), nil },
 		Grants:   func() (*projectgrant.Set, error) { return f.grants, nil },
 		Status: func(_ context.Context, project projectregistry.Project) (projectstack.Status, error) {
 			state, ok := f.state[project.ID]
@@ -109,7 +123,10 @@ func newFixture(t *testing.T, requireRunning bool, projectIDs ...string) *fixtur
 			state, ok := f.changes[projectID]
 			return state, ok
 		},
-		Git: gitProxy{f},
+		Git:      gitProxy{f},
+		Runner:   runnerProxy{f},
+		Audit:    auditProxy{f},
+		Manifest: func(root string) (projectmanifest.Result, error) { return f.loadManifest(root) },
 		Flush: func(_ context.Context, projectID string) {
 			f.flushed = append(f.flushed, projectID)
 			// A real flush applies what is pending, so the stand-in does too.
@@ -510,7 +527,7 @@ func TestToolListIsTheDocumentedCatalog(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	want := []string{"exact_search", "git_diff", "git_status", "project_info"}
+	want := []string{"exact_search", "git_diff", "git_status", "project_info", "run_command"}
 	if len(names) != len(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -650,4 +667,49 @@ func (p gitProxy) Diff(ctx context.Context, root string, options gitinfo.DiffOpt
 		return gitinfo.Diff{}, gitinfo.ErrGitUnavailable
 	}
 	return p.fixture.git.Diff(ctx, root, options)
+}
+
+// The proxies below exist for the same reason gitProxy does: the gateway decides
+// which tools to register when it builds a server, which is before a test can
+// install a stand-in. The proxy is always present and the fixture decides what it
+// does.
+type runnerProxy struct{ fixture *fixture }
+
+func (p runnerProxy) Run(ctx context.Context, request runner.Request) (runner.Result, error) {
+	if p.fixture.runner == nil {
+		return runner.Result{}, runner.ErrRuntimeUnavailable
+	}
+	return p.fixture.runner.Run(ctx, request)
+}
+
+type auditProxy struct{ fixture *fixture }
+
+func (p auditProxy) Append(entry auditlog.Entry) error {
+	if p.fixture.audit == nil {
+		return nil
+	}
+	return p.fixture.audit.Append(entry)
+}
+
+// loadManifest serves the fixture's proposals, and none when a test installs no
+// loader.
+func (f *fixture) loadManifest(root string) (projectmanifest.Result, error) {
+	if f.manifest == nil {
+		return projectmanifest.Result{}, nil
+	}
+	return f.manifest(root)
+}
+
+// registryWithCommands returns the registry with the fixture's approvals applied.
+func (f *fixture) registryWithCommands(t *testing.T) *projectregistry.Registry {
+	t.Helper()
+	if len(f.commands.Approvals) == 0 && f.commands.Image == "" && f.commands.Network == "" {
+		return f.registry
+	}
+	for _, project := range f.registry.List() {
+		if err := f.registry.SetCommands(project.ID, f.commands); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f.registry
 }

@@ -34,6 +34,7 @@ Usage:
   lctk project reindex [--full] [--json] PROJECT
   lctk project watch [--follow] [--json] PROJECT
   lctk project resources [--mode quiet|normal|fast|default] [--json] PROJECT
+  lctk project commands [--approve NAME] [--image IMAGE] [--json] PROJECT
   lctk settings show [--json]
   lctk admin open [--listen ADDRESS] [--print]
   lctk image build [--context DIR] [--json]
