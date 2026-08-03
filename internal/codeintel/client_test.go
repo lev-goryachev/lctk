@@ -81,7 +81,9 @@ func TestServiceErrorsKeepTheirCodeAndGainAnAction(t *testing.T) {
 		{code: CodeIndexNotReady, status: http.StatusServiceUnavailable, retryable: true, wantAction: "retry"},
 		{code: CodeIndexCorrupt, status: http.StatusInternalServerError, wantAction: "reindex"},
 		{code: CodeInvalidPattern, status: http.StatusBadRequest, wantAction: "Correct"},
-		{code: CodeInvalidCursor, status: http.StatusBadRequest, wantAction: "Correct"},
+		// Not "correct the request": nothing about the request was wrong when it was
+		// made, the index moved underneath it, and starting over is the fix.
+		{code: CodeInvalidCursor, status: http.StatusBadRequest, wantAction: "again"},
 		{code: CodeLimitExceeded, status: http.StatusBadRequest, wantAction: "Correct"},
 	}
 

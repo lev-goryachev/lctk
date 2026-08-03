@@ -423,13 +423,29 @@ func decodeServiceError(status int, payload []byte) error {
 		Message:   envelope.Error.Message,
 		Retryable: envelope.Error.Retryable,
 	}
-	switch typed.Code {
-	case CodeIndexNotReady:
-		typed.Action = "The project is still building its index; retry shortly."
-	case CodeIndexCorrupt:
-		typed.Action = "Rebuild the index with lctk project reindex --full."
-	case CodeInvalidPattern, CodeInvalidCursor, CodeLimitExceeded:
-		typed.Action = "Correct the request and try again."
-	}
+	typed.Action = ActionFor(typed.Code)
 	return typed
+}
+
+// ActionFor is what a caller should do about a typed failure.
+//
+// It is a function rather than an inline switch so the advice can be read back and
+// checked: the recommended action is part of the tool's interface, since it is the
+// sentence an agent acts on.
+func ActionFor(code string) string {
+	switch code {
+	case CodeIndexNotReady:
+		return "The project is still building its index; retry shortly."
+	case CodeIndexCorrupt:
+		return "Rebuild the index with lctk project reindex --full."
+	case CodeInvalidCursor:
+		// More specific than "correct the request", because nothing about the
+		// request was wrong when it was made: the index moved underneath it, and
+		// the fix is to start again rather than to adjust an argument.
+		return "Run the search again without the cursor; a cursor is only valid for the index generation that produced it."
+	case CodeInvalidPattern, CodeLimitExceeded:
+		return "Correct the request and try again."
+	default:
+		return ""
+	}
 }

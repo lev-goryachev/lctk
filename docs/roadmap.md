@@ -523,6 +523,25 @@ Writing the harness caught two wrong assumptions, both mine rather than the prod
 
 `run_command` also confirmed the boundary it exists to hold: the manifest's `test` entry — present, proposed, deliberately unapproved — never reached a container.
 
+### Slice 3.6: The refusal text an agent acts on
+
+**Status:** complete.
+
+A significant change now ends with the whole MCP surface driven by hand against the real daemon, with every answer read rather than asserted on. Passing tests and a green CI are necessary and not sufficient: an assertion checks the substring somebody thought to write down.
+
+The first such pass covered every tool and every variant of each — literal and regex search, case sensitivity, path globs and an escaping glob, paging and a stale cursor, staged versus working-tree Git state, a rename, a file both staged and edited after, diff truncation, each distinct refusal code, a command line smuggled beside an approved name, a rewritten manifest, a non-zero exit, a missing credential, a malformed one, the wrong scheme, and an unknown project.
+
+Almost everything held, including things that had never been checked live: a file written 0.3 seconds earlier was found inside the 3-second debounce window; the staged and working-tree diffs of one path genuinely differ; `commands` lists only what is runnable; a non-zero exit comes back as a result rather than an error; and the three credential answers match [`docs/security.md`](security.md) exactly, including the deliberate `403` for an unknown project that refuses to disclose whether it exists.
+
+Two defects surfaced, both in the text an agent reads and neither reachable by assertion:
+
+- **A refusal ran two sentences together.** The parts are joined with a space, and many messages end on a quoted path or a backticked pattern, so the advice read as part of the value: ``missing closing ]: `[unclosed` Correct the request and try again.`` A message that does not punctuate itself is now closed first, while a colon or semicolon is left alone rather than given a second mark.
+- **A stale cursor was told to "correct the request".** Nothing about the request was wrong when it was made — the index moved underneath it — and the message already carried advice that the generic action then duplicated. The message now states what happened and the action says what to do, with the reason attached.
+
+The recommended action became a named function so it can be read back and checked, since that sentence is part of the tool's interface rather than a detail of its implementation.
+
+Six variants earned their way into the [harness](../spikes/codex-end-to-end/), which now runs 29 steps: the staged-versus-working-tree difference, the smuggled command line, the rewritten manifest, and the failing command. Paging with a stale cursor and the credential failure modes stay hand-only for now and are named as such in the [results](spikes/codex-end-to-end-results.md), because a variant nobody lists is a variant nobody runs.
+
 ## Stage 4 — Symbol and AST intelligence
 
 Add language adapters in small, independent slices without fixing their order in advance:

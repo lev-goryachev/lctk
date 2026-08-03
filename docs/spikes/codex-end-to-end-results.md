@@ -131,9 +131,13 @@ so no external image is assumed and the command runs in a real container.
 | `git_diff_through_client` | **pass.** A unified diff of the one named path came back through the client. |
 | `escaping_path_refused_visibly` | **pass.** `../outside.txt` produced `INVALID_PATH: the path must stay inside the repository` in the client's own tool result, marked `isError`. |
 | `approved_command_runs` | **pass.** The approved command ran in a container and its output reached the client. |
+| `staged_and_worktree_diffs_differ` | **pass.** One path staged with one line and then given a second: the working-tree view shows only the unstaged line and the staged view only the staged one. Without this a passing `git_diff` proves only that *some* diff came back. |
+| `smuggled_command_ignored` | **pass.** A command line supplied beside the name was disregarded and the approved text ran. The field is declared as ignored, and a tool that quietly honoured it would undo the whole approval mechanism while every other check still passed. |
 | `unapproved_command_refused` | **pass.** `COMMAND_NOT_APPROVED`, naming the command that fixes it. |
 | `unproposed_command_refused` | **pass.** `COMMAND_NOT_PROPOSED`, naming the manifest key to add. |
 | `unknown_command_refused` | **pass.** `COMMAND_UNKNOWN: LCTK runs only build, test, and lint.` |
+| `rewritten_command_loses_its_approval` | **pass.** The manifest was rewritten under the running project and the command was refused as `COMMAND_CHANGED`. This is the attack the policy exists to stop — get something harmless approved, then change what it does — so it is driven through a client rather than only in a unit test. |
+| `a_failing_command_is_a_result` | **pass.** After the owner approved the new text, a command exiting 3 came back as a **result** with its output, not as a tool error. A failing check is the ordinary case; reporting it as a malfunction would leave a caller unable to tell it from the runtime being down. |
 
 The refusals are the point. Each calls for something different from whoever reads
 it — approve this, add it to the manifest first, correct your expression, stop
@@ -150,6 +154,28 @@ had been applied.
 `run_command` also confirmed the boundary it exists to hold: the only command that
 ran is the one a human had approved by name, and the manifest's `test` entry —
 present, proposed, and deliberately unapproved — never reached a container.
+
+### What a hand-run found that the harness did not
+
+These steps exist because the surface was driven by hand and the answers read
+rather than asserted on. Two defects surfaced that no assertion would have caught,
+both in the text an agent acts on:
+
+- **A refusal ran two sentences together.** The parts are joined with a space, and
+  many messages end on a quoted path or a backticked pattern, so the advice looked
+  like part of the value: ``missing closing ]: `[unclosed` Correct the request``. A
+  message that does not punctuate itself is now closed before the advice is
+  appended, and a colon or semicolon is left alone rather than given a second mark.
+- **A stale cursor was told to correct its request.** Nothing about the request was
+  wrong when it was made — the index moved underneath it — and the message carried
+  its own advice, which the generic action then duplicated. The message now states
+  what happened and the action says what to do: *Run the search again without the
+  cursor; a cursor is only valid for the index generation that produced it.*
+
+Still hand-only, not yet in the harness: paging through a cursor and its refusal
+after a new generation, language filters, and the credential and route failure
+modes, which are exercised directly against the endpoint rather than through a
+client.
 
 ## Second client: Claude Code
 

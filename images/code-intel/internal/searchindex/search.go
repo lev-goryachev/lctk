@@ -265,7 +265,10 @@ func decodeCursor(value string, generation uint64) (int, error) {
 		return 0, fmt.Errorf("the cursor is not a valid token")
 	}
 	if parsed.Generation != generation {
-		return 0, fmt.Errorf("the cursor belongs to index generation %d and the current generation is %d; run the search again",
+		// States what happened and stops there. What to do about it is the caller's
+		// recommended action, which is a separate field precisely so the two are not
+		// welded into one sentence.
+		return 0, fmt.Errorf("the cursor belongs to index generation %d and the current generation is %d",
 			parsed.Generation, generation)
 	}
 	if parsed.Offset < 0 {
