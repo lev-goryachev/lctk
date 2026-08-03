@@ -26,7 +26,6 @@ type worker struct {
 	projectID string
 	journal   *changejournal.Journal
 	watcher   *fswatch.Watcher
-	index     indexClient
 	watch     hostsettings.Watch
 	logger    *slog.Logger
 	now       func() time.Time
@@ -46,11 +45,50 @@ type worker struct {
 	// stopped refuses new index updates once the worker is being released.
 	stopped atomic.Bool
 
-	mu        sync.Mutex
-	lastUse   time.Time
+	mu      sync.Mutex
+	lastUse time.Time
+	// index and address are the service this worker applies to. They are mutable
+	// because a project restarted while the daemon runs comes back on a different
+	// published port, and the watcher and the journal outlive that.
+	index     indexClient
+	address   string
 	settledAt time.Time
 	appliedAt time.Time
 	lastError string
+}
+
+// target returns the service the worker should apply to now.
+func (w *worker) target() indexClient {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.index
+}
+
+// targetAddress returns where that service is, for a caller deciding whether
+// anything needs to change.
+func (w *worker) targetAddress() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.address
+}
+
+// retarget points the worker at a different address, keeping everything else.
+//
+// Nothing is recorded as a gap. The host never stopped observing — what failed
+// was applying the record, not producing it — so the pending list is still
+// complete and is simply applicable again. Marking a gap here would turn a
+// recoverable lag into a full reconciliation for no reason.
+func (w *worker) retarget(address string, client indexClient) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if address == "" || address == w.address {
+		return false
+	}
+	w.address, w.index = address, client
+	// The failure that made this necessary is no longer what is happening, and
+	// leaving it in the view would report a stale reason for a lag about to clear.
+	w.lastError = ""
+	return true
 }
 
 // indexClient is the part of the code-intelligence adapter a worker drives. It is
@@ -231,10 +269,14 @@ func (w *worker) drain() {
 		result codeintel.IndexResult
 		err    error
 	)
+	// Read the target once. A retarget mid-drain leaves this attempt talking to
+	// the address it started with, which fails and is retried against the new one
+	// rather than switching services halfway through a batch.
+	index := w.target()
 	if snapshot.Gap != nil {
-		result, err = w.index.Reconcile(ctx, false)
+		result, err = index.Reconcile(ctx, false)
 	} else {
-		result, err = w.index.Apply(ctx, indexChanges(snapshot.Pending))
+		result, err = index.Apply(ctx, indexChanges(snapshot.Pending))
 	}
 	if err != nil {
 		// The checkpoint is not advanced, so nothing is lost: the same batch is

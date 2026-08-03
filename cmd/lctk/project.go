@@ -90,6 +90,23 @@ func viewOf(p projectregistry.Project) projectView {
 		view.Network = names.Network
 		view.Volume = names.Volume
 	}
+
+	// The manifest is re-read rather than taken from the registry, because the
+	// registry records what was there at registration and a manifest added since
+	// then is exactly what somebody asking about a project wants to know about.
+	//
+	// Skipped when the path is gone: a project on a disconnected drive would make
+	// every listing wait for the filesystem to give up, and "the path is not
+	// available" is already the answer being reported.
+	if view.PathAvailable {
+		if manifest, err := projectmanifest.Load(p.Path); err == nil {
+			view.ManifestPresent = manifest.TrackedPresent
+			view.ManifestLocal = manifest.LocalPresent
+			view.Warnings = manifest.Warnings
+		} else {
+			view.Warnings = append(view.Warnings, "manifest could not be read: "+err.Error())
+		}
+	}
 	return view
 }
 
@@ -282,17 +299,7 @@ func runProjectStatus(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		view := viewOf(project)
-		// Re-read the manifest so that status reflects the repository as it is
-		// now, not as it was at registration time.
-		if manifest, err := projectmanifest.Load(project.Path); err == nil {
-			view.ManifestPresent = manifest.TrackedPresent
-			view.ManifestLocal = manifest.LocalPresent
-			view.Warnings = manifest.Warnings
-		} else {
-			view.Warnings = append(view.Warnings, "manifest could not be read: "+err.Error())
-		}
-		view = applyStackStatus(manager, project, view)
+		view := applyStackStatus(manager, project, viewOf(project))
 		if *asJSON {
 			return writeJSON(stdout, view)
 		}

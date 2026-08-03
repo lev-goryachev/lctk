@@ -222,3 +222,88 @@ func TestIndexChangesTranslatesEveryObservation(t *testing.T) {
 		}
 	}
 }
+
+// A project restarted while the daemon is running comes back on a different
+// published port. Nothing about the host's observation changed, so the index has
+// to catch up on the new address rather than stay behind on the old one forever.
+func TestAProjectThatMovedToANewPortIsCaughtUpRatherThanAbandoned(t *testing.T) {
+	first := newFakeService(t, []string{"."})
+	runtime := &control{}
+	h := newHarness(t, first, runtime)
+
+	h.Sweep(context.Background())
+	h.awaitView(t, "the starting gap being closed", func(v View) bool { return v.Gap == nil })
+
+	// The project is torn down and its published port stops answering.
+	first.server.Close()
+	h.write(t, "after-restart.go", "package main\n")
+
+	stalled := h.awaitView(t, "the failed update being reported",
+		func(v View) bool { return v.LastError != "" })
+	if stalled.Checkpoint >= stalled.Sequence {
+		t.Fatalf("the checkpoint advanced past an update that failed: %+v", stalled)
+	}
+
+	// It comes back, and the port is the only thing that is different.
+	second := newFakeService(t, []string{"."})
+	runtime.moveTo(second.address())
+	h.Sweep(context.Background())
+
+	h.awaitApply(t, second, "the change observed while the old port was dead",
+		func(batches [][]codeintel.Change) bool {
+			for _, batch := range batches {
+				for _, change := range batch {
+					if change.Path == "after-restart.go" && !change.Deleted {
+						return true
+					}
+				}
+			}
+			return false
+		})
+	h.awaitView(t, "the lag clearing", func(v View) bool {
+		return v.LastError == "" && v.Checkpoint == v.Sequence
+	})
+
+	// The journal survived the move, so catching up was an ordinary batch. Had it
+	// been discarded, a recoverable lag would have cost a full reconciliation.
+	if second.reconcileCount() != 0 {
+		t.Errorf("catching up on the new address reconciled %d times, want an applied batch",
+			second.reconcileCount())
+	}
+}
+
+// A client talking to the project is earlier evidence than the next sweep that it
+// came back somewhere else, and an agent that just asked about a project should
+// not wait a sweep interval for its index to start catching up.
+func TestAClientRequestIsEnoughToNoticeTheProjectMoved(t *testing.T) {
+	first := newFakeService(t, []string{"."})
+	runtime := &control{}
+	h := newHarness(t, first, runtime)
+
+	h.Sweep(context.Background())
+	h.awaitView(t, "the starting gap being closed", func(v View) bool { return v.Gap == nil })
+
+	first.server.Close()
+	h.write(t, "moved.go", "package main\n")
+	h.awaitView(t, "the failed update being reported", func(v View) bool { return v.LastError != "" })
+
+	second := newFakeService(t, []string{"."})
+	runtime.moveTo(second.address())
+
+	// No sweep. Only a client using the project, which is what Wake reports.
+	status := h.status
+	status.ServiceAddress = second.address()
+	h.Wake(h.project, status)
+
+	h.awaitApply(t, second, "the pending change after a client woke the project",
+		func(batches [][]codeintel.Change) bool {
+			for _, batch := range batches {
+				for _, change := range batch {
+					if change.Path == "moved.go" {
+						return true
+					}
+				}
+			}
+			return false
+		})
+}
