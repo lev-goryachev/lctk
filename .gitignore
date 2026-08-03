@@ -9,8 +9,13 @@
 # The CLI built as docs/development.md describes it, with the extension a
 # Windows build adds. Ignored at the root only, so a source file named lctk.go
 # somewhere in the tree is unaffected.
+#
+# The tilde form is what Windows leaves behind when the build cannot replace a
+# running executable, which happens whenever the daemon is up while a rebuild
+# runs -- the ordinary case when verifying a change against a live project.
 /lctk
 /lctk.exe
+/lctk.exe~
 
 # Local LCTK and Codex state
 /.lctk/
