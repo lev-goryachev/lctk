@@ -91,6 +91,14 @@ The journal decides which of two paths is taken, and the choice is not the consu
 
 A failed update advances nothing. The batch stays pending and is tried again at the next settle, and the reason is reported in `lctk project watch` rather than only logged, because an index that has stopped advancing looks exactly like one with nothing to do.
 
+### The project can move under the watcher
+
+A project restarted while the daemon is running comes back with a different published port. The host's observation is untouched by that: the watcher holds directories on the host, and the journal is in the LCTK home.
+
+So the address is re-read rather than captured once — on the sweep, and on any client request, because a client using a project is the earliest evidence available that it came back somewhere else. Nothing is recorded as a gap: what failed was *applying* the record, not producing it, so the pending list is still complete and is simply applicable again. Discarding the journal here would turn a recoverable lag into a full reconciliation.
+
+Reported honestly while it lasts, which is what made the defect findable: before this, a restart left the worker posting to a dead port forever, with the failure in the log and in `lctk project watch` and the checkpoint correctly refusing to advance — a loud failure that never recovered without restarting the daemon.
+
 Three translations matter:
 
 | Observation | Sent to the index |

@@ -340,6 +340,25 @@ func TestProjectStatusReflectsCurrentManifest(t *testing.T) {
 	if len(view.Warnings) == 0 {
 		t.Error("an unknown manifest field did not produce a warning")
 	}
+
+	// And the listing has to say the same thing. Asking about every project is not
+	// a weaker question than asking about one of them, and two answers to it means
+	// whichever the reader happened to run decides what they believe.
+	listed, _, err := project(t, "status", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var views []projectView
+	if err := json.Unmarshal([]byte(listed), &views); err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("the listing reported %d projects, want 1", len(views))
+	}
+	if views[0].ManifestPresent != view.ManifestPresent {
+		t.Errorf("the listing says manifest_present=%v and the single project says %v",
+			views[0].ManifestPresent, view.ManifestPresent)
+	}
 }
 
 func TestProjectRemove(t *testing.T) {

@@ -218,6 +218,10 @@ func (s *Supervisor) Wake(project projectregistry.Project, status projectstack.S
 	if existing, ok := s.workers[project.ID]; ok {
 		s.mu.Unlock()
 		existing.touch(s.options.Now())
+		// A client talking to the project is the earliest evidence available that
+		// it came back on a new port, and waiting for the next sweep would leave
+		// its index behind for up to a minute after somebody asked about it.
+		s.retarget(existing, project.ID, status.ServiceAddress)
 		return
 	}
 	if _, pending := s.starting[project.ID]; pending {
@@ -283,16 +287,43 @@ func (s *Supervisor) Close() {
 
 func (s *Supervisor) ensure(ctx context.Context, project projectregistry.Project, status projectstack.Status) {
 	s.mu.Lock()
-	_, running := s.workers[project.ID]
+	existing, running := s.workers[project.ID]
 	_, pending := s.starting[project.ID]
 	if running || pending || s.closed {
 		s.mu.Unlock()
+		if running {
+			s.retarget(existing, project.ID, status.ServiceAddress)
+		}
 		return
 	}
 	s.starting[project.ID] = struct{}{}
 	s.mu.Unlock()
 
 	s.start(ctx, project, status)
+}
+
+// retarget points an existing worker at the project's current service address.
+//
+// A project restarted while the daemon is running comes back on a different
+// published port. Without this the worker keeps posting to the old one, and
+// because a failed drain deliberately advances nothing, the index would stay
+// behind for as long as the daemon lived — reported honestly the whole time, and
+// never recovering. The journal and the watcher are kept: the host went on
+// observing throughout, so what was pending is still pending and is now
+// applicable.
+func (s *Supervisor) retarget(w *worker, projectID, address string) {
+	// Compared before a client is built, because this runs on the request path as
+	// well as the sweep and the address is usually unchanged.
+	if address == "" || w.targetAddress() == address {
+		return
+	}
+	if !w.retarget(address, s.options.NewClient(address)) {
+		return
+	}
+	s.options.Logger.Info("the project service moved",
+		slog.String("project_id", projectID),
+		slog.String("address", address))
+	w.drainAsync()
 }
 
 // start opens the journal, asks the service what to watch, and begins observing.
@@ -341,13 +372,14 @@ func (s *Supervisor) start(ctx context.Context, project projectregistry.Project,
 		projectID: project.ID,
 		journal:   journal,
 		watcher:   watcher,
-		index:     s.options.NewClient(status.ServiceAddress),
 		watch:     watch,
 		logger:    logger,
 		now:       s.options.Now,
 		done:      make(chan struct{}),
 		finished:  make(chan struct{}),
 		lastUse:   s.options.Now(),
+		index:     s.options.NewClient(status.ServiceAddress),
+		address:   status.ServiceAddress,
 	}
 
 	s.mu.Lock()

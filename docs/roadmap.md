@@ -458,6 +458,33 @@ A unit test covers what the live project cannot show: this repository has 206 fi
 
 Not done here: an agent still cannot ask "what changed since I last looked". The journal is a work queue and forgets an entry once it has been applied, so answering that needs retention it does not have — a decision of its own rather than an extension of this one.
 
+### Slice 3.4: Recovery after a project moves
+
+**Status:** complete.
+
+Both defects here were found by running a slice against this repository rather than by testing, which is the habit paying for itself twice in one afternoon.
+
+**A project restarted while the daemon runs came back on a new published port, and the index never caught up again.** The worker captured the service address when it was created and nothing revisited it, so every drain posted to a port that no longer answered — for as long as the daemon lived.
+
+What it got right is why the defect was findable at all: the failure was loud. The checkpoint refused to advance, the pending list grew, and the reason appeared in `lctk project watch` as well as the log. Nothing claimed to be fresh. What was missing was recovery.
+
+The address is now re-read on the sweep and on any client request, because a client using a project is earlier evidence than the next sweep that it came back somewhere else. The watcher and the journal are kept: the host went on observing throughout, so nothing is a gap and what was pending is simply applicable again. Discarding the journal would have turned a recoverable lag into a full reconciliation.
+
+Measured live, reproducing the original failure:
+
+```
+21:10:44  watching project                      port 51794
+21:11:12  index could not be brought up to date  dial tcp 51794: refused
+21:11:31  the project service moved              port 52984
+21:11:31  index brought up to date               generation 70, applied 1, reconciled=false
+```
+
+87 ms from noticing to caught up, and `reconciled=false` is the part that matters: the journal survived the move, so it cost one delta rather than a walk of the whole project. Both regression tests were confirmed to fail with the fix disabled before being kept.
+
+**`lctk project status` gave two different answers about the manifest.** Asked about one project it re-read the file; asked about every project it reported what the registry recorded at registration, so a manifest added later was reported missing. `lctk project restart` printed the stale answer too.
+
+The read moved into the shared view builder, which removes the duplicate rather than adding a second one, and is skipped when the project's path is unavailable so a listing does not wait on a disconnected drive. The existing test covered only the single-project form, which is exactly why the defect survived; it now asserts the two forms agree.
+
 ## Stage 4 — Symbol and AST intelligence
 
 Add language adapters in small, independent slices without fixing their order in advance:

@@ -178,12 +178,33 @@ type control struct {
 	mu      sync.Mutex
 	stopped bool
 	err     error
+	// address overrides the service address the runtime reports, which is how a
+	// test reproduces a project restarting onto a different published port.
+	address string
 }
 
 func (c *control) set(stopped bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.stopped, c.err = stopped, err
+}
+
+func (c *control) moveTo(address string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.address = address
+}
+
+func (c *control) readAddress(fallback string) string {
+	if c == nil {
+		return fallback
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.address == "" {
+		return fallback
+	}
+	return c.address
 }
 
 func (c *control) read() (bool, error) {
@@ -225,7 +246,11 @@ func newHarness(t *testing.T, service *fakeService, runtime *control) *harness {
 			case stopped:
 				return projectstack.Status{ProjectID: project.ID, State: projectstack.StateStopped}, nil
 			}
-			return status, nil
+			// Copied rather than mutated: the runtime is asked from more than one
+			// goroutine, and the captured status is shared.
+			current := status
+			current.ServiceAddress = runtime.readAddress(service.address())
+			return current, nil
 		},
 		Settings: func() (hostsettings.Settings, error) {
 			return hostsettings.Settings{
