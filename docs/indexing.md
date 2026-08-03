@@ -110,6 +110,19 @@ The bound applies to the wait, not to the work. A caller that gives up waiting d
 
 Measured against this repository: a file written and searched for **0.2 seconds later** was found, against a 3-second debounce window.
 
+### A write that changed nothing costs nothing
+
+A save does not imply an edit. A formatter with nothing to reformat, an editor writing on focus loss, a build tool rewriting a generated file byte for byte, and an edit applied to disk and then undone all produce a write event for a file whose content the index already holds.
+
+Before applying a written path, the service compares the file's content digest against the digest recorded for it in the published index. When they match, the change is dropped: no document is retracted, none is added, and **no generation is published at all**. The generation number, the delta depth, and the build timestamp stay where they were.
+
+Dropping the change is not merely cheaper than applying it. A delta that retracted the entry and re-added identical text would produce the same searchable index while spending a delta generation, and delta depth is the budget that forces the next full rebuild. Without this filter an editor's autosave sets the rebuild schedule.
+
+Two consequences worth stating:
+
+- **A batch is filtered per path, not accepted or rejected whole.** Eight paths submitted with one real edit among them is a one-file delta, and the report says one changed and seven unchanged.
+- **An edit undone before the index caught up is free; an edit undone after it is two changes.** The journal keeps one entry per path, so a write and its revert inside the same batch arrive as a single change whose content already matches. Once the index has caught up, the index genuinely held the other content and search results reflected it, so restoring the original is a real change and costs a generation. That is the honest outcome, not a limitation to remove.
+
 ### Bulk changes
 
 A batch touching much of the index costs more as a delta than as a rebuild, because every retracted path leaves a tombstone that later queries have to resolve. Two thresholds escalate a batch to a full rebuild:
@@ -118,6 +131,8 @@ A batch touching much of the index costs more as a delta than as a rebuild, beca
 - at least 500 files, so a small project is not rebuilt whenever two files change.
 
 Above those, and above the delta-depth limit from [Slice 1.5](#persistent-exact-index), the next update is a rebuild. The journal has its own upper bound at 10,000 pending paths, past which it records a bulk gap and the change goes to reconciliation instead.
+
+Escalation is judged on what actually changed rather than on what was submitted, which is the same decision as the filter above. A branch checked out and immediately checked back would otherwise be a bulk change twice over and force two full rebuilds for no net edit.
 
 ## Layered updates
 
@@ -215,6 +230,19 @@ Every index-dependent response must report the following compactly:
 The source commit, branch, and dirty state come from Git, reported in `project_info` under `source` as of Slice 3.1. They are absent for a project that is not a repository, and on a machine without Git, which is a truthful "not known" rather than a fabricated clean state. A short-lived cache keeps repeated answers from costing a subprocess each.
 
 Freshness is never optimistic. `unknown` is reported for a project nothing is watching, because "nobody looked" is not evidence that nothing changed, and an agent told `fresh` will not check again. An incomplete record reports `stale` with the gap reason attached, and the pending count is then a lower bound rather than a total.
+
+### What freshness is a claim about
+
+`fresh` says the index matches the project's files **as they are written to disk**. It is not a claim that the index accounts for every edit a caller has in mind.
+
+Two states are invisible here by design:
+
+- an editor buffer that has not been saved;
+- a patch a client is holding and has not applied — the diff most coding agents show for approval before writing it.
+
+Neither can be observed from outside the client that holds it, and the only way to import one would be to let a client state what a file contains. LCTK refuses that for the same reason a manifest cannot mount a path: it would let a client put text into the index that never existed on disk, where a second client would find it by search and treat it as real. The scope is stated in the `exact_search` tool description so an agent reads it rather than infers it.
+
+The reverse case — an edit that *has* been written to disk but is still awaiting a human's approval, and may be reverted — is not distinguished either, and deliberately so. The filesystem does not record who wrote a file or why, and treating a written file as anything other than the project's current content would mean guessing. Such an edit is indexed, searchable, and reported by `git_status` as a working-tree change, because that is what it is. If it is reverted before the index catches up, the revert costs nothing (see [A write that changed nothing costs nothing](#a-write-that-changed-nothing-costs-nothing)).
 
 `project_info` carries this as an `index.freshness` verdict alongside a `changes` block naming what the host has observed:
 

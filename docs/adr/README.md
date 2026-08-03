@@ -30,5 +30,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0015](0015-change-observation-is-complete-or-declared-incomplete.md) | Change observation is complete or declared incomplete | accepted |
 | [0016](0016-admin-surface-and-local-session.md) | The admin surface and its local session | accepted |
 | [0017](0017-command-policy-and-the-runner.md) | A repository proposes commands, the owner approves them, a client runs them by name | accepted |
+| [0018](0018-the-index-describes-the-disk.md) | The index describes the disk, and a write that changed nothing costs nothing | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.

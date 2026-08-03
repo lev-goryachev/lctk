@@ -26,8 +26,8 @@ type Indexer interface {
 	State() (searchindex.State, error)
 	Search(ctx context.Context, request searchindex.Request) (searchindex.Response, error)
 	Rebuild(ctx context.Context) (searchindex.State, error)
-	Reconcile(ctx context.Context) (searchindex.State, []searchindex.Change, error)
-	Update(ctx context.Context, changes []searchindex.Change) (searchindex.State, error)
+	Reconcile(ctx context.Context) (searchindex.State, searchindex.Applied, error)
+	Update(ctx context.Context, changes []searchindex.Change) (searchindex.State, searchindex.Applied, error)
 	WatchSet(ctx context.Context) ([]string, bool, error)
 	DiskBytes() (int64, error)
 }
@@ -215,9 +215,15 @@ type indexRequest struct {
 type indexResponse struct {
 	Generation uint64 `json:"generation"`
 	FileCount  int    `json:"file_count"`
-	Applied    int    `json:"applied"`
-	FullBuild  bool   `json:"full_build"`
-	IndexedAt  string `json:"indexed_at"`
+	// Applied counts the paths that actually changed in the index, which is not
+	// the number submitted: a write whose content already matched is dropped.
+	Applied int `json:"applied"`
+	// Unchanged counts submitted writes that changed nothing, so a caller can see
+	// the filter working instead of inferring it from a generation that held
+	// still.
+	Unchanged int    `json:"unchanged,omitempty"`
+	FullBuild bool   `json:"full_build"`
+	IndexedAt string `json:"indexed_at"`
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -235,20 +241,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		state   searchindex.State
-		applied int
+		applied searchindex.Applied
 		err     error
 	)
 	switch request.Mode {
 	case "", "reconcile":
-		var changes []searchindex.Change
-		state, changes, err = s.indexer.Reconcile(r.Context())
-		applied = len(changes)
+		state, applied, err = s.indexer.Reconcile(r.Context())
 	case "full":
 		state, err = s.indexer.Rebuild(r.Context())
-		applied = state.FileCount
+		applied = searchindex.Applied{Changed: state.FileCount, Rebuilt: true, Generations: 1}
 	case "apply":
-		state, err = s.indexer.Update(r.Context(), request.Changes)
-		applied = len(request.Changes)
+		state, applied, err = s.indexer.Update(r.Context(), request.Changes)
 	default:
 		s.progress.finish(nil)
 		writeTyped(w, searchindex.CodeInvalidPattern,
@@ -264,9 +267,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, indexResponse{
 		Generation: state.Generation,
 		FileCount:  state.FileCount,
-		Applied:    applied,
-		FullBuild:  state.FullBuild,
-		IndexedAt:  state.BuiltAt.Format(time.RFC3339),
+		Applied:    applied.Changed,
+		Unchanged:  applied.Unchanged,
+		// Whether *this request* rebuilt the index, which the published state
+		// cannot answer: a batch that changed nothing returns the previous state,
+		// and that state may well have been a full build.
+		FullBuild: applied.Rebuilt,
+		IndexedAt: state.BuiltAt.Format(time.RFC3339),
 	})
 }
 
@@ -279,7 +286,7 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	defer s.indexing.Unlock()
 	s.progress.start()
 
-	state, changes, err := s.indexer.Reconcile(ctx)
+	state, applied, err := s.indexer.Reconcile(ctx)
 	s.progress.finish(err)
 	if err != nil {
 		return err
@@ -287,8 +294,8 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	s.logger.Info("index ready",
 		slog.Uint64("generation", state.Generation),
 		slog.Int("files", state.FileCount),
-		slog.Int("caught_up", len(changes)),
-		slog.Bool("full_build", state.FullBuild))
+		slog.Int("caught_up", applied.Changed),
+		slog.Bool("full_build", applied.Rebuilt))
 	return nil
 }
 

@@ -109,9 +109,7 @@ func TestAnUpdateAgreesWithARebuildAboutIgnoredFiles(t *testing.T) {
 	f.rebuild(t)
 
 	f.write(t, "secrets/token.go", "// Needle secret\n")
-	if _, err := f.Update(context.Background(), []Change{{Path: "secrets/token.go"}}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	f.update(t, Change{Path: "secrets/token.go"})
 
 	found := paths(f.search(t, Request{Pattern: "Needle"}))
 	if len(found) != 1 || found[0] != "app.go" {
@@ -120,12 +118,12 @@ func TestAnUpdateAgreesWithARebuildAboutIgnoredFiles(t *testing.T) {
 
 	// And a reconcile must not treat the ignored file as a pending change
 	// forever.
-	_, changes, err := f.Reconcile(context.Background())
+	_, applied, err := f.Reconcile(context.Background())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(changes) != 0 {
-		t.Errorf("reconcile reported %d changes for an ignored file: %+v", len(changes), changes)
+	if applied.Changed != 0 {
+		t.Errorf("reconcile reported %+v for an ignored file, want nothing changed", applied)
 	}
 }
 
@@ -211,9 +209,7 @@ func TestAnUpdateCannotReadThroughASymlinkOutOfTheWorkspace(t *testing.T) {
 	// The path contains no traversal and no absolute prefix, so validation alone
 	// accepts it. Only opening through a root refuses to leave the mount, which
 	// is why the guarantee lives at the read and not in a check.
-	if _, err := f.Update(context.Background(), []Change{{Path: "linkdir/secret.go"}}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	f.update(t, Change{Path: "linkdir/secret.go"})
 
 	for _, match := range f.search(t, Request{Pattern: "Needle"}).Matches {
 		if match.Path != "inside.go" {
@@ -352,10 +348,7 @@ func TestEditingAnIgnoreFileRebuildsTheWholeIndex(t *testing.T) {
 	}
 
 	f.write(t, LctkIgnoreFile, "fixtures/\n")
-	state, err := f.Update(context.Background(), []Change{{Path: LctkIgnoreFile}})
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	state := f.update(t, Change{Path: LctkIgnoreFile})
 	if !state.FullBuild {
 		t.Error("an ignore-file change was applied as a delta")
 	}
@@ -426,12 +419,12 @@ func TestAChangeToAnIgnoredIgnoreFileStillForcesARebuild(t *testing.T) {
 	f.rebuild(t)
 
 	f.write(t, LctkIgnoreLocalFile, "fixtures/\n")
-	state, changes, err := f.Reconcile(context.Background())
+	state, applied, err := f.Reconcile(context.Background())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if !state.FullBuild {
-		t.Errorf("a gitignored ignore file did not trigger a rebuild; changes = %+v", changes)
+	if !state.FullBuild || !applied.Rebuilt {
+		t.Errorf("a gitignored ignore file did not trigger a rebuild; applied = %+v", applied)
 	}
 	found := paths(f.search(t, Request{Pattern: "Needle"}))
 	if len(found) != 1 || found[0] != "app.go" {

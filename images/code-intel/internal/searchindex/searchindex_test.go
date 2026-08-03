@@ -59,6 +59,28 @@ func (f *fixture) rebuild(t *testing.T) State {
 	return state
 }
 
+// update applies a batch and returns the published state.
+func (f *fixture) update(t *testing.T, changes ...Change) State {
+	t.Helper()
+	state, _, err := f.Update(context.Background(), changes)
+	if err != nil {
+		t.Fatalf("Update(%+v): %v", changes, err)
+	}
+	return state
+}
+
+// report applies a batch and returns what the store says it did, which is what a
+// test about no-op writes has to assert on: the state alone cannot distinguish
+// "nothing changed" from "nothing was submitted".
+func (f *fixture) report(t *testing.T, changes ...Change) (State, Applied) {
+	t.Helper()
+	state, applied, err := f.Update(context.Background(), changes)
+	if err != nil {
+		t.Fatalf("Update(%+v): %v", changes, err)
+	}
+	return state, applied
+}
+
 func (f *fixture) search(t *testing.T, request Request) Response {
 	t.Helper()
 	response, err := f.Search(context.Background(), request)
@@ -190,18 +212,14 @@ func TestUpdateHandlesCreateModifyDeleteAndRename(t *testing.T) {
 
 	// Create.
 	f.write(t, "three.go", "// Needle three\n")
-	if _, err := f.Update(context.Background(), []Change{{Path: "three.go"}}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	f.update(t, Change{Path: "three.go"})
 	if got := paths(f.search(t, Request{Pattern: "Needle"})); len(got) != 2 {
 		t.Errorf("after create, files = %v, want one.go and three.go", got)
 	}
 
 	// Modify: the old content must stop matching and the new content must start.
 	f.write(t, "two.go", "// Needle two now\n")
-	if _, err := f.Update(context.Background(), []Change{{Path: "two.go"}}); err != nil {
-		t.Fatalf("modify: %v", err)
-	}
+	f.update(t, Change{Path: "two.go"})
 	if got := len(paths(f.search(t, Request{Pattern: "Needle"}))); got != 3 {
 		t.Errorf("after modify, matching files = %d, want 3", got)
 	}
@@ -211,9 +229,7 @@ func TestUpdateHandlesCreateModifyDeleteAndRename(t *testing.T) {
 
 	// Delete.
 	f.remove(t, "one.go")
-	if _, err := f.Update(context.Background(), []Change{{Path: "one.go", Deleted: true}}); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	f.update(t, Change{Path: "one.go", Deleted: true})
 	for _, path := range paths(f.search(t, Request{Pattern: "Needle"})) {
 		if path == "one.go" {
 			t.Error("a deleted file still appears in results")
@@ -224,12 +240,10 @@ func TestUpdateHandlesCreateModifyDeleteAndRename(t *testing.T) {
 	// reports it.
 	f.remove(t, "three.go")
 	f.write(t, "renamed/four.go", "// Needle three\n")
-	if _, err := f.Update(context.Background(), []Change{
-		{Path: "three.go", Deleted: true},
-		{Path: "renamed/four.go"},
-	}); err != nil {
-		t.Fatalf("rename: %v", err)
-	}
+	f.update(t,
+		Change{Path: "three.go", Deleted: true},
+		Change{Path: "renamed/four.go"},
+	)
 	after := paths(f.search(t, Request{Pattern: "Needle three"}))
 	if len(after) != 1 || after[0] != "renamed/four.go" {
 		t.Errorf("after rename, files = %v, want only renamed/four.go", after)
@@ -247,12 +261,12 @@ func TestReconcileCatchesUpOnChangesMadeWhileStopped(t *testing.T) {
 	f.remove(t, "gone.go")
 	f.write(t, "added.go", "// Needle added\n")
 
-	state, changes, err := f.Reconcile(context.Background())
+	state, applied, err := f.Reconcile(context.Background())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(changes) != 3 {
-		t.Errorf("caught up %d changes, want 3: %+v", len(changes), changes)
+	if applied.Changed != 3 {
+		t.Errorf("caught up %+v, want three paths changed", applied)
 	}
 	if state.FileCount != 2 {
 		t.Errorf("file count = %d, want 2", state.FileCount)
@@ -301,12 +315,12 @@ func TestRestartReusesThePublishedIndex(t *testing.T) {
 	}
 
 	// And a reconcile with nothing changed must not publish a new generation.
-	after, changes, err := restarted.Reconcile(context.Background())
+	after, applied, err := restarted.Reconcile(context.Background())
 	if err != nil {
 		t.Fatalf("Reconcile after restart: %v", err)
 	}
-	if len(changes) != 0 || after.Generation != first.Generation {
-		t.Errorf("an unchanged workspace produced %d changes and generation %d", len(changes), after.Generation)
+	if applied.Changed != 0 || after.Generation != first.Generation {
+		t.Errorf("an unchanged workspace produced %+v and generation %d", applied, after.Generation)
 	}
 }
 
@@ -319,11 +333,7 @@ func TestDeltaDepthEscalatesToAFullRebuild(t *testing.T) {
 	for i := 0; i < smallLimits.MaxDeltaGenerations+1; i++ {
 		name := "file" + string(rune('a'+i)) + ".go"
 		f.write(t, name, "// Needle "+name+"\n")
-		var err error
-		state, err = f.Update(context.Background(), []Change{{Path: name}})
-		if err != nil {
-			t.Fatalf("update %d: %v", i, err)
-		}
+		state = f.update(t, Change{Path: name})
 	}
 
 	if state.DeltaDepth != 0 || !state.FullBuild {
@@ -342,9 +352,7 @@ func TestOldGenerationsArePruned(t *testing.T) {
 	f.rebuild(t)
 	for i := 0; i < 4; i++ {
 		f.write(t, "a.go", "// Needle "+string(rune('a'+i))+"\n")
-		if _, err := f.Update(context.Background(), []Change{{Path: "a.go"}}); err != nil {
-			t.Fatal(err)
-		}
+		f.update(t, Change{Path: "a.go"})
 	}
 
 	entries, err := os.ReadDir(filepath.Join(f.root, generationsDir))
@@ -415,7 +423,7 @@ func TestEscapingPathsAreRefusedRatherThanReinterpreted(t *testing.T) {
 	}
 
 	for _, path := range append(hostile, "/absolute.go") {
-		_, err := f.Update(context.Background(), []Change{{Path: path}})
+		_, _, err := f.Update(context.Background(), []Change{{Path: path}})
 		if err == nil {
 			t.Errorf("change path %q was accepted", path)
 		}
@@ -516,9 +524,7 @@ func TestACursorFromAnotherGenerationIsRefused(t *testing.T) {
 	// would silently skip or repeat results, so the refusal is the correct
 	// answer and it must be typed.
 	f.write(t, "filee.go", "// Needle\n")
-	if _, err := f.Update(context.Background(), []Change{{Path: "filee.go"}}); err != nil {
-		t.Fatal(err)
-	}
+	f.update(t, Change{Path: "filee.go"})
 
 	_, err := f.Search(context.Background(), Request{Pattern: "Needle", Limit: 2, Cursor: first.NextCursor})
 	if got := codeOf(t, err); got != CodeInvalidCursor {

@@ -422,6 +422,42 @@ The repository now carries its own [`.mcp-project.yaml`](../.mcp-project.yaml), 
 
 Not done here: project-relative file-read helpers. The rule is that LCTK adds them only where they complement what a client already does, and no case has been identified that `exact_search` and `git_diff` do not already cover. Adding them speculatively would be exactly the duplication this stage forbids.
 
+### Slice 3.3: A write that changed nothing costs nothing
+
+**Status:** complete. The decision is recorded in [ADR-0018](adr/0018-the-index-describes-the-disk.md).
+
+Most coding clients hold a diff before it becomes a file: some show a proposal and write it only once a human accepts, others write immediately and offer a revert. The second shape turns out to cost something, and the first raises a question about what a search result is a claim about.
+
+Implemented:
+
+- a written path is compared against the digest recorded for it in the published index, and dropped when they match. No document is retracted, none is added, and **no generation is published at all** — the generation number, the delta depth, and the build timestamp stay where they were. Delta depth is the budget that forces the next full rebuild, so a no-op delta is not free work: it moves a rebuild closer;
+- filtering per path within a batch, so one real edit among eight submitted paths is a one-file delta rather than a bulk rebuild;
+- escalation to a rebuild judged on what actually changed rather than on what was submitted, so a branch checked out and immediately checked back is not a bulk change twice over;
+- an `Applied` report — paths changed, writes that changed nothing, whether it escalated, generations consumed — surfaced on `/index` and logged by the daemon even when zero, because a filter that works silently cannot be told from a filter that is not running;
+- the scope of a search result stated where an agent reads it: an unsaved buffer and an unapplied patch are not searchable, and no channel is added for importing one. Letting a client declare what a file contains would put text in the index that never existed on disk, where a *second* client would find it by search and have no way to tell it from real code.
+
+An edit already written to disk is treated as the project's content whoever wrote it, because the filesystem does not record who wrote a file or why. Any distinction would be a guess, and a wrong guess either hides real code from a search or labels a developer's work as a machine's.
+
+Measured live against this repository, watching the published generation and the delta depth:
+
+| What happened | Generation | Delta depth | Reported |
+|---|---|---|---|
+| A new file appears | 51 → 52 | 0 → 1 | `applied=1` |
+| The same bytes written again | 52 | 1 | `applied=0 unchanged=1` |
+| Edited and undone before the index caught up | 52 | 1 | `applied=0 unchanged=1` |
+| Edited, and the index caught up | 52 → 53 | 1 → 2 | `applied=1` |
+| And only then undone | 53 → 54 | 2 → 3 | `applied=1` |
+| Thirty indexed files rewritten byte for byte | 54 | 3 | `applied=0 unchanged=30` |
+| The file deleted | 54 → 55 | 3 → 4 | `applied=1` |
+
+The fifth row is the honest one and is meant to cost a generation: the index genuinely held the other content in between, and searches were answered from it. The sixth row previously consumed a generation and a delta step for no change at all.
+
+Nothing is lost to the filter, which was checked rather than assumed: after the thirty-file batch, content from a rewritten file was still found by search, and after the revert the restored text matched while the reverted text did not.
+
+A unit test covers what the live project cannot show: this repository has 206 files, so the 500-file bulk floor means a batch here never escalates on count alone. The test drives a twenty-file index with a floor of four, where eight submitted paths with one real edit among them was previously a full rebuild.
+
+Not done here: an agent still cannot ask "what changed since I last looked". The journal is a work queue and forgets an entry once it has been applied, so answering that needs retention it does not have — a decision of its own rather than an extension of this one.
+
 ## Stage 4 — Symbol and AST intelligence
 
 Add language adapters in small, independent slices without fixing their order in advance:
