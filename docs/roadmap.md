@@ -485,6 +485,35 @@ Measured live, reproducing the original failure:
 
 The read moved into the shared view builder, which removes the duplicate rather than adding a second one, and is skipped when the project's path is unavailable so a listing does not wait on a disconnected drive. The existing test covered only the single-project form, which is exactly why the defect survived; it now asserts the two forms agree.
 
+### Slice 3.5: Stage 3 against a second client
+
+**Status:** complete.
+
+Slices 3.1 and 3.2 were measured by hand-driven JSON-RPC against the endpoint. That proves the wire protocol and nothing about whether a client can *discover* and *call* the tools, which is a different question: `git_status`, `git_diff`, and `run_command` introduced new input schemas, and a schema is where a client and a server disagree. [Slice 1.4](#slice-14-actual-codex-end-to-end) set the standard — the protocol boundary is verified against two clients — and Stage 3 had not met it.
+
+The [Slice 1.4 harness](../spikes/codex-end-to-end/) was extended rather than a second one written, so the whole client-facing surface is verified by one command and the harness grows as the surface does. A tool nobody has called through a real client is a tool whose schema nobody has agreed to.
+
+It now prepares its first project as a real repository — one commit behind it, an uncommitted edit in front of it, and a manifest proposing `lint` and `test` of which only `lint` is approved. The runner image is the one this repository builds, so no external image is assumed and the command runs in a real container. Driven through `codex-cli 0.146.0-alpha.9.2`, the build [ADR-0012](adr/0012-codex-integration-contract.md) is bound to, with an isolated `CODEX_HOME` and `LCTK_HOME` so the operator's own configuration, registry, and grants are neither read nor written.
+
+All 22 steps pass — the 15 from Slice 1.4 unchanged, plus:
+
+| Step | Result |
+|---|---|
+| tools discovered | all five: `project_info`, `exact_search`, `git_status`, `git_diff`, `run_command` |
+| `git_status` | the uncommitted change, with branch and commit, `root: /workspace`, no host path |
+| `git_diff` for one path | a real unified patch |
+| `git_diff` for `../outside.txt` | `INVALID_PATH: the path must stay inside the repository`, marked `isError` |
+| `run_command lint` | ran in a container, output returned |
+| `run_command test` | `COMMAND_NOT_APPROVED`, naming the command that fixes it |
+| `run_command build` | `COMMAND_NOT_PROPOSED`, naming the manifest key to add |
+| `run_command deploy` | `COMMAND_UNKNOWN: LCTK runs only build, test, and lint` |
+
+The three refusals are the point. Each calls for something different from whoever reads it, and all three survive into the client's own tool result where an agent reads them and acts. A single generic failure would have been protocol-correct and useless.
+
+Writing the harness caught one wrong assumption immediately: the first version expected `COMMAND_NOT_APPROVED` for a command the manifest had never proposed, and got `COMMAND_NOT_PROPOSED`. The product was right and the test was wrong, which is the useful direction for that to happen in.
+
+`run_command` also confirmed the boundary it exists to hold: the manifest's `test` entry — present, proposed, deliberately unapproved — never reached a container.
+
 ## Stage 4 — Symbol and AST intelligence
 
 Add language adapters in small, independent slices without fixing their order in advance:

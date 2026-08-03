@@ -1,8 +1,12 @@
-# Slice 1.4 Codex end-to-end harness
+# Codex end-to-end harness
 
 Runs the Slice 1.4 scenario against real components and prints an evidence
-report. The measured outcome is recorded in
+report, and since [Slice 3.5](../../docs/roadmap.md#slice-35-stage-3-against-a-second-client)
+the Stage 3 tools as well. The measured outcome is recorded in
 [`docs/spikes/codex-end-to-end-results.md`](../../docs/spikes/codex-end-to-end-results.md).
+
+It grows with the client-facing surface rather than being frozen: a tool nobody
+has called through a real client is a tool whose schema nobody has agreed to.
 
 ```bash
 go run ./spikes/codex-end-to-end verify
@@ -23,7 +27,11 @@ directory, the containers, and the registrations in place for inspection.
 - the configuration LCTK generates, written by `lctk codex config --apply`;
 - the credential, delivered in the environment of a process the harness starts,
   which is the mechanism [ADR-0014](../../docs/adr/0014-project-credential-delivery.md)
-  specifies.
+  specifies;
+- the Git repository the Stage 3 tools describe, created and committed by the
+  harness, with an uncommitted edit for `git_status` and `git_diff` to report;
+- the container the approved command runs in, using the image this repository
+  builds so nothing external is assumed.
 
 Nothing is simulated. A step whose component is unavailable is reported as
 skipped, never as passed. Without a Linux-capable container runtime the run
