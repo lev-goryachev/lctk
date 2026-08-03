@@ -52,8 +52,9 @@ every step rather than reporting a hollow pass.
 
 ## Results
 
-All fourteen Slice 1.4 steps passed, on two consecutive full runs. The seven
-Stage 3 steps added later are reported [below](#stage-3-through-the-same-client).
+All fourteen Slice 1.4 steps passed, on two consecutive full runs. The steps added
+later, covering every remaining tool, are reported
+[below](#every-tool-called-rather-than-listed).
 
 | Step | Outcome |
 |---|---|
@@ -101,16 +102,20 @@ typed error without parsing that string.
 - **No reload is needed after a restart.** The stateless JSON endpoint from
   ADR-0012 means a project that comes back is simply reachable again.
 
-## Stage 3 through the same client
+## Every tool, called rather than listed
 
-Slices 3.1 and 3.2 added `git_status`, `git_diff`, and `run_command`. They were
-measured by hand-driven JSON-RPC against the endpoint, which proves the wire
-protocol and says nothing about whether a client can *discover and call* them —
-a different question, because each carries an input schema of its own and a schema
-is where a client and a server disagree.
+The original run verified `project_info` and left the other tools discovered but
+never invoked. That is a weaker result than it looks: appearing in `tools/list`
+proves the server *described* a tool, not that a client can send it arguments and
+read the answer back. Each tool carries an input schema, and a schema is where a
+client and a server disagree.
 
-The harness was therefore extended rather than a second one written. It now
-prepares its first project as a real repository: one commit behind it, an
+`exact_search` had never been called through a second client at all, and
+`git_status`, `git_diff`, and `run_command` had been measured only by hand-driven
+JSON-RPC against the endpoint. The harness was therefore extended rather than a
+second one written, and now calls everything the endpoint offers.
+
+Its first project is prepared as a real repository: one commit behind it, an
 uncommitted edit in front of it, and a manifest proposing `lint` and `test`, of
 which only `lint` is approved. The runner image is the one this repository builds,
 so no external image is assumed and the command runs in a real container.
@@ -119,6 +124,9 @@ so no external image is assumed and the command runs in a real container.
 |---|---|
 | `approve_a_command` | **pass.** `lint` approved for the project in `lctk/code-intel:0.1.0-dev`. |
 | `client_connects` | **pass.** The client discovered all five tools: `exact_search`, `git_diff`, `git_status`, `project_info`, `run_command`. |
+| `exact_search_through_client` | **pass.** A line that was **saved and never committed** was found through the client. This is the claim the whole indexing design exists to make, checked from outside LCTK: the index describes the working tree, not the last commit. |
+| `bad_pattern_refused_visibly` | **pass.** An uncompilable regular expression produced `INVALID_PATTERN: the regular expression is invalid: error parsing regexp: missing closing ]`, not an empty result set — which would have read as "no such code in this project" and sent an agent looking elsewhere. |
+| `invented_argument_refused` | **pass.** An undeclared argument was refused by schema validation before any handler saw it: `unexpected additional properties ["invented_filter"]`. |
 | `git_status_through_client` | **pass.** The uncommitted change was reported with the branch and commit, `root: /workspace`, and no host path. |
 | `git_diff_through_client` | **pass.** A unified diff of the one named path came back through the client. |
 | `escaping_path_refused_visibly` | **pass.** `../outside.txt` produced `INVALID_PATH: the path must stay inside the repository` in the client's own tool result, marked `isError`. |
@@ -127,11 +135,17 @@ so no external image is assumed and the command runs in a real container.
 | `unproposed_command_refused` | **pass.** `COMMAND_NOT_PROPOSED`, naming the manifest key to add. |
 | `unknown_command_refused` | **pass.** `COMMAND_UNKNOWN: LCTK runs only build, test, and lint.` |
 
-The three refusals are the point. They are distinct because each calls for
-something different from whoever reads it — approve this, add it to the manifest
-first, or stop asking for a command that does not exist — and all three survive
-into the client's own tool result, where an agent reads them and acts. A single
-generic failure would have been protocol-correct and useless.
+The refusals are the point. Each calls for something different from whoever reads
+it — approve this, add it to the manifest first, correct your expression, stop
+asking for a command that does not exist — and all of them survive into the
+client's own tool result, where an agent reads them and acts. A single generic
+failure would have been protocol-correct and useless.
+
+`invented_argument_refused` completes the scope guarantee from the other side. A
+*declared* argument such as `project_id` is accepted and disregarded, which
+[`scope_survives_a_wrong_argument`](#results) checks; an *undeclared* one fails
+validation outright. Silently dropping it would leave an agent believing a filter
+had been applied.
 
 `run_command` also confirmed the boundary it exists to hold: the only command that
 ran is the one a human had approved by name, and the manifest's `test` entry —

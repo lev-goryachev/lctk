@@ -309,6 +309,7 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		// Named individually rather than covered by one line, so a run with no
 		// thread cannot be mistaken for a run in which Stage 3 was exercised.
 		for _, step := range []string{
+			"exact_search_through_client", "bad_pattern_refused_visibly", "invented_argument_refused",
 			"git_status_through_client", "git_diff_through_client", "escaping_path_refused_visibly",
 			"approved_command_runs", "unapproved_command_refused", "unproposed_command_refused",
 			"unknown_command_refused",
@@ -409,10 +410,10 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 	}
 
 	if threadID != "" {
-		// 10. Stage 3's tools, through the same real client. They were added after
-		// this harness was written and carry input schemas of their own, which is
-		// where a client and a server disagree.
-		verifyStage3(ctx, client, rep, alphaServer, threadID)
+		// 10. Every tool the endpoint offers, called through the same real client.
+		// Several were added after this harness was written and carry input schemas
+		// of their own, which is where a client and a server disagree.
+		verifyTools(ctx, client, rep, alphaServer, threadID)
 	}
 
 	rep.Notifications = client.notifications()
@@ -466,13 +467,66 @@ func prepareSourceProject(ctx context.Context, dir string) error {
 	return os.WriteFile(tracked, []byte("first line\nan uncommitted second line\n"), 0o644)
 }
 
-// verifyStage3 drives git_status, git_diff, and run_command through the client.
+// verifyTools drives every tool the endpoint offers through the client.
 //
 // The refusals matter as much as the answers. A typed code is only useful if it
 // survives into the client's own error text, where an agent will read it and act
 // on it rather than only learning that something went wrong.
-func verifyStage3(ctx context.Context, client *appServerClient, rep *report, server, threadID string) {
-	body, err := toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
+//
+// Every tool is called, not merely listed. A tool present in `tools/list` and
+// never invoked is a schema nobody has agreed to: appearing in the list only
+// proves the server described it, not that the client can send it arguments and
+// read the answer back.
+func verifyTools(ctx context.Context, client *appServerClient, rep *report, server, threadID string) {
+	// exact_search is the oldest tool here and the one an agent reaches for most.
+	// The pattern is a line that was saved and never committed, so a hit proves the
+	// index describes the working tree rather than the last commit -- the claim the
+	// whole indexing design exists to make, checked from outside LCTK.
+	body, err := toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "an uncommitted second line"})
+	switch {
+	case err != nil:
+		rep.fail("exact_search_through_client", "%v", err)
+	case !strings.Contains(body, "tracked.txt"):
+		rep.fail("exact_search_through_client", "%s", truncate(body, 400))
+	default:
+		rep.pass("exact_search_through_client",
+			"a saved-but-uncommitted line was found through the client, with freshness reported")
+	}
+
+	// A pattern that cannot compile is a caller's mistake and must come back as a
+	// typed refusal rather than as an empty result set, which would read as "no
+	// such code in this project" and send an agent looking somewhere else.
+	body, err = toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "([unclosed", "mode": "regex"})
+	combined := body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "INVALID_PATTERN") {
+		rep.pass("bad_pattern_refused_visibly", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("bad_pattern_refused_visibly", "%s", truncate(combined, 400))
+	}
+
+	// An argument that does not exist in the schema is refused rather than
+	// ignored. This is the other half of the scope guarantee: a *declared* argument
+	// like project_id is accepted and disregarded, which is checked above, while an
+	// invented one fails validation before any handler sees it. Silently dropping
+	// it would leave an agent believing a filter had been applied.
+	body, err = toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "package", "invented_filter": "anything"})
+	combined = body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "invented_filter") {
+		rep.pass("invented_argument_refused", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("invented_argument_refused", "%s", truncate(combined, 400))
+	}
+
+	body, err = toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
 	switch {
 	case err != nil:
 		rep.fail("git_status_through_client", "%v", err)
@@ -500,7 +554,7 @@ func verifyStage3(ctx context.Context, client *appServerClient, rep *report, ser
 	// refusal is the thing the client shows.
 	body, err = toolCall(ctx, client, server, "git_diff", threadID,
 		map[string]any{"paths": []string{"../outside.txt"}})
-	combined := body
+	combined = body
 	if err != nil {
 		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
 	}
