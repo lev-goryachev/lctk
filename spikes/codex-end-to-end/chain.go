@@ -144,12 +144,38 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		if err := os.WriteFile(marker, []byte(spec.name+"\n"), 0o644); err != nil {
 			return nil, err
 		}
+		if spec.name == "alpha" {
+			// Stage 3's tools need something to describe: a repository with a
+			// commit behind it and an edit in front of it, and a manifest that
+			// proposes a command. Only alpha gets them, so beta stays the project
+			// that proves scope is not leaked.
+			if err := prepareSourceProject(ctx, dir); err != nil {
+				rep.fail("register_folder", "could not prepare the source project: %v", err)
+				return rep, nil
+			}
+		}
 		if err := e.runJSON(ctx, spec.view, "project", "add", "--json", dir); err != nil {
 			rep.fail("register_folder", "%v", err)
 			return rep, nil
 		}
 	}
 	rep.pass("register_folder", "registered %s and %s", alpha.ID, beta.ID)
+
+	// The runner image is the one this repository builds, so the harness needs no
+	// external image and the command genuinely runs in a container.
+	var image struct {
+		Image     string `json:"image"`
+		Available bool   `json:"available"`
+	}
+	if err := e.runJSON(ctx, &image, "image", "status", "--json"); err == nil && image.Available {
+		if _, err := e.run(ctx, "project", "commands", "--image", image.Image, "--approve", "lint", alpha.ID); err != nil {
+			rep.fail("approve_a_command", "%v", err)
+		} else {
+			rep.pass("approve_a_command", "lint approved for %s in %s", alpha.ID, image.Image)
+		}
+	} else {
+		rep.skip("approve_a_command", "no local runner image to approve")
+	}
 
 	// 2. Start both stacks against the real container runtime.
 	for _, project := range []*projectView{&alpha, &beta} {
@@ -280,6 +306,15 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		rep.skip("scope_survives_a_wrong_argument", "no thread available")
 		rep.skip("stopped_project_is_typed", "no thread available")
 		rep.skip("restart_reconnects", "no thread available")
+		// Named individually rather than covered by one line, so a run with no
+		// thread cannot be mistaken for a run in which Stage 3 was exercised.
+		for _, step := range []string{
+			"git_status_through_client", "git_diff_through_client", "escaping_path_refused_visibly",
+			"approved_command_runs", "unapproved_command_refused", "unproposed_command_refused",
+			"unknown_command_refused",
+		} {
+			rep.skip(step, "no thread available")
+		}
 	} else {
 		// 6. project_info, with a deliberately wrong project_id argument.
 		body, err := toolCall(ctx, client, alphaServer, "project_info", threadID, map[string]any{
@@ -373,9 +408,137 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		}
 	}
 
+	if threadID != "" {
+		// 10. Stage 3's tools, through the same real client. They were added after
+		// this harness was written and carry input schemas of their own, which is
+		// where a client and a server disagree.
+		verifyStage3(ctx, client, rep, alphaServer, threadID)
+	}
+
 	rep.Notifications = client.notifications()
 	rep.Stderr = truncate(client.stderrTail(), 2000)
 	return rep, nil
+}
+
+// prepareSourceProject makes a folder look like a project an agent would ask
+// about: a repository with one commit behind it, an edit in front of it, and a
+// manifest proposing a command.
+//
+// The identity is supplied per command rather than configured, because a machine
+// running this may have no global Git identity and committing would fail on it.
+func prepareSourceProject(ctx context.Context, dir string) error {
+	tracked := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("first line\n"), 0o644); err != nil {
+		return err
+	}
+	// lint is proposed and will be approved; test is proposed and deliberately is
+	// not, which is what separates "nobody agreed to this" from "this project does
+	// not have one". build is left unproposed to cover the third refusal.
+	manifest := "commands:\n" +
+		"  lint: echo lint-ran-in-a-container\n" +
+		"  test: echo this-must-never-run\n"
+	if err := os.WriteFile(filepath.Join(dir, ".mcp-project.yaml"), []byte(manifest), 0o644); err != nil {
+		return err
+	}
+
+	git := func(args ...string) error {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, oneLine(string(out), nil))
+		}
+		return nil
+	}
+	if err := git("init", "--quiet"); err != nil {
+		return err
+	}
+	if err := git("add", "tracked.txt", ".mcp-project.yaml"); err != nil {
+		return err
+	}
+	if err := git(
+		"-c", "user.name=LCTK Harness", "-c", "user.email=harness@lctk.invalid",
+		"-c", "commit.gpgsign=false",
+		"commit", "--quiet", "-m", "the commit an agent asks about",
+	); err != nil {
+		return err
+	}
+	// The edit that makes git_status and git_diff have something to say.
+	return os.WriteFile(tracked, []byte("first line\nan uncommitted second line\n"), 0o644)
+}
+
+// verifyStage3 drives git_status, git_diff, and run_command through the client.
+//
+// The refusals matter as much as the answers. A typed code is only useful if it
+// survives into the client's own error text, where an agent will read it and act
+// on it rather than only learning that something went wrong.
+func verifyStage3(ctx context.Context, client *appServerClient, rep *report, server, threadID string) {
+	body, err := toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
+	switch {
+	case err != nil:
+		rep.fail("git_status_through_client", "%v", err)
+	case !strings.Contains(body, `"repository":true`) || !strings.Contains(body, "tracked.txt"):
+		rep.fail("git_status_through_client", "%s", truncate(body, 400))
+	default:
+		// The host path must not appear: a client is told where the project is as
+		// its own tools see it, not where it sits on the machine.
+		rep.pass("git_status_through_client",
+			"the working-tree change is reported with the branch and commit, root=/workspace")
+	}
+
+	body, err = toolCall(ctx, client, server, "git_diff", threadID,
+		map[string]any{"paths": []string{"tracked.txt"}})
+	switch {
+	case err != nil:
+		rep.fail("git_diff_through_client", "%v", err)
+	case !strings.Contains(body, "an uncommitted second line"):
+		rep.fail("git_diff_through_client", "%s", truncate(body, 400))
+	default:
+		rep.pass("git_diff_through_client", "a unified diff of the one named path came back through the client")
+	}
+
+	// A path leaving the project is refused rather than reinterpreted, and the
+	// refusal is the thing the client shows.
+	body, err = toolCall(ctx, client, server, "git_diff", threadID,
+		map[string]any{"paths": []string{"../outside.txt"}})
+	combined := body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "INVALID_PATH") {
+		rep.pass("escaping_path_refused_visibly", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("escaping_path_refused_visibly", "%s", truncate(combined, 400))
+	}
+
+	body, err = toolCall(ctx, client, server, "run_command", threadID, map[string]any{"name": "lint"})
+	switch {
+	case err != nil:
+		rep.fail("approved_command_runs", "%v", err)
+	case !strings.Contains(body, "lint-ran-in-a-container"):
+		rep.fail("approved_command_runs", "%s", truncate(body, 400))
+	default:
+		rep.pass("approved_command_runs", "the approved command ran in a container and its output came back")
+	}
+
+	// The three refusals a client must be able to tell apart, because each one
+	// calls for something different from whoever reads it: approve this, add it to
+	// the manifest first, or stop asking for a command that does not exist.
+	for _, c := range []struct{ step, name, want string }{
+		{"unapproved_command_refused", "test", "COMMAND_NOT_APPROVED"},
+		{"unproposed_command_refused", "build", "COMMAND_NOT_PROPOSED"},
+		{"unknown_command_refused", "deploy", "COMMAND_UNKNOWN"},
+	} {
+		body, err := toolCall(ctx, client, server, "run_command", threadID, map[string]any{"name": c.name})
+		combined := body
+		if err != nil {
+			combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+		}
+		if strings.Contains(combined, c.want) {
+			rep.pass(c.step, "%s", truncate(combined, 300))
+		} else {
+			rep.fail(c.step, "%s", truncate(combined, 400))
+		}
+	}
 }
 
 func startDaemon(ctx context.Context, e *environment) (func(), error) {

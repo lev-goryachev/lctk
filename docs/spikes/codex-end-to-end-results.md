@@ -52,7 +52,8 @@ every step rather than reporting a hollow pass.
 
 ## Results
 
-All fourteen steps passed, on two consecutive full runs.
+All fourteen Slice 1.4 steps passed, on two consecutive full runs. The seven
+Stage 3 steps added later are reported [below](#stage-3-through-the-same-client).
 
 | Step | Outcome |
 |---|---|
@@ -99,6 +100,42 @@ typed error without parsing that string.
   surfaced error name `PROJECT_STOPPED`.
 - **No reload is needed after a restart.** The stateless JSON endpoint from
   ADR-0012 means a project that comes back is simply reachable again.
+
+## Stage 3 through the same client
+
+Slices 3.1 and 3.2 added `git_status`, `git_diff`, and `run_command`. They were
+measured by hand-driven JSON-RPC against the endpoint, which proves the wire
+protocol and says nothing about whether a client can *discover and call* them —
+a different question, because each carries an input schema of its own and a schema
+is where a client and a server disagree.
+
+The harness was therefore extended rather than a second one written. It now
+prepares its first project as a real repository: one commit behind it, an
+uncommitted edit in front of it, and a manifest proposing `lint` and `test`, of
+which only `lint` is approved. The runner image is the one this repository builds,
+so no external image is assumed and the command runs in a real container.
+
+| Step | Outcome |
+|---|---|
+| `approve_a_command` | **pass.** `lint` approved for the project in `lctk/code-intel:0.1.0-dev`. |
+| `client_connects` | **pass.** The client discovered all five tools: `exact_search`, `git_diff`, `git_status`, `project_info`, `run_command`. |
+| `git_status_through_client` | **pass.** The uncommitted change was reported with the branch and commit, `root: /workspace`, and no host path. |
+| `git_diff_through_client` | **pass.** A unified diff of the one named path came back through the client. |
+| `escaping_path_refused_visibly` | **pass.** `../outside.txt` produced `INVALID_PATH: the path must stay inside the repository` in the client's own tool result, marked `isError`. |
+| `approved_command_runs` | **pass.** The approved command ran in a container and its output reached the client. |
+| `unapproved_command_refused` | **pass.** `COMMAND_NOT_APPROVED`, naming the command that fixes it. |
+| `unproposed_command_refused` | **pass.** `COMMAND_NOT_PROPOSED`, naming the manifest key to add. |
+| `unknown_command_refused` | **pass.** `COMMAND_UNKNOWN: LCTK runs only build, test, and lint.` |
+
+The three refusals are the point. They are distinct because each calls for
+something different from whoever reads it — approve this, add it to the manifest
+first, or stop asking for a command that does not exist — and all three survive
+into the client's own tool result, where an agent reads them and acts. A single
+generic failure would have been protocol-correct and useless.
+
+`run_command` also confirmed the boundary it exists to hold: the only command that
+ran is the one a human had approved by name, and the manifest's `test` entry —
+present, proposed, and deliberately unapproved — never reached a container.
 
 ## Second client: Claude Code
 
