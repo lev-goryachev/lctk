@@ -309,9 +309,11 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		// Named individually rather than covered by one line, so a run with no
 		// thread cannot be mistaken for a run in which Stage 3 was exercised.
 		for _, step := range []string{
-			"git_status_through_client", "git_diff_through_client", "escaping_path_refused_visibly",
-			"approved_command_runs", "unapproved_command_refused", "unproposed_command_refused",
-			"unknown_command_refused",
+			"exact_search_through_client", "bad_pattern_refused_visibly", "invented_argument_refused",
+			"git_status_through_client", "git_diff_through_client", "staged_and_worktree_diffs_differ",
+			"escaping_path_refused_visibly", "approved_command_runs", "smuggled_command_ignored",
+			"unapproved_command_refused", "unproposed_command_refused", "unknown_command_refused",
+			"rewritten_command_loses_its_approval", "a_failing_command_is_a_result",
 		} {
 			rep.skip(step, "no thread available")
 		}
@@ -409,10 +411,13 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 	}
 
 	if threadID != "" {
-		// 10. Stage 3's tools, through the same real client. They were added after
-		// this harness was written and carry input schemas of their own, which is
-		// where a client and a server disagree.
-		verifyStage3(ctx, client, rep, alphaServer, threadID)
+		// 10. Every tool the endpoint offers, called through the same real client.
+		// Several were added after this harness was written and carry input schemas
+		// of their own, which is where a client and a server disagree.
+		verifyTools(ctx, client, rep, alphaServer, threadID)
+		// Last, because it rewrites the project's manifest and re-approves a
+		// command: every check above should see the state the run set up.
+		verifyApprovalLapses(ctx, e, client, rep, alphaServer, threadID, alpha.ID, filepath.Join(e.work, "alpha"))
 	}
 
 	rep.Notifications = client.notifications()
@@ -462,17 +467,84 @@ func prepareSourceProject(ctx context.Context, dir string) error {
 	); err != nil {
 		return err
 	}
+	// A second file staged and then edited again, so the staged view and the
+	// working-tree view of one path genuinely differ. Without it a passing
+	// git_diff proves only that some diff came back.
+	both := filepath.Join(dir, "both.txt")
+	if err := os.WriteFile(both, []byte("staged content\n"), 0o644); err != nil {
+		return err
+	}
+	if err := git("add", "both.txt"); err != nil {
+		return err
+	}
+	if err := os.WriteFile(both, []byte("staged content\nedited after staging\n"), 0o644); err != nil {
+		return err
+	}
+
 	// The edit that makes git_status and git_diff have something to say.
 	return os.WriteFile(tracked, []byte("first line\nan uncommitted second line\n"), 0o644)
 }
 
-// verifyStage3 drives git_status, git_diff, and run_command through the client.
+// verifyTools drives every tool the endpoint offers through the client.
 //
 // The refusals matter as much as the answers. A typed code is only useful if it
 // survives into the client's own error text, where an agent will read it and act
 // on it rather than only learning that something went wrong.
-func verifyStage3(ctx context.Context, client *appServerClient, rep *report, server, threadID string) {
-	body, err := toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
+//
+// Every tool is called, not merely listed. A tool present in `tools/list` and
+// never invoked is a schema nobody has agreed to: appearing in the list only
+// proves the server described it, not that the client can send it arguments and
+// read the answer back.
+func verifyTools(ctx context.Context, client *appServerClient, rep *report, server, threadID string) {
+	// exact_search is the oldest tool here and the one an agent reaches for most.
+	// The pattern is a line that was saved and never committed, so a hit proves the
+	// index describes the working tree rather than the last commit -- the claim the
+	// whole indexing design exists to make, checked from outside LCTK.
+	body, err := toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "an uncommitted second line"})
+	switch {
+	case err != nil:
+		rep.fail("exact_search_through_client", "%v", err)
+	case !strings.Contains(body, "tracked.txt"):
+		rep.fail("exact_search_through_client", "%s", truncate(body, 400))
+	default:
+		rep.pass("exact_search_through_client",
+			"a saved-but-uncommitted line was found through the client, with freshness reported")
+	}
+
+	// A pattern that cannot compile is a caller's mistake and must come back as a
+	// typed refusal rather than as an empty result set, which would read as "no
+	// such code in this project" and send an agent looking somewhere else.
+	body, err = toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "([unclosed", "mode": "regex"})
+	combined := body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "INVALID_PATTERN") {
+		rep.pass("bad_pattern_refused_visibly", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("bad_pattern_refused_visibly", "%s", truncate(combined, 400))
+	}
+
+	// An argument that does not exist in the schema is refused rather than
+	// ignored. This is the other half of the scope guarantee: a *declared* argument
+	// like project_id is accepted and disregarded, which is checked above, while an
+	// invented one fails validation before any handler sees it. Silently dropping
+	// it would leave an agent believing a filter had been applied.
+	body, err = toolCall(ctx, client, server, "exact_search", threadID,
+		map[string]any{"pattern": "package", "invented_filter": "anything"})
+	combined = body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "invented_filter") {
+		rep.pass("invented_argument_refused", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("invented_argument_refused", "%s", truncate(combined, 400))
+	}
+
+	body, err = toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
 	switch {
 	case err != nil:
 		rep.fail("git_status_through_client", "%v", err)
@@ -496,11 +568,30 @@ func verifyStage3(ctx context.Context, client *appServerClient, rep *report, ser
 		rep.pass("git_diff_through_client", "a unified diff of the one named path came back through the client")
 	}
 
+	// The staged view and the working-tree view of one path have to differ, or the
+	// staged flag is decoration. both.txt was staged with one line and then given a
+	// second, so each view sees exactly one of them.
+	worktree, wtErr := toolCall(ctx, client, server, "git_diff", threadID,
+		map[string]any{"paths": []string{"both.txt"}})
+	staged, stErr := toolCall(ctx, client, server, "git_diff", threadID,
+		map[string]any{"paths": []string{"both.txt"}, "staged": true})
+	switch {
+	case wtErr != nil || stErr != nil:
+		rep.fail("staged_and_worktree_diffs_differ", "worktree: %v; staged: %v", wtErr, stErr)
+	case !strings.Contains(worktree, "edited after staging") || strings.Contains(worktree, "new file mode"):
+		rep.fail("staged_and_worktree_diffs_differ", "worktree diff = %s", truncate(worktree, 300))
+	case !strings.Contains(staged, "staged content") || strings.Contains(staged, "edited after staging"):
+		rep.fail("staged_and_worktree_diffs_differ", "staged diff = %s", truncate(staged, 300))
+	default:
+		rep.pass("staged_and_worktree_diffs_differ",
+			"the working tree shows only the unstaged line and the staged view only the staged one")
+	}
+
 	// A path leaving the project is refused rather than reinterpreted, and the
 	// refusal is the thing the client shows.
 	body, err = toolCall(ctx, client, server, "git_diff", threadID,
 		map[string]any{"paths": []string{"../outside.txt"}})
-	combined := body
+	combined = body
 	if err != nil {
 		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
 	}
@@ -518,6 +609,24 @@ func verifyStage3(ctx context.Context, client *appServerClient, rep *report, ser
 		rep.fail("approved_command_runs", "%s", truncate(body, 400))
 	default:
 		rep.pass("approved_command_runs", "the approved command ran in a container and its output came back")
+	}
+
+	// The one field a client can name that could carry an instruction is declared
+	// as ignored, and has to actually be ignored: the approved text runs and the
+	// smuggled line does not. A tool that quietly honoured it would undo the entire
+	// approval mechanism while every other check still passed.
+	body, err = toolCall(ctx, client, server, "run_command", threadID,
+		map[string]any{"name": "lint", "command": "echo this-must-never-run"})
+	switch {
+	case err != nil:
+		rep.fail("smuggled_command_ignored", "%v", err)
+	case strings.Contains(body, "this-must-never-run"):
+		rep.fail("smuggled_command_ignored", "the smuggled line ran: %s", truncate(body, 300))
+	case !strings.Contains(body, "lint-ran-in-a-container"):
+		rep.fail("smuggled_command_ignored", "%s", truncate(body, 300))
+	default:
+		rep.pass("smuggled_command_ignored",
+			"a command line supplied beside the name was disregarded and the approved text ran")
 	}
 
 	// The three refusals a client must be able to tell apart, because each one
@@ -538,6 +647,70 @@ func verifyStage3(ctx context.Context, client *appServerClient, rep *report, ser
 		} else {
 			rep.fail(c.step, "%s", truncate(combined, 400))
 		}
+	}
+}
+
+// verifyApprovalLapses rewrites the manifest under a running project and checks
+// that the approval stops applying, then that re-approving restores it and that a
+// failing command comes back as a result rather than as a tool error.
+//
+// This is the attack the command policy exists to stop, so it is worth driving
+// through a client rather than only in a unit test: get something harmless
+// approved, then change what it does.
+func verifyApprovalLapses(ctx context.Context, e *environment, client *appServerClient, rep *report,
+	server, threadID, projectID, dir string) {
+	manifest := filepath.Join(dir, ".mcp-project.yaml")
+	original, err := os.ReadFile(manifest)
+	if err != nil {
+		rep.skip("rewritten_command_loses_its_approval", "the manifest could not be read: %v", err)
+		rep.skip("a_failing_command_is_a_result", "the manifest could not be read")
+		return
+	}
+
+	// The rewritten command both fails and announces itself, so one run answers
+	// two questions: was the lapse detected, and is a non-zero exit a result.
+	rewritten := strings.Replace(string(original),
+		"lint: echo lint-ran-in-a-container",
+		"lint: echo rewritten-and-failing; exit 3", 1)
+	if rewritten == string(original) {
+		rep.skip("rewritten_command_loses_its_approval", "the manifest did not contain the expected lint line")
+		rep.skip("a_failing_command_is_a_result", "the manifest did not contain the expected lint line")
+		return
+	}
+	if err := os.WriteFile(manifest, []byte(rewritten), 0o644); err != nil {
+		rep.skip("rewritten_command_loses_its_approval", "%v", err)
+		rep.skip("a_failing_command_is_a_result", "%v", err)
+		return
+	}
+	defer func() { _ = os.WriteFile(manifest, original, 0o644) }()
+
+	body, callErr := toolCall(ctx, client, server, "run_command", threadID, map[string]any{"name": "lint"})
+	combined := body
+	if callErr != nil {
+		combined = strings.TrimPrefix(combined+" | "+callErr.Error(), " | ")
+	}
+	if strings.Contains(combined, "COMMAND_CHANGED") {
+		rep.pass("rewritten_command_loses_its_approval", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("rewritten_command_loses_its_approval", "%s", truncate(combined, 400))
+	}
+
+	// Approving the new text is what restores it, and only after somebody read it.
+	if _, err := e.run(ctx, "project", "commands", "--approve", "lint", projectID); err != nil {
+		rep.skip("a_failing_command_is_a_result", "the new text could not be approved: %v", err)
+		return
+	}
+	body, callErr = toolCall(ctx, client, server, "run_command", threadID, map[string]any{"name": "lint"})
+	switch {
+	case callErr != nil:
+		rep.fail("a_failing_command_is_a_result", "%v", callErr)
+	case !strings.Contains(body, `"exit_code":3`) || !strings.Contains(body, "rewritten-and-failing"):
+		rep.fail("a_failing_command_is_a_result", "%s", truncate(body, 400))
+	case strings.Contains(body, `"isError":true`):
+		rep.fail("a_failing_command_is_a_result", "a failing command was reported as a tool error: %s", truncate(body, 300))
+	default:
+		rep.pass("a_failing_command_is_a_result",
+			"exit code 3 and the output came back as a result, so a failing check is not a malfunction")
 	}
 }
 

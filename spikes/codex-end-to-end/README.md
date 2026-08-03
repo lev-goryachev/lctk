@@ -5,8 +5,9 @@ report, and since [Slice 3.5](../../docs/roadmap.md#slice-35-stage-3-against-a-s
 the Stage 3 tools as well. The measured outcome is recorded in
 [`docs/spikes/codex-end-to-end-results.md`](../../docs/spikes/codex-end-to-end-results.md).
 
-It grows with the client-facing surface rather than being frozen: a tool nobody
-has called through a real client is a tool whose schema nobody has agreed to.
+It grows with the client-facing surface rather than being frozen, and it **calls**
+every tool rather than listing them: appearing in `tools/list` proves the server
+described a tool, not that a client can send it arguments and read the answer back.
 
 ```bash
 go run ./spikes/codex-end-to-end verify

@@ -479,27 +479,34 @@ Measured live, reproducing the original failure:
 21:11:31  index brought up to date               generation 70, applied 1, reconciled=false
 ```
 
-87 ms from noticing to caught up, and `reconciled=false` is the part that matters: the journal survived the move, so it cost one delta rather than a walk of the whole project. Both regression tests were confirmed to fail with the fix disabled before being kept.
+87 ms from noticing to caught up, and `reconciled=false` is the part that matters: the journal survived the move, so it cost one delta rather than a walk of the whole project.
+
+That run recovered through a client request. The sweep is the other path and was measured separately, restarting the project and then making **no client call at all**: the file written after the move was searchable 16 seconds later, on the new port. Both regression tests were confirmed to fail with the fix disabled before being kept.
 
 **`lctk project status` gave two different answers about the manifest.** Asked about one project it re-read the file; asked about every project it reported what the registry recorded at registration, so a manifest added later was reported missing. `lctk project restart` printed the stale answer too.
 
 The read moved into the shared view builder, which removes the duplicate rather than adding a second one, and is skipped when the project's path is unavailable so a listing does not wait on a disconnected drive. The existing test covered only the single-project form, which is exactly why the defect survived; it now asserts the two forms agree.
 
-### Slice 3.5: Stage 3 against a second client
+### Slice 3.5: Every tool called through a second client
 
 **Status:** complete.
 
-Slices 3.1 and 3.2 were measured by hand-driven JSON-RPC against the endpoint. That proves the wire protocol and nothing about whether a client can *discover* and *call* the tools, which is a different question: `git_status`, `git_diff`, and `run_command` introduced new input schemas, and a schema is where a client and a server disagree. [Slice 1.4](#slice-14-actual-codex-end-to-end) set the standard — the protocol boundary is verified against two clients — and Stage 3 had not met it.
+Slices 3.1 and 3.2 were measured by hand-driven JSON-RPC against the endpoint. That proves the wire protocol and nothing about whether a client can *discover* and *call* the tools, which is a different question: each carries an input schema, and a schema is where a client and a server disagree. [Slice 1.4](#slice-14-actual-codex-end-to-end) set the standard — the protocol boundary is verified against two clients — and Stage 3 had not met it.
 
-The [Slice 1.4 harness](../spikes/codex-end-to-end/) was extended rather than a second one written, so the whole client-facing surface is verified by one command and the harness grows as the surface does. A tool nobody has called through a real client is a tool whose schema nobody has agreed to.
+Auditing that turned up a wider hole. The Slice 1.4 harness called `project_info` and left every other tool merely *listed*, and appearing in `tools/list` proves only that the server described a tool. **`exact_search` — the oldest tool here and the one an agent reaches for most — had never been called through a second client at all.**
 
-It now prepares its first project as a real repository — one commit behind it, an uncommitted edit in front of it, and a manifest proposing `lint` and `test` of which only `lint` is approved. The runner image is the one this repository builds, so no external image is assumed and the command runs in a real container. Driven through `codex-cli 0.146.0-alpha.9.2`, the build [ADR-0012](adr/0012-codex-integration-contract.md) is bound to, with an isolated `CODEX_HOME` and `LCTK_HOME` so the operator's own configuration, registry, and grants are neither read nor written.
+So the rule is now the stronger one: every tool the endpoint offers is called, not listed. The [Slice 1.4 harness](../spikes/codex-end-to-end/) was extended rather than a second one written, so one command covers the whole client-facing surface and the harness grows as the surface does.
 
-All 22 steps pass — the 15 from Slice 1.4 unchanged, plus:
+It prepares its first project as a real repository — one commit behind it, an uncommitted edit in front of it, and a manifest proposing `lint` and `test` of which only `lint` is approved. The runner image is the one this repository builds, so no external image is assumed and the command runs in a real container. Driven through `codex-cli 0.146.0-alpha.9.2`, the build [ADR-0012](adr/0012-codex-integration-contract.md) is bound to, with an isolated `CODEX_HOME` and `LCTK_HOME` so the operator's own configuration, registry, and grants are neither read nor written.
+
+All 25 steps pass — the 15 from Slice 1.4 unchanged, plus:
 
 | Step | Result |
 |---|---|
 | tools discovered | all five: `project_info`, `exact_search`, `git_status`, `git_diff`, `run_command` |
+| `exact_search` | found a line **saved and never committed** — the claim the indexing design exists to make, checked from outside LCTK |
+| `exact_search` with a broken expression | `INVALID_PATTERN`, not an empty result set that would read as "no such code here" |
+| `exact_search` with an invented argument | refused by schema validation before any handler saw it |
 | `git_status` | the uncommitted change, with branch and commit, `root: /workspace`, no host path |
 | `git_diff` for one path | a real unified patch |
 | `git_diff` for `../outside.txt` | `INVALID_PATH: the path must stay inside the repository`, marked `isError` |
@@ -508,11 +515,32 @@ All 22 steps pass — the 15 from Slice 1.4 unchanged, plus:
 | `run_command build` | `COMMAND_NOT_PROPOSED`, naming the manifest key to add |
 | `run_command deploy` | `COMMAND_UNKNOWN: LCTK runs only build, test, and lint` |
 
-The three refusals are the point. Each calls for something different from whoever reads it, and all three survive into the client's own tool result where an agent reads them and acts. A single generic failure would have been protocol-correct and useless.
+The refusals are the point. Each calls for something different from whoever reads it, and all of them survive into the client's own tool result where an agent reads them and acts. A single generic failure would have been protocol-correct and useless.
 
-Writing the harness caught one wrong assumption immediately: the first version expected `COMMAND_NOT_APPROVED` for a command the manifest had never proposed, and got `COMMAND_NOT_PROPOSED`. The product was right and the test was wrong, which is the useful direction for that to happen in.
+The invented-argument step completes the scope guarantee from the other side. A *declared* argument such as `project_id` is accepted and disregarded, which `scope_survives_a_wrong_argument` already checked; an *undeclared* one fails validation outright. Silently dropping it would leave an agent believing a filter had been applied.
+
+Writing the harness caught two wrong assumptions, both mine rather than the product's: it expected `COMMAND_NOT_APPROVED` for a command the manifest had never proposed and got the more precise `COMMAND_NOT_PROPOSED`, and it guessed a `regex` boolean where the schema has `mode`. Both are the useful direction for a disagreement to resolve in.
 
 `run_command` also confirmed the boundary it exists to hold: the manifest's `test` entry — present, proposed, deliberately unapproved — never reached a container.
+
+### Slice 3.6: The refusal text an agent acts on
+
+**Status:** complete.
+
+A significant change now ends with the whole MCP surface driven by hand against the real daemon, with every answer read rather than asserted on. Passing tests and a green CI are necessary and not sufficient: an assertion checks the substring somebody thought to write down.
+
+The first such pass covered every tool and every variant of each — literal and regex search, case sensitivity, path globs and an escaping glob, paging and a stale cursor, staged versus working-tree Git state, a rename, a file both staged and edited after, diff truncation, each distinct refusal code, a command line smuggled beside an approved name, a rewritten manifest, a non-zero exit, a missing credential, a malformed one, the wrong scheme, and an unknown project.
+
+Almost everything held, including things that had never been checked live: a file written 0.3 seconds earlier was found inside the 3-second debounce window; the staged and working-tree diffs of one path genuinely differ; `commands` lists only what is runnable; a non-zero exit comes back as a result rather than an error; and the three credential answers match [`docs/security.md`](security.md) exactly, including the deliberate `403` for an unknown project that refuses to disclose whether it exists.
+
+Two defects surfaced, both in the text an agent reads and neither reachable by assertion:
+
+- **A refusal ran two sentences together.** The parts are joined with a space, and many messages end on a quoted path or a backticked pattern, so the advice read as part of the value: ``missing closing ]: `[unclosed` Correct the request and try again.`` A message that does not punctuate itself is now closed first, while a colon or semicolon is left alone rather than given a second mark.
+- **A stale cursor was told to "correct the request".** Nothing about the request was wrong when it was made — the index moved underneath it — and the message already carried advice that the generic action then duplicated. The message now states what happened and the action says what to do, with the reason attached.
+
+The recommended action became a named function so it can be read back and checked, since that sentence is part of the tool's interface rather than a detail of its implementation.
+
+Six variants earned their way into the [harness](../spikes/codex-end-to-end/), which now runs 29 steps: the staged-versus-working-tree difference, the smuggled command line, the rewritten manifest, and the failing command. Paging with a stale cursor and the credential failure modes stay hand-only for now and are named as such in the [results](spikes/codex-end-to-end-results.md), because a variant nobody lists is a variant nobody runs.
 
 ## Stage 4 — Symbol and AST intelligence
 

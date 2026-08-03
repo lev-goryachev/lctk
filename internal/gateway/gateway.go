@@ -660,14 +660,35 @@ type searchToolError struct {
 }
 
 func (e *searchToolError) Error() string {
-	parts := []string{e.code + ": " + e.message}
+	parts := []string{e.code + ": " + terminated(e.message)}
 	if e.retryable {
 		parts = append(parts, "This is retryable.")
 	}
 	if e.action != "" {
-		parts = append(parts, e.action)
+		parts = append(parts, terminated(e.action))
 	}
 	return strings.Join(parts, " ")
+}
+
+// terminated ends a sentence that does not end itself.
+//
+// The parts above are joined with a space, and many of these messages finish on a
+// quoted path or a backticked pattern, which is exactly where a reader loses the
+// seam: "missing closing ]: `[unclosed` Correct the request and try again." reads
+// as though Correct were part of the pattern. The text is what an agent acts on,
+// so it has to parse on the first pass.
+func terminated(text string) string {
+	trimmed := strings.TrimRight(text, " ")
+	if trimmed == "" {
+		return trimmed
+	}
+	switch trimmed[len(trimmed)-1] {
+	// Already punctuated. Appending to a colon or a semicolon would be worse than
+	// leaving the seam, because it produces ":." rather than a sentence.
+	case '.', '!', '?', ':', ';':
+		return trimmed
+	}
+	return trimmed + "."
 }
 
 func asSearchToolError(err error) error {
