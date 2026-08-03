@@ -574,6 +574,9 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 		Name: "exact_search",
 		Description: "Search this project's saved working tree for an exact literal or regular expression. " +
 			"Results are indexed and include files that are saved but not committed. " +
+			"They describe the files as they are on disk: an edit that has not been written " +
+			"to disk is not searchable here, whether it is yours or a proposal another client " +
+			"is holding. " +
 			"Paths are project-relative; the scope comes from the endpoint, and arguments naming " +
 			"a project or an absolute path are ignored or refused.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input exactSearchInput) (*mcp.CallToolResult, exactSearchOutput, error) {

@@ -271,43 +271,64 @@ func (s *Store) Rebuild(ctx context.Context) (State, error) {
 	})
 }
 
+// Applied reports what a batch of changes did to the index.
+//
+// It exists because "how many changes were submitted" and "how many changed the
+// index" are different numbers, and only the second one says whether the work was
+// worth doing.
+type Applied struct {
+	// Changed counts the paths the new generation added or retracted.
+	Changed int
+	// Unchanged counts written files whose content already matched what the index
+	// holds. That is the ordinary outcome of a save that edited nothing, of a
+	// formatter that reformatted nothing, and of an edit that was applied to disk
+	// and then undone.
+	Unchanged int
+	// Rebuilt says the batch escalated to a full build rather than a delta.
+	Rebuilt bool
+	// Generations is how many index generations the batch consumed: one for a
+	// delta or a rebuild, and zero when nothing in it changed the index.
+	Generations int
+}
+
 // Update applies a batch of changes as a delta generation.
 //
 // It escalates to a full rebuild when the delta depth would exceed the policy,
 // so a long-running project cannot silently degrade into a pile of shards.
-func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
+//
+// A write whose content already matches the index is dropped rather than applied.
+// This is not an optimization for its own sake: publishing a generation for it
+// would consume delta depth and so bring the next full rebuild closer without
+// changing a byte of what is searchable. Saves that change nothing are common —
+// a formatter with nothing to reformat, an editor writing on focus loss, and an
+// edit that was written to disk and then reverted.
+func (s *Store) Update(ctx context.Context, changes []Change) (State, Applied, error) {
 	dir, state, err := s.resolveCurrent()
 	if err != nil {
 		var typed *Error
 		if errors.As(err, &typed) && typed.Code == CodeIndexNotReady {
-			return s.Rebuild(ctx)
+			built, buildErr := s.Rebuild(ctx)
+			return built, Applied{Changed: built.FileCount, Rebuilt: true, Generations: 1}, buildErr
 		}
-		return State{}, err
+		return State{}, Applied{}, err
 	}
 	if len(changes) == 0 {
-		return state, nil
-	}
-	if state.DeltaDepth+1 > s.Limits.MaxDeltaGenerations {
-		return s.Rebuild(ctx)
-	}
-	// A batch touching much of the index is cheaper to rebuild than to apply. Each
-	// changed path leaves a tombstone that every later query has to resolve, so a
-	// large delta is not a one-time cost: it is a tax on every search until the
-	// next full build.
-	if s.Limits.bulk(len(changes), state.FileCount) {
-		return s.Rebuild(ctx)
+		return state, Applied{}, nil
 	}
 	// An edited ignore file changes what belongs in the index everywhere beneath
 	// it, not just for the files in this batch. A delta could only add or remove
 	// the entries it was handed, so a file the new rules now exclude would linger
 	// until something else happened to touch it.
+	//
+	// This is decided before reading anything, because the rules about to change
+	// are the same rules the read below would apply.
 	if touchesIgnoreRules(changes) {
-		return s.Rebuild(ctx)
+		return s.rebuildFor(ctx)
 	}
 
 	root, err := s.openWorkspace()
 	if err != nil {
-		return State{}, err
+		return State{}, Applied{}, err
 	}
 	defer root.Close()
 
@@ -320,25 +341,37 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		// seen deduplicates the batch by the path each change literally names.
 		seen = make(map[string]struct{}, len(changes))
 		// tombstone is every path the delta must retract, which is a superset of
-		// seen: expanding a removed directory adds paths no change named. It is
-		// deliberately not folded into seen, or a file deleted with its directory
-		// and written again in the same batch would be skipped as already handled.
+		// the paths named by changes that survived: expanding a removed directory
+		// adds paths no change named. It is deliberately not folded into seen, or
+		// a file deleted with its directory and written again in the same batch
+		// would be skipped as already handled.
 		tombstone = make(map[string]struct{}, len(changes))
 		add       []string
+		unchanged int
 	)
+	// drop retracts a path the index should no longer hold. Nothing is tombstoned
+	// for a path the index never had: retracting an absent entry does no harm, but
+	// it counts as work done and would make an empty batch look like a real one.
+	drop := func(name string) {
+		if _, indexed := files[name]; !indexed {
+			return
+		}
+		delete(files, name)
+		tombstone[name] = struct{}{}
+	}
+
 	for _, change := range changes {
 		name, err := normalizeRelative(change.Path)
 		if err != nil {
-			return State{}, fail(CodeInvalidPattern, err.Error(), false, nil)
+			return State{}, Applied{}, fail(CodeInvalidPattern, err.Error(), false, nil)
 		}
 		if _, already := seen[name]; already {
 			continue
 		}
 		seen[name] = struct{}{}
-		tombstone[name] = struct{}{}
 
 		if change.Deleted {
-			delete(files, name)
+			drop(name)
 			if change.Subtree {
 				prefix := name + "/"
 				for indexed := range files {
@@ -353,7 +386,7 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		// A targeted update must agree with what a full build would do, or an
 		// ignored file added here would vanish again at the next rebuild.
 		if !s.eligible(root, name) {
-			delete(files, name)
+			drop(name)
 			continue
 		}
 		digest, size, err := digestFile(root, name, s.Limits.MaxFileBytes)
@@ -366,18 +399,62 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 			// mount. None of them belongs in the index, and none should abort a
 			// batch: a watcher cannot promise a file still exists, and one
 			// hostile entry must not stop the other changes from being applied.
-			delete(files, name)
+			drop(name)
 			continue
 		case size > s.Limits.MaxFileBytes:
-			delete(files, name)
+			drop(name)
 			continue
 		}
+		// The content on disk is the content already indexed. Leaving the existing
+		// shard's copy in place is not merely cheaper, it is the whole answer: a
+		// delta that retracted the entry and re-added identical text would produce
+		// the same searchable index at the cost of a generation.
+		if files[name] == digest {
+			unchanged++
+			continue
+		}
+		// The old copy is retracted and the new one added. drop is what decides
+		// whether a tombstone is needed at all: a file the index never held has
+		// nothing to retract.
+		drop(name)
 		files[name] = digest
 		add = append(add, name)
 	}
 	sort.Strings(add)
 
-	return s.build(ctx, buildPlan{
+	// changed counts paths, not operations: a rewritten file is retracted and added
+	// and is still one change. It is what escalation is judged on and what the
+	// caller is told.
+	changed := len(tombstone)
+	for _, name := range add {
+		if _, retracted := tombstone[name]; !retracted {
+			changed++
+		}
+	}
+
+	// Nothing here changes what is searchable. Returning the published state as it
+	// stands keeps the generation, the delta depth, and the build timestamp where
+	// they were, which is what makes a write-and-revert cycle free rather than
+	// merely fast.
+	if len(add) == 0 && len(tombstone) == 0 {
+		return state, Applied{Unchanged: unchanged}, nil
+	}
+
+	// Escalation is judged on what actually changed, not on what was submitted. A
+	// branch checked out and immediately checked back would otherwise be a bulk
+	// change twice over, and force two full rebuilds for no net edit.
+	if state.DeltaDepth+1 > s.Limits.MaxDeltaGenerations {
+		return s.rebuildFor(ctx)
+	}
+	// A batch touching much of the index is cheaper to rebuild than to apply. Each
+	// changed path leaves a tombstone that every later query has to resolve, so a
+	// large delta is not a one-time cost: it is a tax on every search until the
+	// next full build.
+	if s.Limits.bulk(changed, state.FileCount) {
+		return s.rebuildFor(ctx)
+	}
+
+	built, err := s.build(ctx, buildPlan{
 		generation:  state.Generation + 1,
 		full:        false,
 		previous:    dir,
@@ -390,24 +467,36 @@ func (s *Store) Update(ctx context.Context, changes []Change) (State, error) {
 		add:         add,
 		tombstone:   sortedSet(tombstone),
 	})
+	if err != nil {
+		return State{}, Applied{}, err
+	}
+	return built, Applied{Changed: changed, Unchanged: unchanged, Generations: 1}, nil
+}
+
+// rebuildFor builds the whole workspace and reports it as an escalation.
+func (s *Store) rebuildFor(ctx context.Context) (State, Applied, error) {
+	built, err := s.Rebuild(ctx)
+	if err != nil {
+		return State{}, Applied{}, err
+	}
+	return built, Applied{Changed: built.FileCount, Rebuilt: true, Generations: 1}, nil
 }
 
 // Reconcile compares the workspace with the published inventory and applies the
 // difference. It is how the index catches up after the service was not running.
-func (s *Store) Reconcile(ctx context.Context) (State, []Change, error) {
+func (s *Store) Reconcile(ctx context.Context) (State, Applied, error) {
 	_, state, err := s.resolveCurrent()
 	if err != nil {
 		var typed *Error
 		if errors.As(err, &typed) && typed.Code == CodeIndexNotReady {
-			built, buildErr := s.Rebuild(ctx)
-			return built, nil, buildErr
+			return s.rebuildFor(ctx)
 		}
-		return State{}, nil, err
+		return State{}, Applied{}, err
 	}
 
 	inventory, err := s.inventory(ctx)
 	if err != nil {
-		return State{}, nil, err
+		return State{}, Applied{}, err
 	}
 
 	var changes []Change
@@ -424,10 +513,11 @@ func (s *Store) Reconcile(ctx context.Context) (State, []Change, error) {
 	sort.Slice(changes, func(a, b int) bool { return changes[a].Path < changes[b].Path })
 
 	if len(changes) == 0 {
-		return state, nil, nil
+		return state, Applied{}, nil
 	}
-	updated, err := s.Update(ctx, changes)
-	return updated, changes, err
+	// Every change here was found by comparing digests, so none of them can be a
+	// no-op and Update's filter has nothing to remove.
+	return s.Update(ctx, changes)
 }
 
 type buildPlan struct {

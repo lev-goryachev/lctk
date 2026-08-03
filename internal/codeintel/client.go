@@ -106,6 +106,12 @@ type Provenance struct {
 	// Freshness is filled in by the caller that knows what the host has observed
 	// since this generation was built. The adapter cannot judge it: the service
 	// knows what it indexed, not what has changed on disk since.
+	//
+	// "fresh" is a claim about the disk and nothing else. It says the index matches
+	// the files as they are written, not that it accounts for every edit a caller
+	// has in mind: an unwritten buffer and an unapplied patch are invisible here by
+	// design, because the alternative is trusting a client's word about what a file
+	// contains.
 	Freshness string `json:"freshness,omitempty"`
 }
 
@@ -247,7 +253,12 @@ type Change struct {
 type IndexResult struct {
 	Generation uint64 `json:"generation"`
 	FileCount  int    `json:"file_count"`
-	Applied    int    `json:"applied"`
+	// Applied counts the paths that changed in the index, which is not the number
+	// of changes submitted.
+	Applied int `json:"applied"`
+	// Unchanged counts submitted writes whose content already matched the index.
+	// A batch that is entirely unchanged publishes no generation at all.
+	Unchanged int `json:"unchanged,omitempty"`
 	// FullBuild says the service decided to rebuild rather than apply a delta,
 	// which it does for a batch large enough that a delta would cost more.
 	FullBuild bool   `json:"full_build"`

@@ -6,6 +6,12 @@
 # Rust build output
 /target/
 
+# The CLI built as docs/development.md describes it, with the extension a
+# Windows build adds. Ignored at the root only, so a source file named lctk.go
+# somewhere in the tree is unaffected.
+/lctk
+/lctk.exe
+
 # Local LCTK and Codex state
 /.lctk/
 /.codex/

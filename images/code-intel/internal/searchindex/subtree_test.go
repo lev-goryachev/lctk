@@ -1,7 +1,6 @@
 package searchindex
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,10 +24,7 @@ func TestARemovedDirectoryTakesItsFilesOutOfTheIndex(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(f.workspace, "pkg")); err != nil {
 		t.Fatal(err)
 	}
-	state, err := f.Update(context.Background(), []Change{{Path: "pkg", Deleted: true, Subtree: true}})
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	state := f.update(t, Change{Path: "pkg", Deleted: true, Subtree: true})
 
 	if state.FileCount != 1 {
 		t.Fatalf("file count = %d, want only keep.go", state.FileCount)
@@ -46,9 +42,7 @@ func TestADeletionWithoutTheSubtreeFlagRetractsOnlyItsOwnPath(t *testing.T) {
 	f.write(t, "pkg/a.go", "// Needle a\n")
 	f.rebuild(t)
 
-	if _, err := f.Update(context.Background(), []Change{{Path: "pkg", Deleted: true}}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	f.update(t, Change{Path: "pkg", Deleted: true})
 	if got := paths(f.search(t, Request{Pattern: "Needle"})); len(got) != 1 {
 		t.Fatalf("files = %v, want pkg/a.go untouched", got)
 	}
@@ -67,12 +61,10 @@ func TestAFileRewrittenAfterItsDirectoryWasRemovedSurvivesTheSameBatch(t *testin
 	}
 	f.write(t, "pkg/a.go", "// Needle new\n")
 
-	if _, err := f.Update(context.Background(), []Change{
-		{Path: "pkg", Deleted: true, Subtree: true},
-		{Path: "pkg/a.go"},
-	}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	f.update(t,
+		Change{Path: "pkg", Deleted: true, Subtree: true},
+		Change{Path: "pkg/a.go"},
+	)
 
 	if got := paths(f.search(t, Request{Pattern: "Needle new"})); len(got) != 1 || got[0] != "pkg/a.go" {
 		t.Fatalf("the rewritten file did not survive its directory's removal: %v", got)
@@ -101,28 +93,28 @@ func TestABulkChangeIsRebuiltRatherThanApplied(t *testing.T) {
 	}
 	f.rebuild(t)
 
+	// The files are rewritten, not merely named. Escalation is judged on what
+	// actually changed, so a batch of paths whose content still matches the index
+	// is not a bulk change at all — it is nothing.
+	edit := func(t *testing.T, count int, revision string) []Change {
+		t.Helper()
+		changes := make([]Change, 0, count)
+		for i := 0; i < count; i++ {
+			name := "pkg/f" + strconv.Itoa(i) + ".go"
+			f.write(t, name, "// Needle "+strconv.Itoa(i)+" "+revision+"\n")
+			changes = append(changes, Change{Path: name})
+		}
+		return changes
+	}
+
 	// Three of twenty is under the floor and under the share: a delta.
-	small := make([]Change, 0, 3)
-	for i := 0; i < 3; i++ {
-		small = append(small, Change{Path: "pkg/f" + strconv.Itoa(i) + ".go"})
-	}
-	state, err := f.Update(context.Background(), small)
-	if err != nil {
-		t.Fatalf("small update: %v", err)
-	}
+	state := f.update(t, edit(t, 3, "second")...)
 	if state.FullBuild {
 		t.Fatal("a three-file change rebuilt the whole index")
 	}
 
 	// Eight of twenty clears the floor and is well past a quarter: a rebuild.
-	big := make([]Change, 0, 8)
-	for i := 0; i < 8; i++ {
-		big = append(big, Change{Path: "pkg/f" + strconv.Itoa(i) + ".go"})
-	}
-	state, err = f.Update(context.Background(), big)
-	if err != nil {
-		t.Fatalf("bulk update: %v", err)
-	}
+	state = f.update(t, edit(t, 8, "third")...)
 	if !state.FullBuild {
 		t.Fatal("a change touching 40% of the index was applied as a delta")
 	}

@@ -260,6 +260,9 @@ func (w *worker) drain() {
 	w.logger.Info("index brought up to date",
 		slog.Uint64("generation", result.Generation),
 		slog.Int("applied", result.Applied),
+		// Reported even when zero: a batch of saves that changed nothing is the
+		// interesting case, and it is invisible otherwise.
+		slog.Int("unchanged", result.Unchanged),
 		slog.Int("files", result.FileCount),
 		slog.Bool("full_build", result.FullBuild),
 		slog.Bool("reconciled", snapshot.Gap != nil))
