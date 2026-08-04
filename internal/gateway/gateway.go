@@ -556,6 +556,11 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 				if status.Semantic != nil {
 					output.Capabilities = append(output.Capabilities, "code_search_semantic")
 				}
+				if status.Graph != nil {
+					output.Capabilities = append(output.Capabilities,
+						"callers_find", "callees_find", "dependency_path", "impact_analyze", "repository_map",
+						"memory_get", "memory_search", "memory_put", "memory_delete")
+				}
 				changes, freshness := describeChanges(state, watching, status.Indexing)
 				output.Changes = changes
 				output.Index = &indexInfo{
@@ -652,6 +657,7 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 	g.registerOutlineTool(server, resolved)
 	g.registerSymbolTools(server, resolved)
 	g.registerSemanticTool(server, resolved)
+	g.registerIntelligenceTools(server, resolved)
 	g.registerGitTools(server, resolved)
 	g.registerRunTool(server, resolved)
 	return server

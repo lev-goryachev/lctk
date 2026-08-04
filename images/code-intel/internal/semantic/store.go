@@ -15,16 +15,24 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Source is the exact index's scoped reader. The semantic store deliberately
 // lacks a filesystem root, so only files accepted into the exact generation can
 // become semantic state.
 type Source interface {
 	ReadProjectFile(relative string, maxBytes int64) ([]byte, string, error)
+}
+
+// GraphExtractor is the syntax capability used to build derived graph state.
+// It is optional for narrow semantic-store tests but always present in the
+// production service.
+type GraphExtractor interface {
+	Facts(ctx context.Context, name string, content []byte, digest string) (symbols.GraphFacts, error)
 }
 
 // Config fixes the persistent compatibility contract for one store.
@@ -42,6 +50,7 @@ type Store struct {
 	source     Source
 	chunker    Chunker
 	embedder   Embedder
+	graph      GraphExtractor
 	config     Config
 	mu         sync.Mutex
 	progressMu sync.RWMutex
@@ -102,6 +111,7 @@ func Open(config Config, source Source, outliner Outliner, embedder Embedder) (*
 		db: db, source: source, embedder: embedder, config: config,
 		chunker: Chunker{Outliner: outliner},
 	}
+	store.graph, _ = outliner.(GraphExtractor)
 	if err := store.initialize(); err != nil {
 		db.Close()
 		return nil, err
@@ -120,8 +130,8 @@ func (s *Store) initialize() error {
 	if version > schemaVersion {
 		return fail(CodeCorrupt, "The semantic database was written by a newer LCTK version.", false, nil)
 	}
-	if version != 0 && version != schemaVersion {
-		return fail(CodeCorrupt, "The semantic database requires an explicit migration.", false, nil)
+	if version < 0 || (version != 0 && version != 1 && version != schemaVersion) {
+		return fail(CodeCorrupt, "The project intelligence database requires an unsupported migration.", false, nil)
 	}
 	schema := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS semantic_meta (
@@ -151,6 +161,58 @@ CREATE TABLE IF NOT EXISTS semantic_vectors (
     rowid INTEGER PRIMARY KEY,
     embedding BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS graph_files (
+    path TEXT PRIMARY KEY,
+    digest TEXT NOT NULL,
+    language TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    container TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    column_number INTEGER NOT NULL,
+    start_byte INTEGER NOT NULL,
+    end_byte INTEGER NOT NULL,
+    signature TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS graph_nodes_name ON graph_nodes(name);
+CREATE INDEX IF NOT EXISTS graph_nodes_path ON graph_nodes(path);
+CREATE TABLE IF NOT EXISTS graph_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_path TEXT NOT NULL,
+    target TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    column_number INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS graph_imports_source ON graph_imports(source_path);
+CREATE TABLE IF NOT EXISTS graph_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    callee TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    column_number INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS graph_calls_callee ON graph_calls(callee);
+CREATE INDEX IF NOT EXISTS graph_calls_caller ON graph_calls(caller);
+CREATE TABLE IF NOT EXISTS memory_records (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    provenance_json TEXT NOT NULL,
+    source_commit TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    embedding BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_records_kind ON memory_records(kind);
+CREATE INDEX IF NOT EXISTS memory_records_updated ON memory_records(updated_at);
 PRAGMA user_version = %d;`, schemaVersion)
 	if _, err := s.db.Exec(schema); err != nil {
 		return fail(CodeCorrupt, "The semantic schema could not be initialized.", false, err)
@@ -216,7 +278,32 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 	}
 	sort.Strings(deleted)
 
+	// Graph migration and recovery are independent of embedding reuse. A database
+	// upgraded from schema v1 has semantic file rows but no graph rows, so graph
+	// digests decide their own changed/deleted set.
+	graphKnown, err := s.graphFileDigests(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	graphChanged := make([]string, 0)
+	graphDeleted := make([]string, 0)
+	if s.graph != nil {
+		for path, digest := range exact.Files {
+			if graphKnown[path] != digest {
+				graphChanged = append(graphChanged, path)
+			}
+		}
+		for path := range graphKnown {
+			if _, exists := exact.Files[path]; !exists {
+				graphDeleted = append(graphDeleted, path)
+			}
+		}
+		sort.Strings(graphChanged)
+		sort.Strings(graphDeleted)
+	}
+
 	prepared := make(map[string][]preparedChunk, len(changed))
+	graphPrepared := make(map[string]symbols.GraphFacts, len(graphChanged))
 	type embeddingWork struct {
 		path  string
 		index int
@@ -253,6 +340,22 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 			work = append(work, embeddingWork{path: path, index: i, text: chunk.EmbeddingText})
 		}
 		prepared[path] = items
+	}
+	for _, path := range graphChanged {
+		content, digest, err := s.source.ReadProjectFile(path, s.config.MaxFileBytes)
+		if err != nil {
+			return Status{}, fail(CodeInternalError,
+				"A file accepted by the exact generation could not be read for graph indexing.", false, err)
+		}
+		if digest != exact.Files[path] {
+			return Status{}, fail(CodeNotReady,
+				"A source file changed after the exact generation was published; reconcile it before graph indexing.", true, nil)
+		}
+		facts, err := s.graph.Facts(ctx, path, content, digest)
+		if err != nil {
+			return Status{}, err
+		}
+		graphPrepared[path] = facts
 	}
 	s.setProgress(syncProgress{running: true, total: len(work) + reused, reused: reused})
 	for start := 0; start < len(work); start += s.config.BatchSize {
@@ -291,9 +394,23 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 			return Status{}, err
 		}
 	}
+	for _, path := range graphDeleted {
+		if err := deleteGraphPath(ctx, tx, path); err != nil {
+			return Status{}, err
+		}
+	}
+	for _, path := range graphChanged {
+		if err := replaceGraphPath(ctx, tx, graphPrepared[path]); err != nil {
+			return Status{}, err
+		}
+	}
 	metadata := map[string]string{
 		"generation": strconv.FormatUint(exact.Generation, 10),
 		"indexed_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if s.graph != nil {
+		metadata["graph_generation"] = strconv.FormatUint(exact.Generation, 10)
+		metadata["graph_indexed_at"] = metadata["indexed_at"]
 	}
 	for key, value := range metadata {
 		if _, err := tx.ExecContext(ctx,

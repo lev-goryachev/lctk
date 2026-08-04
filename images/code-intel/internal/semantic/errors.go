@@ -15,6 +15,8 @@ const (
 	CodeCorrupt              = "SEMANTIC_CORRUPT"
 	CodeModelMismatch        = "MODEL_MISMATCH"
 	CodeInvalidQuery         = "INVALID_QUERY"
+	CodeMemoryNotFound       = "MEMORY_NOT_FOUND"
+	CodeMemoryConflict       = "MEMORY_REVISION_CONFLICT"
 	CodeInternalError        = "INTERNAL_ERROR"
 )
 

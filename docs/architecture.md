@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Stage 5 adds one installation-wide stateless llama.cpp embedding service and one transactional semantic SQLite database in each project's existing state volume under [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md). Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Stage 5 adds one installation-wide stateless llama.cpp embedding service and one transactional semantic SQLite database in each project's existing state volume under [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md). Stage 6 adds the derived syntax/name-match graph and explicit reviewed project memory to that isolated database under [ADR-0021](adr/0021-derived-code-graph-and-explicit-project-memory.md). Codebase Memory MCP remains reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
 ## Current implementation
 
@@ -146,7 +146,12 @@ run_command
 repository_map
 callers_find
 callees_find
+dependency_path
 impact_analyze
+memory_get
+memory_search
+memory_put
+memory_delete
 ```
 
 `code-intel` selects adapters, merges results, and removes duplicates. Every relevant response includes compact:

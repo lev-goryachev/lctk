@@ -59,6 +59,16 @@ type Semantic interface {
 	Sync(ctx context.Context, exact searchindex.State) (semantic.Status, error)
 	Status() (semantic.Status, error)
 	Search(ctx context.Context, request semantic.Request) (semantic.Response, error)
+	GraphStatus() (semantic.GraphStatus, error)
+	Callers(ctx context.Context, request semantic.GraphRequest) (semantic.GraphMatches, error)
+	Callees(ctx context.Context, request semantic.GraphRequest) (semantic.GraphMatches, error)
+	DependencyPath(ctx context.Context, request semantic.DependencyRequest) (semantic.DependencyResponse, error)
+	Impact(ctx context.Context, request semantic.ImpactRequest) (semantic.ImpactResponse, error)
+	RepositoryMap(ctx context.Context, request semantic.MapRequest) (semantic.MapResponse, error)
+	MemoryGet(ctx context.Context, request semantic.MemoryGetRequest) (semantic.MemoryRecord, error)
+	MemorySearch(ctx context.Context, request semantic.MemorySearchRequest) (semantic.MemorySearchResponse, error)
+	MemoryPut(ctx context.Context, request semantic.MemoryPutRequest) (semantic.MemoryRecord, error)
+	MemoryDelete(ctx context.Context, request semantic.MemoryDeleteRequest) error
 }
 
 // Server exposes the indexer over HTTP.
@@ -136,6 +146,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /outline", s.handleOutline)
 	mux.HandleFunc("POST /locate", s.handleLocate)
 	mux.HandleFunc("POST /semantic/search", s.handleSemanticSearch)
+	mux.HandleFunc("POST /graph/callers", s.handleGraphCallers)
+	mux.HandleFunc("POST /graph/callees", s.handleGraphCallees)
+	mux.HandleFunc("POST /graph/dependency-path", s.handleDependencyPath)
+	mux.HandleFunc("POST /graph/impact", s.handleImpact)
+	mux.HandleFunc("POST /graph/repository-map", s.handleRepositoryMap)
+	mux.HandleFunc("POST /memory/get", s.handleMemoryGet)
+	mux.HandleFunc("POST /memory/search", s.handleMemorySearch)
+	mux.HandleFunc("POST /memory/put", s.handleMemoryPut)
+	mux.HandleFunc("POST /memory/delete", s.handleMemoryDelete)
 	return mux
 }
 
@@ -183,6 +202,22 @@ type StatusView struct {
 	// Semantic is absent when this stack has no embedding service configured. A
 	// present but stale value is useful capability evidence and must not disappear.
 	Semantic *SemanticStatusView `json:"semantic,omitempty"`
+	// Graph is derived from the same saved file generation as semantic chunks.
+	Graph *GraphStatusView `json:"graph,omitempty"`
+}
+
+// GraphStatusView combines persisted graph state with exact-index freshness.
+type GraphStatusView struct {
+	Ready       bool   `json:"ready"`
+	Generation  uint64 `json:"generation"`
+	FileCount   int    `json:"file_count"`
+	NodeCount   int    `json:"node_count"`
+	ImportCount int    `json:"import_count"`
+	CallCount   int    `json:"call_count"`
+	IndexedAt   string `json:"indexed_at,omitempty"`
+	Precision   string `json:"precision"`
+	Freshness   string `json:"freshness"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // SemanticStatusView combines the semantic store's committed state with the
@@ -259,8 +294,169 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			semanticView.Freshness = "fresh"
 		}
 		view.Semantic = semanticView
+		graphStatus, graphErr := s.semantic.GraphStatus()
+		graphView := &GraphStatusView{
+			Ready: graphStatus.Ready, Generation: graphStatus.Generation,
+			FileCount: graphStatus.FileCount, NodeCount: graphStatus.NodeCount,
+			ImportCount: graphStatus.ImportCount, CallCount: graphStatus.CallCount,
+			IndexedAt: graphStatus.IndexedAt, Precision: graphStatus.Precision,
+			Freshness: "stale", Reason: graphStatus.Reason,
+		}
+		if graphErr != nil {
+			graphView.Reason = graphErr.Error()
+		} else if graphStatus.Ready && graphStatus.Generation == state.Generation && !running {
+			graphView.Freshness = "fresh"
+		}
+		view.Graph = graphView
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleGraphCallers(w http.ResponseWriter, r *http.Request) {
+	s.handleGraph(w, r, func(ctx context.Context, request semantic.GraphRequest) (any, error) {
+		return s.semantic.Callers(ctx, request)
+	})
+}
+
+func (s *Server) handleGraphCallees(w http.ResponseWriter, r *http.Request) {
+	s.handleGraph(w, r, func(ctx context.Context, request semantic.GraphRequest) (any, error) {
+		return s.semantic.Callees(ctx, request)
+	})
+}
+
+func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request, action func(context.Context, semantic.GraphRequest) (any, error)) {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady, "This project service has no graph store configured.", false, http.StatusServiceUnavailable)
+		return
+	}
+	var request semantic.GraphRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery, "The graph request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+	response, err := action(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleDependencyPath(w http.ResponseWriter, r *http.Request) {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady, "This project service has no graph store configured.", false, http.StatusServiceUnavailable)
+		return
+	}
+	var request semantic.DependencyRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery, "The dependency request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+	response, err := s.semantic.DependencyPath(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleImpact(w http.ResponseWriter, r *http.Request) {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady, "This project service has no graph store configured.", false, http.StatusServiceUnavailable)
+		return
+	}
+	var request semantic.ImpactRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery, "The impact request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+	response, err := s.semantic.Impact(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleRepositoryMap(w http.ResponseWriter, r *http.Request) {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady, "This project service has no graph store configured.", false, http.StatusServiceUnavailable)
+		return
+	}
+	var request semantic.MapRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery, "The repository map request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+	response, err := s.semantic.RepositoryMap(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleMemoryGet(w http.ResponseWriter, r *http.Request) {
+	var request semantic.MemoryGetRequest
+	if !s.decodeIntelligenceRequest(w, r, &request) {
+		return
+	}
+	response, err := s.semantic.MemoryGet(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
+	var request semantic.MemorySearchRequest
+	if !s.decodeIntelligenceRequest(w, r, &request) {
+		return
+	}
+	response, err := s.semantic.MemorySearch(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleMemoryPut(w http.ResponseWriter, r *http.Request) {
+	var request semantic.MemoryPutRequest
+	if !s.decodeIntelligenceRequest(w, r, &request) {
+		return
+	}
+	response, err := s.semantic.MemoryPut(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request) {
+	var request semantic.MemoryDeleteRequest
+	if !s.decodeIntelligenceRequest(w, r, &request) {
+		return
+	}
+	if err := s.semantic.MemoryDelete(r.Context(), request); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (s *Server) decodeIntelligenceRequest(w http.ResponseWriter, r *http.Request, target any) bool {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady, "This project service has no persistent intelligence store configured.", false, http.StatusServiceUnavailable)
+		return false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(target); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery, "The request body is not valid JSON.", false, http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
@@ -642,13 +838,19 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	switch code {
 	case searchindex.CodeIndexNotReady:
 		status = http.StatusServiceUnavailable
+	case semantic.CodeNotReady, semantic.CodeEmbeddingUnavailable:
+		status = http.StatusServiceUnavailable
 	case searchindex.CodeIndexCorrupt:
 		status = http.StatusInternalServerError
 	case searchindex.CodeFileNotFound:
 		status = http.StatusNotFound
+	case semantic.CodeMemoryNotFound:
+		status = http.StatusNotFound
+	case semantic.CodeMemoryConflict:
+		status = http.StatusConflict
 	case searchindex.CodeInvalidPattern, searchindex.CodeInvalidCursor, searchindex.CodeLimitExceeded,
 		searchindex.CodeInvalidPath, searchindex.CodeFileTooLarge,
-		symbols.CodeUnsupportedLanguage, symbols.CodeParseIncomplete:
+		symbols.CodeUnsupportedLanguage, symbols.CodeParseIncomplete, semantic.CodeInvalidQuery:
 		status = http.StatusBadRequest
 	}
 	writeTyped(w, code, message, retryable, status)

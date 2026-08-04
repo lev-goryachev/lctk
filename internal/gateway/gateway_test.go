@@ -527,7 +527,11 @@ func TestToolListIsTheDocumentedCatalog(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	want := []string{"code_search_semantic", "exact_search", "git_diff", "git_status", "project_info", "run_command"}
+	want := []string{
+		"callees_find", "callers_find", "code_search_semantic", "dependency_path", "exact_search",
+		"git_diff", "git_status", "impact_analyze", "memory_delete", "memory_get", "memory_put",
+		"memory_search", "project_info", "repository_map", "run_command",
+	}
 	if len(names) != len(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}

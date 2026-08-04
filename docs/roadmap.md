@@ -788,23 +788,25 @@ The live external client completed MCP handshake, tool listing, `project_info`, 
 
 ### Slice 6.1: Persistent derived graph
 
-Implement declaration nodes, import dependencies, call sites, incremental replacement, schema migration, and the graph adapter defined by [ADR-0021](adr/0021-derived-code-graph-and-explicit-project-memory.md).
+**Status:** complete. Tree-sitter extracts declaration nodes, language import syntax, called identifiers, and enclosing declarations for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX. Graph rows are replaced per changed path and committed in the same SQLite transaction and exact generation as semantic state. Schema v1 migrates to v2 without discarding embeddings; the first graph sync fills the new tables.
 
 ### Slice 6.2: Graph tools
 
-Implement `callers_find`, `callees_find`, `dependency_path`, and `impact_analyze` with name-match precision, ambiguity, evidence, bounds, pagination, and freshness.
+**Status:** complete. `callers_find`, `callees_find`, `dependency_path`, and `impact_analyze` expose bounded evidence through the project service and MCP. Calls retain path, caller, callee, line, and column; caller/callee pages use opaque cursors; dependency traversal is deterministic and depth-bounded. Every response states `precision: name_match`, ambiguity, graph/exact generations, and watcher freshness.
 
 ### Slice 6.3: Compact repository map
 
-Implement deterministic importance ranking and `repository_map` with a caller-supplied character budget, explicit truncation, generation, and source state.
+**Status:** complete. `repository_map` ranks files deterministically from incoming/outgoing imports and call activity, emits syntax declarations and signatures, enforces a 256-100000 character budget, and reports character count, whole-project counts, truncation, generation, and name-match precision.
 
 ### Slice 6.4: Explicit reviewed project memory
 
-Implement `memory_get`, `memory_search`, `memory_put`, and `memory_delete` with stable keys, kinds, optimistic revisions, provenance, confidence, commit awareness, review metadata, semantic and lexical retrieval, persistence, and purge behavior.
+**Status:** complete. `memory_get`, `memory_search`, `memory_put`, and `memory_delete` provide explicit records with validated stable keys and kinds, project-relative provenance, confidence and review labels, source commit, timestamps, and optimistic revisions. Writes embed before their transaction; failed inference cannot create metadata-only state. Search is deterministic lexical/semantic RRF, while an empty query is the inference-free list operation. The gateway supplies the current Git commit and labels stale records without hiding them.
 
 ### Slice 6.5: Graph and memory end-to-end proof
 
-Verify edits, renames, deletes, ambiguous names, cross-language calls, dependency paths, stale memory, concurrent revision conflicts, restart persistence, project isolation, and every tool through real clients.
+**Status:** complete. Container tests cover add/change/delete retraction, duplicate-name ambiguity, pagination, dependency traversal, v1-to-v2 migration, stale revisions, escaping provenance, semantic/lexical memory search, and restart persistence. Gateway tests drive all nine Stage 6 tools through a real MCP SDK session and verify route-bound scope despite a foreign `project_id` argument.
+
+The live five-file fixture migrated an existing Stage 5 database in place: exact, semantic, and graph generation 3 were simultaneously `fresh`, with 13 declaration nodes, three import facts, and nine calls. A watcher-applied JavaScript edit produced `main.js -> dep.js` without manual reindexing; `callers_find` connected JavaScript caller `start` to Go declaration name `RetryFailedRequest`, explicitly as `name_match`. An independent MCP Go SDK client listed 18 tools and called the complete catalog: every read/write path succeeded, while a stale memory revision and an unapproved command produced their expected typed refusals. A separate put/restart/get/delete sequence recovered the same memory content and revision after the project container received a new loopback port.
 
 ## Stage 7 — Hardening and public release
 
