@@ -69,6 +69,10 @@ const (
 	// CodeParseIncomplete reports a file the parser did not finish inside its
 	// budget.
 	CodeParseIncomplete = "PARSE_INCOMPLETE"
+	// CodeParseBusy reports that the project is already parsing as many files as its
+	// resource policy allows. It is retryable, which is the distinction: the file is
+	// fine and the answer exists, the project was busy at that moment.
+	CodeParseBusy = "PARSE_BUSY"
 )
 
 // Error is a typed failure a caller can act on.
@@ -156,6 +160,9 @@ type Status struct {
 	// OutlineLanguages names what the service can outline. It is empty for a
 	// service that predates the symbol layer, which reads correctly as "none".
 	OutlineLanguages []string `json:"outline_languages,omitempty"`
+	// SymbolParallelism is how many files the project will parse at once, zero
+	// meaning unbounded. It explains a PARSE_BUSY refusal without guesswork.
+	SymbolParallelism int `json:"symbol_parallelism,omitempty"`
 }
 
 // Symbol is one declaration in a file.
@@ -647,6 +654,9 @@ func ActionFor(code string) string {
 		return "Use exact_search on this file instead; project_info lists the languages this project can outline."
 	case CodeParseIncomplete:
 		return "This file is too costly to parse; search within it instead."
+	case CodeParseBusy:
+		// The only one of these that waiting fixes, so it is the only one that says so.
+		return "The project is busy parsing; retry shortly, or ask about fewer files."
 	default:
 		return ""
 	}

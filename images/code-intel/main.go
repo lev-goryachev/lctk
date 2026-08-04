@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -139,6 +140,26 @@ func applySymbolLimits(engine *symbols.Engine) {
 	if value, err := strconv.ParseInt(os.Getenv("LCTK_SYMBOL_MAX_FILE_BYTES"), 10, 64); err == nil && value > 0 {
 		engine.MaxFileBytes = value
 	}
+	// The parse bound comes from the host's background-load policy, the same figure
+	// that caps index work, because it answers the same question: how much of this
+	// machine the project may spend. A container with no policy still gets a bound --
+	// unbounded parsing is what Slice 4.5 measured turning a busy service into one
+	// that refuses ordinary files.
+	engine.SetParallelism(symbolParallelism())
+}
+
+// symbolParallelism resolves how many files may be parsed at once.
+func symbolParallelism() int {
+	if value, err := strconv.Atoi(os.Getenv("LCTK_SYMBOL_PARALLELISM")); err == nil && value > 0 {
+		return value
+	}
+	if value, err := strconv.Atoi(os.Getenv("LCTK_INDEX_PARALLELISM")); err == nil && value > 0 {
+		return value
+	}
+	// No policy was delivered. runtime.NumCPU inside a CPU-limited container reports
+	// the host's processors rather than the share this project may use, so it is a
+	// ceiling rather than an answer -- but a ceiling is what is missing here.
+	return runtime.NumCPU()
 }
 
 // limitsFromEnv allows the shipped policy to be overridden for a project with

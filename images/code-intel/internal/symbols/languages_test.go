@@ -253,7 +253,7 @@ func TestEveryLanguageTellsAnIdentifierFromProse(t *testing.T) {
 	engine := newEngine(t)
 	for _, testCase := range languageCases {
 		t.Run(testCase.language, func(t *testing.T) {
-			located, err := engine.Locate(testCase.path, []byte(testCase.source), "digest", testCase.sentinel)
+			located, err := engine.Locate(t.Context(), testCase.path, []byte(testCase.source), "digest", testCase.sentinel)
 			if err != nil {
 				t.Fatalf("Locate: %v", err)
 			}
@@ -317,7 +317,7 @@ impl Widget {
     pub fn size_of(&self) -> u32 { self.size }
 }
 `
-	located, err := engine.Locate("a.rs", []byte(source), "digest", "Widget")
+	located, err := engine.Locate(t.Context(), "a.rs", []byte(source), "digest", "Widget")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestMentioningACStructTypeIsNotDeclaringIt(t *testing.T) {
 		t.Errorf("Widget is declared %d times, at lines %v, want once", declarations, lines)
 	}
 
-	located, err := engine.Locate("a.c", []byte(source), "digest", "Widget")
+	located, err := engine.Locate(t.Context(), "a.c", []byte(source), "digest", "Widget")
 	if err != nil {
 		t.Fatal(err)
 	}

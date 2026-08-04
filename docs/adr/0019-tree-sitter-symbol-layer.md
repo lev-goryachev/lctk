@@ -85,9 +85,18 @@ Rejected. `DisableCTags` stays set. Enabling it would put symbol metadata inside
 
 ### Follow-up
 
-- Close the query gaps the measurement named: preprocessor definitions for C and C++, module-level assignment for Python, module-level non-function bindings for JavaScript.
-- State the name-based precision of a definition or reference answer in the answer itself, not only in documentation.
-- Keep the symbol layer tied to the published index generation, so a symbol answer and a search answer never describe different content.
-- Measure what the layer costs a real project under each resource mode before Stage 4 is declared complete.
+Closed by the rest of Stage 4:
+
+- The query gaps the measurement named — preprocessor definitions for C and C++, module-level assignment for Python, plain bindings for JavaScript — plus Go's `:=`, Rust `let` bindings, and trait method signatures. Slice 4.4.
+- Precision stated in the answer rather than only in documentation. A cross-file answer reports `precision: name_match`, deliberately a weaker word than the `syntax` an outline reports. Slice 4.3.
+- The cost under each resource mode, measured in Slice 4.5 — which also found that an unbounded parse count turns a busy service into one that refuses ordinary files, because a wall-clock budget is not load-independent. The parse count now follows the project's resource mode.
+
+One follow-up was **resolved differently from the way it was written**, and the difference is worth recording. It said to keep the symbol layer tied to the published index generation so a symbol answer and a search answer never describe different content. Stage 4 split it instead:
+
+- an **outline** reads the file and is tied to nothing. It carries a content digest, has no generation it could be behind, and is therefore *more* current than a search — which is the stronger honest position, not a looser one;
+- a **cross-file lookup** narrows through the index, so it does carry the generation and the freshness verdict, and runs the same flush a search runs.
+
+Still open:
+
 - Execute the arm64 build rather than only compiling it, in the release pipeline, alongside the same open item ADR-0011 carries for the search engine.
 - Revisit grammar pins deliberately; an ABI change in the core is a compatibility event, not a routine upgrade.

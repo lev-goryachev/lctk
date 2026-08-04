@@ -30,7 +30,7 @@ func Use(n Needle) int {
 
 func locate(t *testing.T, engine *Engine, source, name string) Located {
 	t.Helper()
-	located, err := engine.Locate("a.go", []byte(source), "digest", name)
+	located, err := engine.Locate(t.Context(), "a.go", []byte(source), "digest", name)
 	if err != nil {
 		t.Fatalf("Locate(%q): %v", name, err)
 	}
@@ -218,7 +218,7 @@ func other() int {
 
 func TestAnUnsupportedLanguageIsRefusedForALookupToo(t *testing.T) {
 	engine := newEngine(t)
-	_, err := engine.Locate("a.rb", []byte("Needle = 1\n"), "digest", "Needle")
+	_, err := engine.Locate(t.Context(), "a.rb", []byte("Needle = 1\n"), "digest", "Needle")
 	typed := typedError(t, err)
 	if typed.Code != CodeUnsupportedLanguage {
 		t.Errorf("code = %q", typed.Code)

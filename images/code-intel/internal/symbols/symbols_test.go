@@ -1,6 +1,7 @@
 package symbols
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ func newEngine(t *testing.T) *Engine {
 
 func outlineOf(t *testing.T, engine *Engine, name, source string) Outline {
 	t.Helper()
-	outline, err := engine.Outline(name, []byte(source), "digest")
+	outline, err := engine.Outline(t.Context(), name, []byte(source), "digest")
 	if err != nil {
 		t.Fatalf("outline %s: %v", name, err)
 	}
@@ -210,7 +211,7 @@ func TestAnUnknownExtensionIsRefusedAndTheRefusalNamesWhatIsSupported(t *testing
 	// different and wrong claim. The refusal also has to say what would work, or a
 	// caller learns the boundary only by guessing.
 	engine := newEngine(t)
-	_, err := engine.Outline("a.rb", []byte("class C; end\n"), "digest")
+	_, err := engine.Outline(t.Context(), "a.rb", []byte("class C; end\n"), "digest")
 	typed := typedError(t, err)
 
 	if typed.Code != CodeUnsupportedLanguage {
@@ -254,7 +255,7 @@ func TestAnExhaustedBudgetIsAnErrorRatherThanAnEmptyOutline(t *testing.T) {
 	// "Not analysed" and "declares nothing" must not arrive as the same answer.
 	engine := newEngine(t)
 	engine.Budget = time.Nanosecond
-	_, err := engine.Outline("a.go", []byte(goSource), "digest")
+	_, err := engine.Outline(context.Background(), "a.go", []byte(goSource), "digest")
 	if err == nil {
 		t.Skip("the parse finished inside a one-nanosecond budget, so the bound cannot be observed here")
 	}
@@ -278,7 +279,7 @@ func TestConcurrentOutlinesDoNotShareAParser(t *testing.T) {
 		go func() {
 			defer group.Done()
 			for round := 0; round < 20; round++ {
-				outline, err := engine.Outline("a.go", []byte(goSource), "digest")
+				outline, err := engine.Outline(context.Background(), "a.go", []byte(goSource), "digest")
 				if err != nil {
 					t.Errorf("outline: %v", err)
 					return
@@ -305,4 +306,81 @@ func last(text string, count int) string {
 		return text
 	}
 	return text[len(text)-count:]
+}
+
+func TestExactlyTheBoundedNumberOfFilesIsParsedAtOnce(t *testing.T) {
+	// Slice 4.5 measured why the bound exists: at 64 concurrent parses of a 920 KiB
+	// C++ header on a two-CPU container, every single parse exceeded its five-second
+	// budget and was refused, and resident memory reached 625 MiB. The bound is not
+	// an optimization -- without it a busy service declines ordinary files.
+	//
+	// It is checked on the queue rather than by timing concurrent parses, which would
+	// measure the machine rather than the rule.
+	engine := newEngine(t)
+	engine.SetParallelism(3)
+
+	for taken := 1; taken <= 3; taken++ {
+		if err := engine.acquire(context.Background()); err != nil {
+			t.Fatalf("slot %d of 3 was refused: %v", taken, err)
+		}
+	}
+
+	// The fourth must wait. A cancelled context is how a test observes "waits"
+	// without depending on how long anything takes.
+	full, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := engine.acquire(full); err == nil {
+		t.Fatal("a fourth slot was granted against a bound of three")
+	}
+
+	engine.release()
+	if err := engine.acquire(context.Background()); err != nil {
+		t.Fatalf("a released slot was not reusable: %v", err)
+	}
+}
+
+func TestACallerThatGaveUpDoesNotHoldAParsingSlot(t *testing.T) {
+	// A slot held for an abandoned request is a slot spent on nothing, which is the
+	// opposite of what a bound is for.
+	engine := newEngine(t)
+	engine.SetParallelism(1)
+
+	// Fill the single slot and keep it.
+	if err := engine.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := engine.Outline(ctx, "a.go", []byte("package p\n"), "")
+	if err == nil {
+		t.Fatal("a cancelled request was served from a full queue")
+	}
+	typed := typedError(t, err)
+	if typed.Code != CodeParseBusy {
+		t.Errorf("code = %q, want %q", typed.Code, CodeParseBusy)
+	}
+	// Retryable is the point of the distinction: the file is fine and the answer
+	// exists, the project was busy. PARSE_INCOMPLETE would be a claim about the file.
+	if !typed.Retryable {
+		t.Error("a busy project is reported as not retryable")
+	}
+
+	engine.release()
+	if _, err := engine.Outline(context.Background(), "a.go", []byte("package p\n"), ""); err != nil {
+		t.Errorf("the slot was not returned: %v", err)
+	}
+}
+
+func TestAnUnboundedEngineStillWorks(t *testing.T) {
+	// Zero is right for a test and wrong for a service, and the difference has to be
+	// a configuration rather than two code paths.
+	engine := newEngine(t)
+	engine.SetParallelism(0)
+	if engine.Parallelism() != 0 {
+		t.Fatalf("parallelism = %d, want unbounded", engine.Parallelism())
+	}
+	if _, err := engine.Outline(context.Background(), "a.go", []byte("package p\n"), ""); err != nil {
+		t.Fatal(err)
+	}
 }

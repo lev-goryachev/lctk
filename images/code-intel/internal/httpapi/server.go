@@ -42,10 +42,13 @@ type Indexer interface {
 // Outliner extracts declarations from content. It receives bytes rather than a
 // path, which is what keeps the decision about what may be read in one place.
 type Outliner interface {
-	Outline(name string, content []byte, digest string) (symbols.Outline, error)
-	Locate(name string, content []byte, digest, wanted string) (symbols.Located, error)
+	Outline(ctx context.Context, name string, content []byte, digest string) (symbols.Outline, error)
+	Locate(ctx context.Context, name string, content []byte, digest, wanted string) (symbols.Located, error)
 	Languages() []string
 	MaxBytes() int64
+	// Parallelism is how many files may be parsed at once, reported so the policy in
+	// force is visible rather than inferred from a refusal.
+	Parallelism() int
 }
 
 // Server exposes the indexer over HTTP.
@@ -154,6 +157,10 @@ type StatusView struct {
 	// OutlineLanguages names what this build can outline, so a caller learns the
 	// boundary by asking rather than by being refused.
 	OutlineLanguages []string `json:"outline_languages,omitempty"`
+	// SymbolParallelism is how many files may be parsed at once, zero meaning
+	// unbounded. It is reported because it is a policy an operator sets and a figure
+	// that explains a PARSE_BUSY refusal.
+	SymbolParallelism int `json:"symbol_parallelism,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -167,6 +174,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		// Reported before the index state is resolved, because what this build can
 		// outline does not depend on whether an index exists.
 		view.OutlineLanguages = s.outliner.Languages()
+		view.SymbolParallelism = s.outliner.Parallelism()
 	}
 
 	state, err := s.indexer.State()
@@ -263,7 +271,7 @@ func (s *Server) handleOutline(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	outline, err := s.outliner.Outline(request.Path, content, digest)
+	outline, err := s.outliner.Outline(r.Context(), request.Path, content, digest)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -356,7 +364,7 @@ func (s *Server) handleLocate(w http.ResponseWriter, r *http.Request) {
 			view.SkippedUnreadable++
 			continue
 		}
-		located, err := s.outliner.Locate(candidate, content, digest, request.Name)
+		located, err := s.outliner.Locate(r.Context(), candidate, content, digest, request.Name)
 		if err != nil {
 			var typed typedFailure
 			if errors.As(err, &typed) {
