@@ -2,9 +2,9 @@
 
 ## Status
 
-Working requirements document. Last updated: 2026-07-25.
+Working requirements document. Last updated: 2026-08-04.
 
-LCTK is public pre-alpha software. Slice 0.1 implements the executable and repository foundation; the first required product vertical slice remains future work.
+LCTK is public pre-alpha software. Stages 0 through 4 implement and verify the first end-to-end lifecycle, persistent incremental exact search, safe coding operations, and syntax-aware symbol intelligence. Persistent semantic intelligence, the graph and memory layer, and release hardening remain future work.
 
 ## Goal
 

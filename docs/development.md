@@ -136,7 +136,7 @@ The link carries a code that is spent the moment the page uses it, and the page 
 That also means the ordinary checks above never touch it. It has its own CI job on Linux, and locally it is built and tested inside a container:
 
 ```sh
-docker run --rm -v "$PWD/images/code-intel:/src" -w /src -e CGO_ENABLED=0 golang:1.25 go test ./...
+docker run --rm -v "$PWD/images/code-intel:/src" -w /src -e CGO_ENABLED=1 golang:1.25 go test ./...
 ```
 
 `lctk image build` compiles it into the reusable image. A project must be restarted after a rebuild to pick up the new service.

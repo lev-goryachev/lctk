@@ -441,11 +441,11 @@ func TestASavedFileIsObservedSequencedAndSettled(t *testing.T) {
 	})
 }
 
-// The debounce window exists so an editor's save-then-format-then-save burst is
-// one update, not three.
 // The debounce window exists so an editor's save-then-format-then-save burst
 // costs the index one update, not twenty. The assertion is on what the index
-// received, because that is the cost the window exists to avoid.
+// received, because that is the cost the window exists to avoid. Filesystem
+// notification APIs may coalesce adjacent writes before LCTK sees them, so the
+// journal sequence is deliberately not treated as a count of write calls.
 func TestABurstOfSavesCostsTheIndexOneChange(t *testing.T) {
 	service := newFakeService(t, []string{"."})
 	h := newHarness(t, service, nil)
@@ -459,10 +459,6 @@ func TestABurstOfSavesCostsTheIndexOneChange(t *testing.T) {
 	view := h.awaitView(t, "the burst reaching the index", func(v View) bool {
 		return v.Sequence > 0 && v.Pending == 0 && v.Checkpoint == v.Sequence
 	})
-	if view.Sequence < 20 {
-		t.Fatalf("sequence = %d, want the individual saves to have been observed", view.Sequence)
-	}
-
 	total := 0
 	for _, batch := range service.appliedPaths() {
 		total += len(batch)
