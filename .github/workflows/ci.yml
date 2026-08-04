@@ -67,7 +67,14 @@ jobs:
       - name: Install the arm64 cross compiler
         # The arm64 build below needs a C compiler for that target. It compiles
         # rather than runs, which is what ADR-0019 records as verified.
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+        #
+        # libc6-dev-arm64-cross is named explicitly because --no-install-recommends
+        # leaves it out, and without the target's headers the cross compiler reaches
+        # for the host's and fails on bits/libc-header-start.h.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l .)
