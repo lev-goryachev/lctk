@@ -307,9 +307,12 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 		rep.skip("stopped_project_is_typed", "no thread available")
 		rep.skip("restart_reconnects", "no thread available")
 		// Named individually rather than covered by one line, so a run with no
-		// thread cannot be mistaken for a run in which Stage 3 was exercised.
+		// thread cannot be mistaken for a run in which Stage 3 and Stage 4 were
+		// exercised.
 		for _, step := range []string{
 			"exact_search_through_client", "bad_pattern_refused_visibly", "invented_argument_refused",
+			"file_outline_through_client", "unparsed_file_is_reported",
+			"unsupported_language_refused", "outline_path_escape_refused",
 			"git_status_through_client", "git_diff_through_client", "staged_and_worktree_diffs_differ",
 			"escaping_path_refused_visibly", "approved_command_runs", "smuggled_command_ignored",
 			"unapproved_command_refused", "unproposed_command_refused", "unknown_command_refused",
@@ -457,7 +460,26 @@ func prepareSourceProject(ctx context.Context, dir string) error {
 	if err := git("init", "--quiet"); err != nil {
 		return err
 	}
-	if err := git("add", "tracked.txt", ".mcp-project.yaml"); err != nil {
+	// A Go file with nesting worth reporting: a field inside a type and a constant
+	// inside a method. Containment computed from byte ranges is the claim being
+	// checked, and neither of those two declarations says in its own syntax where it
+	// lives.
+	outline := "package fixture\n\n" +
+		"// Widget is the declaration an outline must find.\n" +
+		"type Widget struct {\n\tSize int\n}\n\n" +
+		"func (w Widget) Describe() string {\n\tconst prefix = \"widget\"\n\treturn prefix\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "outline.go"), []byte(outline), 0o644); err != nil {
+		return err
+	}
+	// A file that does not parse, left uncommitted. An outline of it has to report
+	// both halves: that it is broken, and the declarations that did parse -- an agent
+	// asking about the file it is midway through editing is the ordinary case.
+	half := "package fixture\n\nfunc Halfway(a int) int {\n\treturn a +\n"
+	if err := os.WriteFile(filepath.Join(dir, "half.go"), []byte(half), 0o644); err != nil {
+		return err
+	}
+
+	if err := git("add", "tracked.txt", ".mcp-project.yaml", "outline.go"); err != nil {
 		return err
 	}
 	if err := git(
@@ -542,6 +564,76 @@ func verifyTools(ctx context.Context, client *appServerClient, rep *report, serv
 		rep.pass("invented_argument_refused", "%s", truncate(combined, 300))
 	} else {
 		rep.fail("invented_argument_refused", "%s", truncate(combined, 400))
+	}
+
+	// file_outline answers a question no other tool here can: what does this file
+	// declare, and does it parse. It reads the file rather than the index, so it needs
+	// no flush and cannot be behind.
+	body, err = toolCall(ctx, client, server, "file_outline", threadID,
+		map[string]any{"path": "outline.go"})
+	switch {
+	case err != nil:
+		rep.fail("file_outline_through_client", "%v", err)
+	// Containment is the part worth checking through a client: a field reported
+	// inside its type, and a constant inside the method that declares it. Neither
+	// says in its own syntax where it lives.
+	case !strings.Contains(body, `"name":"Size"`) || !strings.Contains(body, `"container":"Widget"`):
+		rep.fail("file_outline_through_client", "%s", truncate(body, 500))
+	case !strings.Contains(body, `"container":"Describe"`):
+		rep.fail("file_outline_through_client", "a constant inside a method is not contained by it: %s",
+			truncate(body, 500))
+	case !strings.Contains(body, `"precision":"syntax"`):
+		rep.fail("file_outline_through_client", "the answer does not state its precision: %s",
+			truncate(body, 500))
+	default:
+		rep.pass("file_outline_through_client",
+			"declarations with kinds, extents, and containment, stated as syntax precision")
+	}
+
+	// A half-written file is the case the syntax verdict exists for. It has to report
+	// that the file is broken, say where to look, and still list what parsed.
+	body, err = toolCall(ctx, client, server, "file_outline", threadID,
+		map[string]any{"path": "half.go"})
+	switch {
+	case err != nil:
+		rep.fail("unparsed_file_is_reported", "%v", err)
+	case !strings.Contains(body, `"valid":false`) || !strings.Contains(body, `"first_error_line"`):
+		rep.fail("unparsed_file_is_reported", "%s", truncate(body, 500))
+	case !strings.Contains(body, `"name":"Halfway"`):
+		rep.fail("unparsed_file_is_reported",
+			"a broken file lost the declarations that did parse: %s", truncate(body, 500))
+	default:
+		rep.pass("unparsed_file_is_reported",
+			"a truncated file is reported invalid with a line to look at, and still lists what parsed")
+	}
+
+	// A file this build has no grammar for is refused rather than answered with an
+	// empty outline, which would read as "this file declares nothing". The refusal
+	// has to name a tool that does work on it.
+	body, err = toolCall(ctx, client, server, "file_outline", threadID,
+		map[string]any{"path": "tracked.txt"})
+	combined = body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "LANGUAGE_UNSUPPORTED") && strings.Contains(combined, "exact_search") {
+		rep.pass("unsupported_language_refused", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("unsupported_language_refused", "%s", truncate(combined, 400))
+	}
+
+	// The same scope boundary the git tools hold, checked on this tool too: a path
+	// that leaves the project is refused rather than reinterpreted.
+	body, err = toolCall(ctx, client, server, "file_outline", threadID,
+		map[string]any{"path": "../outside.go"})
+	combined = body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "INVALID_PATH") {
+		rep.pass("outline_path_escape_refused", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("outline_path_escape_refused", "%s", truncate(combined, 400))
 	}
 
 	body, err = toolCall(ctx, client, server, "git_status", threadID, map[string]any{})

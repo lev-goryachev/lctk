@@ -186,6 +186,9 @@ type projectInfoOutput struct {
 	// Commands names what run_command can actually run right now, so a caller
 	// does not have to discover by refusal that nothing has been approved.
 	Commands []string `json:"commands,omitempty"`
+	// OutlineLanguages names what file_outline can describe, so a caller learns
+	// the boundary by asking rather than by being refused on a file.
+	OutlineLanguages []string `json:"outline_languages,omitempty"`
 }
 
 // sourceInfo is the commit-and-dirty half of the freshness contract.
@@ -541,6 +544,14 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 			// The index status is reported best-effort. A project that is up but
 			// whose service is still starting should still answer project_info.
 			if status, err := g.searchClient(resolved).Status(ctx); err == nil {
+				// Advertised from what the service reports rather than from what this
+				// build can do: a project whose container predates the symbol layer
+				// answers nothing here, and claiming the tool anyway would send a
+				// caller to discover the gap by being refused.
+				if len(status.OutlineLanguages) > 0 {
+					output.Capabilities = append(output.Capabilities, "file_outline")
+					output.OutlineLanguages = status.OutlineLanguages
+				}
 				changes, freshness := describeChanges(state, watching, status.Indexing)
 				output.Changes = changes
 				output.Index = &indexInfo{
@@ -634,9 +645,103 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 		return nil, output, nil
 	})
 
+	g.registerOutlineTool(server, resolved)
 	g.registerGitTools(server, resolved)
 	g.registerRunTool(server, resolved)
 	return server
+}
+
+// fileOutlineInput is the public request schema for file_outline.
+type fileOutlineInput struct {
+	Path string `json:"path" jsonschema:"The project-relative path of one file. Required. An absolute or escaping path is refused."`
+
+	ProjectID      string `json:"project_id,omitempty" jsonschema:"Ignored. The authoritative project comes from the endpoint."`
+	RepositoryRoot string `json:"repository_root,omitempty" jsonschema:"Ignored. The authoritative root comes from the registry."`
+}
+
+// fileOutlineOutput is the public response schema.
+type fileOutlineOutput struct {
+	ProjectID string `json:"project_id"`
+	Path      string `json:"path"`
+	Language  string `json:"language"`
+	Bytes     int    `json:"bytes"`
+	Lines     int    `json:"lines"`
+	// Digest is the content this answer describes. It is a digest rather than an
+	// index generation because an outline reads the file, so it cannot be behind.
+	Digest  string             `json:"digest,omitempty"`
+	Symbols []codeintel.Symbol `json:"symbols"`
+	Syntax  codeintel.Syntax   `json:"syntax"`
+	// ScopeSource states where the answered project came from, so a caller can
+	// verify that its own arguments did not influence it.
+	ScopeSource string `json:"scope_source"`
+	Root        string `json:"root"`
+	// Provenance names what produced the answer and how precise it is. Nothing here
+	// is type-resolved, and the answer says so rather than leaving a caller to
+	// assume otherwise.
+	Provenance outlineProvenance `json:"provenance"`
+}
+
+// outlineProvenance is the symbol layer's own provenance.
+//
+// It is a separate shape from the search provenance because the two describe
+// different things: a search answer is about an index generation, and an outline is
+// about the bytes of one file.
+type outlineProvenance struct {
+	Backend       string `json:"backend"`
+	SchemaVersion int    `json:"schema_version"`
+	// Precision is what kind of answer this is. "syntax" means the declarations are
+	// what the file's own syntax says, with no types resolved and nothing consulted
+	// outside this file.
+	Precision string `json:"precision"`
+	// ReadAt is when the file was read, which is what "current" means for an answer
+	// that does not come from an index.
+	ReadAt string `json:"read_at"`
+}
+
+// symbolBackend names the engine behind the outline, reported as provenance rather
+// than used for dispatch.
+const symbolBackend = "tree-sitter"
+
+// registerOutlineTool adds file_outline when the project can serve it.
+func (g *Gateway) registerOutlineTool(server *mcp.Server, resolved serveContext) {
+	if resolved.status.ServiceAddress == "" {
+		return
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "file_outline",
+		Description: "List what one file declares: functions, methods, types, fields, and constants, " +
+			"each with the lines and bytes it occupies and the declaration that encloses it. " +
+			"Also reports whether the file parses, which is how to check an edit before running anything. " +
+			"The answer describes the file as it is on disk and needs no index, so a file saved a moment " +
+			"ago is described correctly. " +
+			"Declarations are what the syntax says: nothing is type-resolved and nothing outside this file " +
+			"is consulted. " +
+			"Paths are project-relative; the scope comes from the endpoint, and an absolute or escaping " +
+			"path is refused.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileOutlineInput) (*mcp.CallToolResult, fileOutlineOutput, error) {
+		outline, err := g.searchClient(resolved).Outline(ctx, input.Path)
+		if err != nil {
+			return nil, fileOutlineOutput{}, asSearchToolError(err)
+		}
+		return nil, fileOutlineOutput{
+			ProjectID:   resolved.project.ID,
+			Path:        outline.Path,
+			Language:    outline.Language,
+			Bytes:       outline.Bytes,
+			Lines:       outline.Lines,
+			Digest:      outline.Digest,
+			Symbols:     outline.Symbols,
+			Syntax:      outline.Syntax,
+			ScopeSource: "route_and_registry",
+			Root:        projectstack.WorkspaceMount,
+			Provenance: outlineProvenance{
+				Backend:       symbolBackend,
+				SchemaVersion: outline.SchemaVersion,
+				Precision:     "syntax",
+				ReadAt:        g.options.Now().UTC().Format(time.RFC3339),
+			},
+		}, nil
+	})
 }
 
 // searchClient builds a client for the resolved project's published service.

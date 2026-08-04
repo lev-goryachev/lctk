@@ -21,13 +21,45 @@ type fakeService struct {
 	requests []map[string]any
 	response string
 	status   int
+	// outlineRequests records the paths asked about, so a test can assert what
+	// crossed the boundary rather than only what came back.
+	outlineRequests []string
+	outlineResponse string
+	outlineStatus   int
+	// outlineLanguages is what /status advertises. Empty stands for a project whose
+	// container predates the symbol layer, which is a case the gateway has to
+	// handle rather than assume away.
+	outlineLanguages []string
 }
 
 func newFakeService(t *testing.T) *fakeService {
 	t.Helper()
-	service := &fakeService{status: http.StatusOK}
+	service := &fakeService{
+		status:           http.StatusOK,
+		outlineStatus:    http.StatusOK,
+		outlineLanguages: []string{"go"},
+	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /outline", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Path string `json:"path"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		service.outlineRequests = append(service.outlineRequests, body.Path)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(service.outlineStatus)
+		if service.outlineResponse != "" {
+			_, _ = io.WriteString(w, service.outlineResponse)
+			return
+		}
+		_, _ = io.WriteString(w, `{"path":"internal/a.go","language":"go","bytes":120,"lines":9,`+
+			`"digest":"abc123","schema_version":1,`+
+			`"symbols":[{"name":"Needle","kind":"function","start_line":7,"end_line":9,`+
+			`"start_byte":40,"end_byte":118,"depth":0,"signature":"func Needle() {"}],`+
+			`"syntax":{"reported":true,"valid":true}}`)
+	})
 	mux.HandleFunc("POST /search", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -46,8 +78,10 @@ func newFakeService(t *testing.T) *fakeService {
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		languages, _ := json.Marshal(service.outlineLanguages)
 		_, _ = io.WriteString(w, `{"ready":true,"indexing":false,"generation":4,`+
-			`"file_count":42,"indexed_at":"2026-08-01T11:00:00Z"}`)
+			`"file_count":42,"indexed_at":"2026-08-01T11:00:00Z",`+
+			`"outline_languages":`+string(languages)+`}`)
 	})
 
 	service.server = httptest.NewServer(mux)

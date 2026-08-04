@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
 )
 
 // Indexer is the subset of the store the API drives. It is an interface so the
@@ -30,12 +31,27 @@ type Indexer interface {
 	Update(ctx context.Context, changes []searchindex.Change) (searchindex.State, searchindex.Applied, error)
 	WatchSet(ctx context.Context) ([]string, bool, error)
 	DiskBytes() (int64, error)
+	// ReadProjectFile hands back one named file the project's own rules allow to be
+	// read. The store decides that, not this layer.
+	ReadProjectFile(relative string, maxBytes int64) ([]byte, string, error)
+}
+
+// Outliner extracts declarations from content. It receives bytes rather than a
+// path, which is what keeps the decision about what may be read in one place.
+type Outliner interface {
+	Outline(name string, content []byte, digest string) (symbols.Outline, error)
+	Languages() []string
+	MaxBytes() int64
 }
 
 // Server exposes the indexer over HTTP.
 type Server struct {
 	indexer Indexer
-	logger  *slog.Logger
+	// outliner is optional. A build without one serves every other route and
+	// answers the outline route with a typed refusal, which is better than a
+	// route that exists and returns nothing useful.
+	outliner Outliner
+	logger   *slog.Logger
 
 	// indexing serializes every operation that publishes a generation. Two
 	// concurrent builds would race to publish and could leave the newer
@@ -77,11 +93,11 @@ func (a *atomic) snapshot() (bool, string) {
 }
 
 // New builds a server.
-func New(indexer Indexer, logger *slog.Logger) *Server {
+func New(indexer Indexer, outliner Outliner, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{indexer: indexer, logger: logger}
+	return &Server{indexer: indexer, outliner: outliner, logger: logger}
 }
 
 // Handler returns the routed HTTP surface.
@@ -92,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /search", s.handleSearch)
 	mux.HandleFunc("POST /index", s.handleIndex)
 	mux.HandleFunc("GET /watchset", s.handleWatchSet)
+	mux.HandleFunc("POST /outline", s.handleOutline)
 	return mux
 }
 
@@ -129,6 +146,9 @@ type StatusView struct {
 	// Reason explains a not-ready state, so the condition is diagnosable without
 	// reading container logs.
 	Reason string `json:"reason,omitempty"`
+	// OutlineLanguages names what this build can outline, so a caller learns the
+	// boundary by asking rather than by being refused.
+	OutlineLanguages []string `json:"outline_languages,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -138,6 +158,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	running, lastErr := s.progress.snapshot()
 	view := StatusView{Indexing: running, Reason: lastErr}
+	if s.outliner != nil {
+		// Reported before the index state is resolved, because what this build can
+		// outline does not depend on whether an index exists.
+		view.OutlineLanguages = s.outliner.Languages()
+	}
 
 	state, err := s.indexer.State()
 	if err != nil {
@@ -203,6 +228,42 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+type outlineRequest struct {
+	Path string `json:"path"`
+}
+
+// handleOutline answers with one file's declarations.
+//
+// It reads the file rather than the index, and that is the contract: an outline
+// describes the file as it is on disk right now. There is nothing to flush and no
+// generation to be behind, which is why the answer carries a content digest
+// instead of an index generation.
+func (s *Server) handleOutline(w http.ResponseWriter, r *http.Request) {
+	if s.outliner == nil {
+		writeTyped(w, symbols.CodeUnsupportedLanguage,
+			"This build does not provide symbol outlines.", false, http.StatusBadRequest)
+		return
+	}
+
+	var request outlineRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		writeTyped(w, searchindex.CodeInvalidPath, "The request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+
+	content, digest, err := s.indexer.ReadProjectFile(request.Path, s.outliner.MaxBytes())
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	outline, err := s.outliner.Outline(request.Path, content, digest)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, outline)
 }
 
 type indexRequest struct {
@@ -299,12 +360,24 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	return nil
 }
 
-// writeError maps an adapter error onto a status code.
+// typedFailure is any of this service's own errors.
 //
-// The mapping is small on purpose. The typed code is what the caller acts on;
-// the status code exists so ordinary HTTP tooling behaves sensibly.
+// The interface exists so this layer does not switch on which package produced a
+// failure. More than one package now answers requests here, and a handler that
+// knows their names would have to be edited every time another one is added --
+// which is exactly how an error stops being typed and becomes "the request
+// failed".
+type typedFailure interface {
+	error
+	Failure() (code string, message string, retryable bool)
+}
+
+// writeError maps a typed failure onto a status code.
+//
+// The mapping is small on purpose. The typed code is what the caller acts on; the
+// status code exists so ordinary HTTP tooling behaves sensibly.
 func (s *Server) writeError(w http.ResponseWriter, err error) {
-	var typed *searchindex.Error
+	var typed typedFailure
 	if !errors.As(err, &typed) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			writeTyped(w, searchindex.CodeInternalError, "The request was cancelled.", true, http.StatusRequestTimeout)
@@ -315,16 +388,21 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	code, message, retryable := typed.Failure()
 	status := http.StatusInternalServerError
-	switch typed.Code {
+	switch code {
 	case searchindex.CodeIndexNotReady:
 		status = http.StatusServiceUnavailable
 	case searchindex.CodeIndexCorrupt:
 		status = http.StatusInternalServerError
-	case searchindex.CodeInvalidPattern, searchindex.CodeInvalidCursor, searchindex.CodeLimitExceeded:
+	case searchindex.CodeFileNotFound:
+		status = http.StatusNotFound
+	case searchindex.CodeInvalidPattern, searchindex.CodeInvalidCursor, searchindex.CodeLimitExceeded,
+		searchindex.CodeInvalidPath, searchindex.CodeFileTooLarge,
+		symbols.CodeUnsupportedLanguage, symbols.CodeParseIncomplete:
 		status = http.StatusBadRequest
 	}
-	writeTyped(w, typed.Code, typed.Message, typed.Retryable, status)
+	writeTyped(w, code, message, retryable, status)
 }
 
 func writeTyped(w http.ResponseWriter, code, message string, retryable bool, status int) {

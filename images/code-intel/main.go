@@ -25,6 +25,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/httpapi"
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
 )
 
 // ListenPort is fixed inside the container. The host side is published on an
@@ -61,7 +62,17 @@ func run(logger *slog.Logger) error {
 	store := searchindex.New(workspace, indexRoot, projectID, limitsFromEnv())
 	defer store.Close()
 
-	server := httpapi.New(store, logger)
+	// The symbol engine is built before the listener, because a query that does not
+	// compile against the grammar loaded here is a configuration error and must not
+	// become an empty answer discovered later on one file.
+	outliner, err := symbols.New()
+	if err != nil {
+		return err
+	}
+	defer outliner.Close()
+	applySymbolLimits(outliner)
+
+	server := httpapi.New(store, outliner, logger)
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(ListenPort))
 	if err != nil {
 		return err
@@ -81,7 +92,8 @@ func run(logger *slog.Logger) error {
 		slog.String("project_id", projectID),
 		slog.String("workspace", workspace),
 		slog.String("index_root", indexRoot),
-		slog.Int("port", ListenPort))
+		slog.Int("port", ListenPort),
+		slog.Any("outline_languages", outliner.Languages()))
 
 	// The first index build runs alongside the listener rather than before it, so
 	// the host can observe status and receive typed errors while it happens.
@@ -116,6 +128,17 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// applySymbolLimits lets an operator relax or tighten the parse bounds for a
+// project with unusual content, in the same style as the index limits.
+func applySymbolLimits(engine *symbols.Engine) {
+	if value, err := time.ParseDuration(os.Getenv("LCTK_SYMBOL_BUDGET")); err == nil && value > 0 {
+		engine.Budget = value
+	}
+	if value, err := strconv.ParseInt(os.Getenv("LCTK_SYMBOL_MAX_FILE_BYTES"), 10, 64); err == nil && value > 0 {
+		engine.MaxFileBytes = value
+	}
 }
 
 // limitsFromEnv allows the shipped policy to be overridden for a project with

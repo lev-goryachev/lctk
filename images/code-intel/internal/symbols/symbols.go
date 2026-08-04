@@ -1,0 +1,480 @@
+// Package symbols extracts declarations from source using Tree-sitter.
+//
+// It parses bytes and nothing else. Nothing here opens a file, resolves a path,
+// or consults the project's ignore rules: the caller supplies content it has
+// already decided belongs to the project, which keeps the one component that
+// links a C library out of the business of deciding what may be read.
+//
+// What it produces is what the syntax says, and no more. A declaration's name,
+// kind, extent, and enclosing declaration are all taken from the tree. Nothing is
+// type-resolved, because nothing here can resolve a type: [ADR-0019] is explicit
+// that a cross-file answer is matched by name and is reported as such.
+//
+// [ADR-0019]: ../../../../docs/adr/0019-tree-sitter-symbol-layer.md
+package symbols
+
+import (
+	"fmt"
+	"path"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	ts "github.com/tree-sitter/go-tree-sitter"
+	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+)
+
+// SchemaVersion is the version of the shapes this package produces. It is
+// reported as provenance so a caller can reason about the contract it is reading.
+const SchemaVersion = 1
+
+// Language names. They are LCTK's, not a grammar's, and they are what a caller
+// sees.
+const (
+	LanguageGo = "go"
+)
+
+// DefaultBudget bounds one file's parse.
+//
+// The cost of a parse is not proportional to size — a pathological construct in a
+// file of ordinary length is what holds a parser — so the bound is wall clock. The
+// container it would otherwise hold is the project's own, which is the reason a
+// bound exists at all rather than a reason to make it generous.
+const DefaultBudget = 5 * time.Second
+
+// DefaultMaxBytes bounds the file a caller may ask about.
+//
+// It is deliberately larger than the index's own file limit. The two limits exist
+// for different reasons: a large file costs the index space in every generation it
+// appears in, while an outline costs one parse and is not stored, so refusing a
+// 1.5 MB generated declaration file would decline an answer nobody has to keep.
+const DefaultMaxBytes = 4 << 20
+
+// Kind is the normalized declaration category.
+//
+// The vocabulary is LCTK's so that a caller does not have to learn one grammar's
+// node names, and it is deliberately small: a category no configured grammar can
+// produce is not in it.
+type Kind string
+
+const (
+	KindFunction  Kind = "function"
+	KindMethod    Kind = "method"
+	KindType      Kind = "type"
+	KindInterface Kind = "interface"
+	KindStruct    Kind = "struct"
+	KindEnum      Kind = "enum"
+	KindClass     Kind = "class"
+	KindField     Kind = "field"
+	KindConstant  Kind = "constant"
+	KindVariable  Kind = "variable"
+	KindModule    Kind = "module"
+	KindMacro     Kind = "macro"
+	KindOther     Kind = "other"
+)
+
+// Symbol is one declaration.
+type Symbol struct {
+	Name string `json:"name"`
+	Kind Kind   `json:"kind"`
+	// StartLine and EndLine are 1-based and inclusive.
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
+	// StartByte and EndByte bound the declaration in the file. They are what makes
+	// "show me this declaration" answerable without a second guess about where it
+	// ends, and they are what a chunk model will need.
+	StartByte int `json:"start_byte"`
+	EndByte   int `json:"end_byte"`
+	// Container is the enclosing declaration's name, empty at the top level. It is
+	// computed from the tree's extents rather than from a name path, so it is exact:
+	// a declaration is inside another when its bytes are.
+	Container string `json:"container,omitempty"`
+	// Depth is how deeply the declaration is nested, so a flat list can be rendered
+	// as a tree without recomputing containment.
+	Depth int `json:"depth"`
+	// Signature is the declaration's own first line, trimmed and bounded. It is here
+	// because it is what a reader actually wants next, and returning it costs
+	// nothing once the extent is known.
+	Signature string `json:"signature,omitempty"`
+}
+
+// maxSignatureBytes bounds the first line carried back. A minified or generated
+// file can have a single line of any length, and a caller asked for an outline.
+const maxSignatureBytes = 200
+
+// Syntax is what the parser can say about the file being whole.
+type Syntax struct {
+	// Reported says a verdict is published for this language at all. It is false
+	// for languages where the grammar's opinion is not trustworthy, and a caller
+	// must read false as "unknown" rather than as "fine".
+	Reported bool `json:"reported"`
+	Valid    bool `json:"valid"`
+	// Errors counts the broken regions located, not the nodes inside them: the
+	// number of places to look, rather than the size of the wreckage.
+	Errors int `json:"errors,omitempty"`
+	// FirstErrorLine is where to look first.
+	FirstErrorLine int `json:"first_error_line,omitempty"`
+	// Note explains a withheld verdict, so "reported: false" is not a silence a
+	// caller has to interpret.
+	Note string `json:"note,omitempty"`
+}
+
+// Outline is one file's declarations.
+type Outline struct {
+	Path     string `json:"path"`
+	Language string `json:"language"`
+	Bytes    int    `json:"bytes"`
+	Lines    int    `json:"lines"`
+	// Digest is the content this answer describes, so a caller can tell whether two
+	// answers are about the same bytes.
+	Digest        string   `json:"digest,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	Symbols       []Symbol `json:"symbols"`
+	Syntax        Syntax   `json:"syntax"`
+}
+
+// grammar is one configured language.
+type grammar struct {
+	language *ts.Language
+	query    *ts.Query
+	// reportsSyntax says whether this grammar's opinion about a file being whole is
+	// worth publishing. Slice 4.1 measured why this is per language rather than
+	// global: the C and C++ grammars have no preprocessor, so most real files in
+	// those languages parse with errors while compiling perfectly.
+	reportsSyntax bool
+	// syntaxNote explains a withheld verdict in the answer itself.
+	syntaxNote string
+}
+
+// Engine parses and extracts. It is safe for concurrent use.
+type Engine struct {
+	grammars map[string]*grammar
+	// parsers is a pool because a Tree-sitter parser is not safe for concurrent
+	// use and creating one per request is measurable next to parsing a small file.
+	parsers sync.Pool
+
+	// Budget bounds one file's parse. Zero means unbounded, which no caller should
+	// choose in a service.
+	Budget time.Duration
+	// MaxFileBytes bounds the file a caller may ask about. Zero means unlimited.
+	MaxFileBytes int64
+}
+
+// MaxBytes is the largest file this engine will outline.
+func (e *Engine) MaxBytes() int64 { return e.MaxFileBytes }
+
+// New loads every configured grammar and compiles every query.
+//
+// Compiling here rather than per file is not only cheaper. A query that does not
+// compile against the grammar actually loaded is a configuration error, and it has
+// to surface once at startup instead of as an empty answer about some file nobody
+// was watching.
+func New() (*Engine, error) {
+	engine := &Engine{
+		grammars:     map[string]*grammar{},
+		Budget:       DefaultBudget,
+		MaxFileBytes: DefaultMaxBytes,
+	}
+	engine.parsers.New = func() any { return ts.NewParser() }
+
+	for _, configured := range configuredLanguages {
+		language := configured.grammar()
+		text := configured.query
+		for _, optional := range configured.optionalPatterns {
+			// A pattern is appended only if it compiles against this grammar
+			// release. A query naming a node the grammar does not have fails to
+			// compile rather than matching nothing, so a node renamed between
+			// releases has to be discovered rather than assumed.
+			probe, err := ts.NewQuery(language, optional)
+			if err != nil {
+				continue
+			}
+			probe.Close()
+			text += optional + "\n"
+			break
+		}
+		query, err := ts.NewQuery(language, text)
+		if err != nil {
+			return nil, fmt.Errorf("compile the %s symbol query: %w", configured.name, err)
+		}
+		engine.grammars[configured.name] = &grammar{
+			language:      language,
+			query:         query,
+			reportsSyntax: configured.reportsSyntax,
+			syntaxNote:    configured.syntaxNote,
+		}
+	}
+	return engine, nil
+}
+
+// Close releases the compiled queries.
+func (e *Engine) Close() {
+	for _, g := range e.grammars {
+		g.query.Close()
+	}
+}
+
+// Languages names what this build can outline, sorted.
+func (e *Engine) Languages() []string {
+	names := make([]string, 0, len(e.grammars))
+	for name := range e.grammars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// LanguageOf reports the configured language for a path, and false when there is
+// none.
+//
+// A language with no grammar configured is explicitly unsupported rather than
+// answered less precisely. That is the same rule the rest of this service follows
+// about incomplete knowledge: a stated gap is worth more to a caller than a
+// confident guess.
+func (e *Engine) LanguageOf(name string) (string, bool) {
+	language, known := languageByExtension[strings.ToLower(path.Ext(name))]
+	if !known {
+		return "", false
+	}
+	if _, configured := e.grammars[language]; !configured {
+		return "", false
+	}
+	return language, true
+}
+
+// Outline extracts one file's declarations from its content.
+func (e *Engine) Outline(name string, content []byte, digest string) (Outline, error) {
+	language, known := e.LanguageOf(name)
+	if !known {
+		return Outline{}, fail(CodeUnsupportedLanguage,
+			fmt.Sprintf("Outlines are not available for %q; this build understands %s.",
+				path.Ext(name), strings.Join(e.Languages(), ", ")), false, nil)
+	}
+	g := e.grammars[language]
+
+	parser := e.parsers.Get().(*ts.Parser)
+	defer e.parsers.Put(parser)
+	if err := parser.SetLanguage(g.language); err != nil {
+		return Outline{}, fail(CodeInternalError, "The parser could not be prepared.", false, err)
+	}
+
+	tree := e.parse(parser, content)
+	if tree == nil {
+		// A cancelled parse and a failed one are indistinguishable through the
+		// engine: both yield no tree. With a budget set, the budget is the
+		// explanation worth giving, because it is the one an operator can change.
+		if e.Budget > 0 {
+			return Outline{}, fail(CodeParseIncomplete,
+				fmt.Sprintf("The file was not fully parsed within %s.", e.Budget), false, nil)
+		}
+		return Outline{}, fail(CodeInternalError, "The file could not be parsed.", false, nil)
+	}
+	defer tree.Close()
+
+	root := tree.RootNode()
+	outline := Outline{
+		Path:          name,
+		Language:      language,
+		Bytes:         len(content),
+		Lines:         countLines(content),
+		Digest:        digest,
+		SchemaVersion: SchemaVersion,
+		Symbols:       []Symbol{},
+		Syntax:        Syntax{Reported: g.reportsSyntax, Note: g.syntaxNote},
+	}
+	if g.reportsSyntax {
+		errors, firstLine := describeErrors(root)
+		outline.Syntax.Valid = errors == 0
+		outline.Syntax.Errors = errors
+		outline.Syntax.FirstErrorLine = firstLine
+	}
+
+	cursor := ts.NewQueryCursor()
+	defer cursor.Close()
+	captures := g.query.CaptureNames()
+	matches := cursor.Matches(g.query, root, content)
+
+	var found []Symbol
+	for match := matches.Next(); match != nil; match = matches.Next() {
+		var name, def *ts.Node
+		for index := range match.Captures {
+			capture := match.Captures[index]
+			switch captures[capture.Index] {
+			case "name":
+				name = &capture.Node
+			case "def":
+				def = &capture.Node
+			}
+		}
+		if name == nil || def == nil {
+			continue
+		}
+		found = append(found, Symbol{
+			Name:      name.Utf8Text(content),
+			Kind:      kindOf(def.Kind()),
+			StartLine: int(def.StartPosition().Row) + 1,
+			EndLine:   int(def.EndPosition().Row) + 1,
+			StartByte: int(def.StartByte()),
+			EndByte:   int(def.EndByte()),
+			Signature: firstLine(content, int(def.StartByte()), int(def.EndByte())),
+		})
+	}
+	outline.Symbols = nest(found)
+	return outline, nil
+}
+
+// parse runs the parser, bounded when a budget is set.
+func (e *Engine) parse(parser *ts.Parser, content []byte) *ts.Tree {
+	if e.Budget <= 0 {
+		return parser.Parse(content, nil)
+	}
+	deadline := time.Now().Add(e.Budget)
+	read := func(offset int, _ ts.Point) []byte {
+		if offset >= len(content) {
+			return nil
+		}
+		return content[offset:]
+	}
+	return parser.ParseWithOptions(read, nil, &ts.ParseOptions{
+		ProgressCallback: func(ts.ParseState) bool { return time.Now().After(deadline) },
+	})
+}
+
+func kindOf(node string) Kind {
+	if kind, known := kindByNode[node]; known {
+		return kind
+	}
+	return KindOther
+}
+
+// describeErrors counts broken regions and reports the first line to look at.
+//
+// The walk stops descending at an error, because the nodes inside one are the
+// parser's recovery attempt: counting them would report how much wreckage there is
+// rather than how many places need attention.
+func describeErrors(node *ts.Node) (int, int) {
+	if node == nil {
+		return 0, 0
+	}
+	if node.IsError() || node.IsMissing() {
+		return 1, int(node.StartPosition().Row) + 1
+	}
+	if !node.HasError() {
+		return 0, 0
+	}
+	total, first := 0, 0
+	for index := uint(0); index < node.ChildCount(); index++ {
+		count, line := describeErrors(node.Child(index))
+		total += count
+		if line != 0 && (first == 0 || line < first) {
+			first = line
+		}
+	}
+	return total, first
+}
+
+// nest fills in each symbol's container and depth from the byte ranges.
+func nest(found []Symbol) []Symbol {
+	if len(found) == 0 {
+		return []Symbol{}
+	}
+	sort.SliceStable(found, func(a, b int) bool {
+		if found[a].StartByte != found[b].StartByte {
+			return found[a].StartByte < found[b].StartByte
+		}
+		// The wider declaration comes first, so a field never becomes the parent of
+		// the type that contains it.
+		return found[a].EndByte > found[b].EndByte
+	})
+	var stack []Symbol
+	for index := range found {
+		for len(stack) > 0 && found[index].StartByte >= stack[len(stack)-1].EndByte {
+			stack = stack[:len(stack)-1]
+		}
+		if len(stack) > 0 {
+			found[index].Container = stack[len(stack)-1].Name
+		}
+		found[index].Depth = len(stack)
+		stack = append(stack, found[index])
+	}
+	return found
+}
+
+// firstLine returns the declaration's own opening line, trimmed and bounded.
+func firstLine(content []byte, start, end int) string {
+	if start < 0 || end > len(content) || start >= end {
+		return ""
+	}
+	segment := content[start:end]
+	if index := indexByte(segment, '\n'); index >= 0 {
+		segment = segment[:index]
+	}
+	text := strings.TrimSpace(string(segment))
+	if len(text) > maxSignatureBytes {
+		// Cut on a rune boundary so the result is still valid UTF-8 when a
+		// declaration's opening line is long and non-ASCII.
+		cut := maxSignatureBytes
+		for cut > 0 && !utf8Start(text[cut]) {
+			cut--
+		}
+		text = strings.TrimRight(text[:cut], " \t") + "…"
+	}
+	return text
+}
+
+func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+func indexByte(data []byte, target byte) int {
+	for index, value := range data {
+		if value == target {
+			return index
+		}
+	}
+	return -1
+}
+
+func countLines(content []byte) int {
+	if len(content) == 0 {
+		return 0
+	}
+	lines := 1
+	for _, value := range content {
+		if value == '\n' {
+			lines++
+		}
+	}
+	// A trailing newline ends the last line rather than starting another.
+	if content[len(content)-1] == '\n' {
+		lines--
+	}
+	return lines
+}
+
+// configuredLanguages is the set this build understands.
+//
+// Grammars are added a slice at a time rather than all at once, because a grammar
+// without a verified query is a language that answers plausibly and wrongly.
+var configuredLanguages = []struct {
+	name             string
+	grammar          func() *ts.Language
+	query            string
+	optionalPatterns []string
+	reportsSyntax    bool
+	syntaxNote       string
+}{
+	{
+		name:             LanguageGo,
+		grammar:          func() *ts.Language { return ts.NewLanguage(tsgo.Language()) },
+		query:            goQuery,
+		optionalPatterns: goInterfaceMethodPatterns,
+		reportsSyntax:    true,
+	},
+}
+
+// languageByExtension is LCTK's own extension map. It lists every extension the
+// project may eventually understand; LanguageOf then refuses one whose grammar is
+// not configured in this build, so an extension here is not a promise.
+var languageByExtension = map[string]string{
+	".go": LanguageGo,
+}

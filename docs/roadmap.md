@@ -588,6 +588,42 @@ A fourth finding is about the harness rather than the product: enumerating the c
 
 Not verified here: the grammars **cross-compile** for `linux/arm64` in 27 seconds, but nothing shows the arm64 result running. An emulated build exceeded ten minutes and was abandoned, so that gate is a partial pass and the execution belongs to the release pipeline, next to the same open item [ADR-0011](adr/0011-zoekt-exact-search-backend.md) already carries.
 
+### Slice 4.2: What this file declares, and whether it parses
+
+**Status:** complete. The contract is described in [symbols](symbols.md).
+
+The scope: an agent that has just written a file wants two things no tool here could answer. What does this file declare — so it can find the method it is about to change without reading 800 lines. And does it parse — so it can tell a typo from a logic error before running anything.
+
+Implemented:
+
+- a symbol layer in the project's own container, parsing with Tree-sitter and extracting declarations with LCTK-owned queries per language, starting with Go;
+- `file_outline`, reporting each declaration's name, kind, line range, **byte range**, enclosing declaration, nesting depth, and its own opening line;
+- containment computed from the extents rather than from a name path, so a constant declared inside a method reports that method — which nothing in the constant's own syntax says;
+- a syntax verdict: whether the file parses, how many broken regions, and the first line to look at, with the declarations that *did* parse still reported, because a file midway through an edit is the ordinary case;
+- the verdict published **per language**, with `reported: false` meaning unknown rather than fine, for the reason Slice 4.1 measured;
+- `"precision": "syntax"` on every answer, stated in the answer rather than only in documentation, because a caller that reads a syntax-only answer as type-resolved will act on it;
+- reading decided by the store, using the rules that already decide what is indexed: an escaping path is `INVALID_PATH`, and a symbolic link, version-control metadata, or a file the project's ignore rules exclude is `FILE_NOT_FOUND` — **the same answer as a file that is not there**, so two refusals cannot be differenced to map what is outside the caller's scope;
+- an unsupported language refused with `LANGUAGE_UNSUPPORTED` naming what does work, never an empty outline, which would read as "this file declares nothing";
+- a bounded parse, and a file abandoned to the budget reported as `PARSE_INCOMPLETE` rather than as having no declarations;
+- the tool advertised from what the project's service reports rather than from what the host build expects, so a container predating the symbol layer does not offer a tool it cannot serve.
+
+An outline reads the file rather than the index. There is nothing to flush and no generation it could be behind, so the answer carries a **content digest** instead of an index generation, and freshness is not reported because the concept does not apply.
+
+Measured live against this repository through the endpoint:
+
+| | |
+|---|---|
+| `internal/gateway/git.go`, 239 lines | 46 declarations with kinds, extents, and depth |
+| `spikes/codex-end-to-end/chain.go`, 36,218 bytes | 78 declarations in **87 ms**, including the HTTP round trip |
+| A file written milliseconds earlier | outlined through MCP in **196 ms**, `valid: false`, `first_error_line: 6` — the missing brace |
+| Image | 55.7 MB → **56.9 MB**; the service binary 32,194,744 → 33,056,616 bytes for one grammar |
+
+All five refusals were driven by hand at the service: an unsupported extension, an escaping path, a gitignored file, an absent file, and a file that does not parse. The gitignored file and the absent file answered identically, which is the point of that pair.
+
+Four steps joined the [harness](../spikes/codex-end-to-end/), which now runs **33** through the real Codex client: the outline itself with containment checked, the truncated file, the unsupported language, and the escaping path. `file_outline` is called rather than listed, per [Slice 3.5](#slice-35-every-tool-called-through-a-second-client).
+
+Adopting cgo changed the build. The image's build stage is now Alpine and links statically against musl, so the runtime stage is still one binary with no toolchain in it — which is what the earlier "no C toolchain" position was protecting. CI now builds with cgo enabled, cross-compiles for arm64 with a real cross compiler, and runs the symbol tests under the race detector, because the parser pool is load-bearing rather than an optimization and nothing else would check it.
+
 ## Stage 5 — Persistent semantic intelligence
 
 - AST-aware chunk model;
