@@ -135,3 +135,7 @@ func TestAnEscalationReportsARebuild(t *testing.T) {
 		t.Errorf("applied = %d, want every indexed file", got.Applied)
 	}
 }
+
+func (s *stubIndexer) FilesContainingWord(context.Context, string, int) ([]string, bool, error) {
+	return nil, false, nil
+}

@@ -624,6 +624,45 @@ Four steps joined the [harness](../spikes/codex-end-to-end/), which now runs **3
 
 Adopting cgo changed the build. The image's build stage is now Alpine and links statically against musl, so the runtime stage is still one binary with no toolchain in it — which is what the earlier "no C toolchain" position was protecting. CI now builds with cgo enabled, cross-compiles for arm64 with a real cross compiler, and runs the symbol tests under the race detector, because the parser pool is load-bearing rather than an optimization and nothing else would check it.
 
+That arm64 step failed in CI and passed locally, which is the discrepancy worth naming: locally the cross compiler was installed with recommends, and `--no-install-recommends` leaves out `libc6-dev-arm64-cross`. Without the target's headers the compiler reaches for the host's. Reproduced with the flag and fixed by naming the package.
+
+### Slice 4.3: Where a name is declared, and where it is used
+
+**Status:** complete. The contract is described in [symbols](symbols.md#finding-a-name-across-the-project).
+
+The scenario: an agent about to change a function needs to know what will break. `exact_search` finds the letters, which includes every mention in a comment, a string, and a changelog. What it wants is the identifier.
+
+Implemented:
+
+- `find_definition` and `find_references`, each location saying whether it declares the name, its kind, the declaration that encloses it, and the source line;
+- work split so each half does what only it can: **the index narrows** to files holding the name as a whole word, so `Read` does not bring in `ReadAll`, and **the parser decides**, because only a syntax tree knows whether those letters are an identifier or prose;
+- `"precision": "name_match"` on a cross-file answer, deliberately a weaker word than the `syntax` an outline reports: within one file the syntax settles what is a declaration, and across files nothing here resolves which declaration a use refers to;
+- the index generation and the host's freshness verdict carried, and a search-style flush run first, because unlike an outline this answer **is** index-dependent — a file the index has not caught up with is a file the lookup never opens;
+- bounds that are reported rather than implied: at most 200 files examined, `truncated` when the list is cut, and separate counts for candidates skipped as an unsupported language or as unreadable. A caller reading a bounded answer as complete concludes "nothing else refers to this", which is the one wrong conclusion available here;
+- a name refused rather than escaped when it is not a plausible identifier, because the name reaches a regular expression and escaping `Widget|Consume` would quietly answer a different question;
+- Go's `:=` treated as a declaration. It was not at first, and a lookup that called it a use would have answered "nothing declares this" about most locals in the language.
+
+Measured live against this repository, on the word `terminated`:
+
+| | |
+|---|---|
+| `git grep -w terminated` | 5 files — three Markdown, two Go |
+| Files the index offered | 5 |
+| Files with a real occurrence | **1** |
+| Skipped as an unsupported language | 3 |
+| `internal/hostsettings/settings.go` | excluded — its only hit is the English word in a comment |
+| `internal/gateway/gateway.go` | 3 of 4 lines: the two calls and the declaration, **not** the doc comment on line 776 |
+
+The same property on a second name: `MaxDeltaGenerations` reports one declaration and fifteen uses, and not the doc comment sitting directly above the field it documents.
+
+Cost, measured: `err` bounded to 25 files reports 1008 occurrences, 324 of them declarations, in **0.75 s**, with `truncated: true`.
+
+Three steps joined the [harness](../spikes/codex-end-to-end/), which now runs **36** through the real Codex client, with all eight tools discovered. The fixture gained a file that mentions the name only in a comment and a string, so the property is checked from outside rather than asserted inside.
+
+Containment turned out to be tighter than expected and is documented rather than smoothed over: a use inside `other := Needle{…}` is inside the declaration of `other`, which is inside the function. Both are true and only one can be the innermost.
+
+Not done here: parameters, receivers, and `range` bindings are not reported as declarations. Including them would put every parameter of every function into an outline, which is noise in the answer a reader asked for when the signature already shows them.
+
 ## Stage 5 — Persistent semantic intelligence
 
 - AST-aware chunk model;

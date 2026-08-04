@@ -31,9 +31,11 @@ directory, the containers, and the registrations in place for inspection.
   specifies;
 - the Git repository the Stage 3 tools describe, created and committed by the
   harness, with an uncommitted edit for `git_status` and `git_diff` to report;
-- real Go source for `file_outline`: one file with a field inside a type and a
-  constant inside a method, so containment is checked rather than assumed, and one
-  file truncated mid-body so the syntax verdict has something to report;
+- real Go source for the symbol tools: one file with a field inside a type and a
+  constant inside a method, so containment is checked rather than assumed; one file
+  truncated mid-body so the syntax verdict has something to report; one that uses a
+  declaration from another file; and one that mentions it only in a comment and a
+  string, so a lookup that returned it would be caught;
 - the container the approved command runs in, using the image this repository
   builds so nothing external is assumed.
 

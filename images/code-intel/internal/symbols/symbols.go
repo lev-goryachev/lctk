@@ -138,6 +138,9 @@ type Outline struct {
 type grammar struct {
 	language *ts.Language
 	query    *ts.Query
+	// identifiers captures every node the grammar calls an identifier, which is what
+	// separates an occurrence from the same letters in a comment or a string.
+	identifiers *ts.Query
 	// reportsSyntax says whether this grammar's opinion about a file being whole is
 	// worth publishing. Slice 4.1 measured why this is per language rather than
 	// global: the C and C++ grammars have no preprocessor, so most real files in
@@ -198,9 +201,15 @@ func New() (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compile the %s symbol query: %w", configured.name, err)
 		}
+		identifiers, err := ts.NewQuery(language, configured.identifiers)
+		if err != nil {
+			query.Close()
+			return nil, fmt.Errorf("compile the %s identifier query: %w", configured.name, err)
+		}
 		engine.grammars[configured.name] = &grammar{
 			language:      language,
 			query:         query,
+			identifiers:   identifiers,
 			reportsSyntax: configured.reportsSyntax,
 			syntaxNote:    configured.syntaxNote,
 		}
@@ -212,6 +221,7 @@ func New() (*Engine, error) {
 func (e *Engine) Close() {
 	for _, g := range e.grammars {
 		g.query.Close()
+		g.identifiers.Close()
 	}
 }
 
@@ -459,6 +469,7 @@ var configuredLanguages = []struct {
 	name             string
 	grammar          func() *ts.Language
 	query            string
+	identifiers      string
 	optionalPatterns []string
 	reportsSyntax    bool
 	syntaxNote       string
@@ -467,6 +478,7 @@ var configuredLanguages = []struct {
 		name:             LanguageGo,
 		grammar:          func() *ts.Language { return ts.NewLanguage(tsgo.Language()) },
 		query:            goQuery,
+		identifiers:      goIdentifiers,
 		optionalPatterns: goInterfaceMethodPatterns,
 		reportsSyntax:    true,
 	},

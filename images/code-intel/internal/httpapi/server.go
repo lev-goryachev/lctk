@@ -34,12 +34,16 @@ type Indexer interface {
 	// ReadProjectFile hands back one named file the project's own rules allow to be
 	// read. The store decides that, not this layer.
 	ReadProjectFile(relative string, maxBytes int64) ([]byte, string, error)
+	// FilesContainingWord narrows a project-wide identifier lookup to the files
+	// worth parsing, using the index.
+	FilesContainingWord(ctx context.Context, word string, maxFiles int) ([]string, bool, error)
 }
 
 // Outliner extracts declarations from content. It receives bytes rather than a
 // path, which is what keeps the decision about what may be read in one place.
 type Outliner interface {
 	Outline(name string, content []byte, digest string) (symbols.Outline, error)
+	Locate(name string, content []byte, digest, wanted string) (symbols.Located, error)
 	Languages() []string
 	MaxBytes() int64
 }
@@ -109,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /index", s.handleIndex)
 	mux.HandleFunc("GET /watchset", s.handleWatchSet)
 	mux.HandleFunc("POST /outline", s.handleOutline)
+	mux.HandleFunc("POST /locate", s.handleLocate)
 	return mux
 }
 
@@ -264,6 +269,126 @@ func (s *Server) handleOutline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, outline)
+}
+
+type locateRequest struct {
+	Name string `json:"name"`
+	// DeclarationsOnly keeps only the places the name is declared.
+	DeclarationsOnly bool `json:"declarations_only,omitempty"`
+	// MaxFiles bounds the work, since every candidate file is parsed.
+	MaxFiles int `json:"max_files,omitempty"`
+}
+
+// LocateView is one identifier lookup across the project.
+type LocateView struct {
+	Name string `json:"name"`
+	// Generation is the index generation that chose the candidate files. Unlike an
+	// outline, this answer depends on the index: a file the index has not caught up
+	// with is a file this lookup never opens.
+	Generation uint64 `json:"generation"`
+	IndexedAt  string `json:"indexed_at,omitempty"`
+	// Files carries one entry per file with at least one occurrence.
+	Files []symbols.Located `json:"files"`
+	// Occurrences and Declarations are the totals across those files.
+	Occurrences  int `json:"occurrences"`
+	Declarations int `json:"declarations"`
+	// FilesConsidered is how many files the index offered, which is not how many
+	// appear in Files: a candidate whose only hits were in comments contributes
+	// nothing, and that is the difference this lookup exists to make.
+	FilesConsidered int `json:"files_considered"`
+	// FilesTruncated says the candidate list was cut short, so "no other
+	// references" is not a conclusion a caller may draw.
+	FilesTruncated bool `json:"files_truncated,omitempty"`
+	// SkippedUnsupported counts candidate files in a language this build has no
+	// grammar for. They are counted rather than dropped, because a caller reading
+	// an answer that silently omitted half the project would be misled.
+	SkippedUnsupported int `json:"skipped_unsupported,omitempty"`
+	// SkippedUnreadable counts candidates that could not be read or parsed, for the
+	// same reason.
+	SkippedUnreadable int `json:"skipped_unreadable,omitempty"`
+}
+
+// handleLocate finds every occurrence of one identifier across the project.
+//
+// The index narrows the work and the parser decides what counts. That split is the
+// whole design: a text search knows which files hold the letters, and only a syntax
+// tree knows whether they are an identifier or prose.
+func (s *Server) handleLocate(w http.ResponseWriter, r *http.Request) {
+	if s.outliner == nil {
+		writeTyped(w, symbols.CodeUnsupportedLanguage,
+			"This build does not provide symbol lookups.", false, http.StatusBadRequest)
+		return
+	}
+
+	var request locateRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		writeTyped(w, searchindex.CodeInvalidPattern, "The request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+
+	candidates, truncated, err := s.indexer.FilesContainingWord(r.Context(), request.Name, request.MaxFiles)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	view := LocateView{
+		Name:            request.Name,
+		Files:           []symbols.Located{},
+		FilesConsidered: len(candidates),
+		FilesTruncated:  truncated,
+	}
+	if state, err := s.indexer.State(); err == nil {
+		view.Generation = state.Generation
+		view.IndexedAt = state.BuiltAt.Format(time.RFC3339)
+	}
+
+	for _, candidate := range candidates {
+		if err := r.Context().Err(); err != nil {
+			s.writeError(w, err)
+			return
+		}
+		content, digest, err := s.indexer.ReadProjectFile(candidate, s.outliner.MaxBytes())
+		if err != nil {
+			// A candidate that vanished between the index and this read, or one too
+			// large to parse, is counted rather than allowed to fail the lookup: one
+			// awkward file must not deny the answer about every other one.
+			view.SkippedUnreadable++
+			continue
+		}
+		located, err := s.outliner.Locate(candidate, content, digest, request.Name)
+		if err != nil {
+			var typed typedFailure
+			if errors.As(err, &typed) {
+				if code, _, _ := typed.Failure(); code == symbols.CodeUnsupportedLanguage {
+					view.SkippedUnsupported++
+					continue
+				}
+			}
+			view.SkippedUnreadable++
+			continue
+		}
+		if request.DeclarationsOnly {
+			located.Occurrences = onlyDeclarations(located.Occurrences)
+		}
+		if len(located.Occurrences) == 0 {
+			continue
+		}
+		view.Files = append(view.Files, located)
+		view.Occurrences += len(located.Occurrences)
+		view.Declarations += located.Declarations
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func onlyDeclarations(occurrences []symbols.Occurrence) []symbols.Occurrence {
+	kept := make([]symbols.Occurrence, 0, len(occurrences))
+	for _, occurrence := range occurrences {
+		if occurrence.Declaration {
+			kept = append(kept, occurrence)
+		}
+	}
+	return kept
 }
 
 type indexRequest struct {

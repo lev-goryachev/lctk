@@ -549,7 +549,8 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 				// answers nothing here, and claiming the tool anyway would send a
 				// caller to discover the gap by being refused.
 				if len(status.OutlineLanguages) > 0 {
-					output.Capabilities = append(output.Capabilities, "file_outline")
+					output.Capabilities = append(output.Capabilities,
+						"file_outline", "find_definition", "find_references")
 					output.OutlineLanguages = status.OutlineLanguages
 				}
 				changes, freshness := describeChanges(state, watching, status.Indexing)
@@ -646,6 +647,7 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 	})
 
 	g.registerOutlineTool(server, resolved)
+	g.registerSymbolTools(server, resolved)
 	g.registerGitTools(server, resolved)
 	g.registerRunTool(server, resolved)
 	return server
@@ -698,10 +700,6 @@ type outlineProvenance struct {
 	ReadAt string `json:"read_at"`
 }
 
-// symbolBackend names the engine behind the outline, reported as provenance rather
-// than used for dispatch.
-const symbolBackend = "tree-sitter"
-
 // registerOutlineTool adds file_outline when the project can serve it.
 func (g *Gateway) registerOutlineTool(server *mcp.Server, resolved serveContext) {
 	if resolved.status.ServiceAddress == "" {
@@ -737,7 +735,7 @@ func (g *Gateway) registerOutlineTool(server *mcp.Server, resolved serveContext)
 			Provenance: outlineProvenance{
 				Backend:       symbolBackend,
 				SchemaVersion: outline.SchemaVersion,
-				Precision:     "syntax",
+				Precision:     precisionSyntax,
 				ReadAt:        g.options.Now().UTC().Format(time.RFC3339),
 			},
 		}, nil

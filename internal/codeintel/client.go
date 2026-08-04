@@ -322,6 +322,98 @@ func (c *Client) Outline(ctx context.Context, path string) (Outline, error) {
 	return outline, nil
 }
 
+// Occurrence is one place a name appears as an identifier.
+type Occurrence struct {
+	Line   int `json:"line"`
+	Column int `json:"column"`
+	// StartByte and EndByte bound the identifier itself.
+	StartByte int `json:"start_byte"`
+	EndByte   int `json:"end_byte"`
+	// Declaration says this is where the name is declared rather than used.
+	Declaration bool `json:"declaration"`
+	// Kind is the declaration's kind, set only when Declaration is true.
+	Kind string `json:"kind,omitempty"`
+	// Container is the enclosing declaration's name.
+	Container string `json:"container,omitempty"`
+	Preview   string `json:"preview,omitempty"`
+}
+
+// FileOccurrences is one file's occurrences of one name.
+type FileOccurrences struct {
+	Path        string       `json:"path"`
+	Language    string       `json:"language"`
+	Digest      string       `json:"digest,omitempty"`
+	Occurrences []Occurrence `json:"occurrences"`
+	// Declarations counts how many of them declare the name.
+	Declarations int `json:"declarations"`
+	// Parsed reports whether the file is syntactically whole, and SyntaxReported
+	// whether that verdict means anything for this language.
+	Parsed         bool `json:"parsed"`
+	SyntaxReported bool `json:"syntax_reported"`
+}
+
+// Located is one identifier lookup across the project.
+//
+// Unlike an outline, this answer depends on the index: the index chooses which
+// files are worth parsing, so a file it has not caught up with is never opened. The
+// generation is carried for that reason.
+type Located struct {
+	Name       string `json:"name"`
+	Generation uint64 `json:"generation"`
+	IndexedAt  string `json:"indexed_at,omitempty"`
+	// Files carries one entry per file with at least one occurrence.
+	Files        []FileOccurrences `json:"files"`
+	Occurrences  int               `json:"occurrences"`
+	Declarations int               `json:"declarations"`
+	// FilesConsidered is how many files the index offered, which is not how many
+	// appear in Files: a candidate whose only hits were in comments contributes
+	// nothing.
+	FilesConsidered int `json:"files_considered"`
+	// FilesTruncated says the candidate list was cut short, so "no other
+	// references" is not a conclusion a caller may draw.
+	FilesTruncated bool `json:"files_truncated,omitempty"`
+	// SkippedUnsupported and SkippedUnreadable count candidates that were never
+	// examined, reported rather than dropped so a partial answer cannot be read as
+	// a complete one.
+	SkippedUnsupported int `json:"skipped_unsupported,omitempty"`
+	SkippedUnreadable  int `json:"skipped_unreadable,omitempty"`
+}
+
+// DefaultLocateTimeout bounds one identifier lookup.
+//
+// It is longer than an outline because the lookup parses every candidate file the
+// index offers, and shorter than an index build because nothing is written.
+const DefaultLocateTimeout = 60 * time.Second
+
+// Locate finds every occurrence of one identifier across the project.
+func (c *Client) Locate(ctx context.Context, name string, declarationsOnly bool, maxFiles int) (Located, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultLocateTimeout)
+		defer cancel()
+	}
+
+	body := struct {
+		Name             string `json:"name"`
+		DeclarationsOnly bool   `json:"declarations_only,omitempty"`
+		MaxFiles         int    `json:"max_files,omitempty"`
+	}{Name: name, DeclarationsOnly: declarationsOnly, MaxFiles: maxFiles}
+
+	var located Located
+	if err := c.call(ctx, "/locate", body, &located); err != nil {
+		return Located{}, err
+	}
+	if located.Files == nil {
+		located.Files = []FileOccurrences{}
+	}
+	for index := range located.Files {
+		if located.Files[index].Occurrences == nil {
+			located.Files[index].Occurrences = []Occurrence{}
+		}
+	}
+	return located, nil
+}
+
 // WatchSet asks the service which directories a host watcher should observe.
 func (c *Client) WatchSet(ctx context.Context) (WatchSet, error) {
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

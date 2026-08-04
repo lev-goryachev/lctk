@@ -30,6 +30,11 @@ type fakeService struct {
 	// container predates the symbol layer, which is a case the gateway has to
 	// handle rather than assume away.
 	outlineLanguages []string
+	// locateRequests records what a symbol lookup sent, so a test can assert what
+	// crossed the boundary rather than only what came back.
+	locateRequests []map[string]any
+	locateResponse string
+	locateStatus   int
 }
 
 func newFakeService(t *testing.T) *fakeService {
@@ -37,10 +42,32 @@ func newFakeService(t *testing.T) *fakeService {
 	service := &fakeService{
 		status:           http.StatusOK,
 		outlineStatus:    http.StatusOK,
+		locateStatus:     http.StatusOK,
 		outlineLanguages: []string{"go"},
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /locate", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		service.locateRequests = append(service.locateRequests, body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(service.locateStatus)
+		if service.locateResponse != "" {
+			_, _ = io.WriteString(w, service.locateResponse)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"Needle","generation":4,`+
+			`"indexed_at":"2026-08-01T11:00:00Z","files":[`+
+			`{"path":"internal/a.go","language":"go","digest":"abc","parsed":true,"syntax_reported":true,`+
+			`"declarations":1,"occurrences":[`+
+			`{"line":7,"column":6,"start_byte":40,"end_byte":46,"declaration":true,"kind":"function",`+
+			`"preview":"func Needle() {}"},`+
+			`{"line":12,"column":9,"start_byte":90,"end_byte":96,"container":"Other",`+
+			`"preview":"\tNeedle()"}]}],`+
+			`"occurrences":2,"declarations":1,"files_considered":3,"skipped_unsupported":1}`)
+	})
 	mux.HandleFunc("POST /outline", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Path string `json:"path"`
