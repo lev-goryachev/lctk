@@ -1,10 +1,13 @@
 # Third-Party Notices
 
-LCTK's current direct Go dependencies are:
+LCTK's host executable currently has these direct Go dependencies:
 
-- `github.com/modelcontextprotocol/go-sdk v1.6.1`;
+- `github.com/modelcontextprotocol/go-sdk v1.7.0`;
 - `github.com/fsnotify/fsnotify v1.10.1`;
-- `github.com/moby/moby/client v0.5.0`.
+- `github.com/moby/moby/client v0.5.1`;
+- `github.com/pelletier/go-toml/v2 v2.4.3`;
+- `golang.org/x/sys v0.47.0`;
+- `gopkg.in/yaml.v3 v3.0.1`.
 
 Their transitive versions and module checksums are recorded in `go.mod` and `go.sum`.
 
@@ -21,5 +24,16 @@ The tracked Slice 4.1 evidence module under `spikes/symbol-backend-evaluation` d
 - `github.com/mattn/go-pointer v0.0.1` (MIT).
 
 It also drives Universal Ctags (GPL-2.0) as a separate executable installed in the harness image. Ctags is a candidate under evaluation, not a dependency of anything LCTK distributes, and the [decision](docs/adr/0019-tree-sitter-symbol-layer.md) does not select it.
+
+The distributed `code-intel` image additionally includes:
+
+- `github.com/sourcegraph/zoekt` (Apache-2.0);
+- Tree-sitter and the eight grammar modules listed above (MIT);
+- `github.com/ncruces/go-sqlite3 v0.35.3` and its embedded SQLite runtime (MIT and public domain respectively).
+
+Semantic bootstrap installs, after immutable digest verification:
+
+- `ggml-org/llama.cpp` server image (MIT), pinned by OCI index digest;
+- `nomic-ai/nomic-embed-text-v1.5-GGUF`, Q4_K_M (Apache-2.0), pinned by repository commit and SHA-256.
 
 Each dependency remains subject to its own license. This file will contain the generated complete attribution inventory before the first distributed release. Current workflow archives are non-publishing dry runs; the pre-alpha repository does not yet publish a GitHub Release, production binary, or container image.

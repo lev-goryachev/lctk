@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Storage for index metadata and for semantic and graph state remains open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Stage 5 adds one installation-wide stateless llama.cpp embedding service and one transactional semantic SQLite database in each project's existing state volume under [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md). Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
 ## Current implementation
 
@@ -137,15 +137,16 @@ Client tools describe a user action:
 ```text
 exact_search
 code_search_semantic
-symbol_find
-symbol_definition
-symbol_references
 file_outline
+find_definition
+find_references
+git_status
+git_diff
+run_command
 repository_map
 callers_find
 callees_find
 impact_analyze
-diagnostics_get
 ```
 
 `code-intel` selects adapters, merges results, and removes duplicates. Every relevant response includes compact:

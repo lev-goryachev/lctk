@@ -26,6 +26,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/httpapi"
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/semantic"
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
 )
 
@@ -73,7 +74,24 @@ func run(logger *slog.Logger) error {
 	defer outliner.Close()
 	applySymbolLimits(outliner)
 
-	server := httpapi.New(store, outliner, logger)
+	var semanticStore *semantic.Store
+	if endpoint := os.Getenv("LCTK_EMBEDDING_URL"); endpoint != "" {
+		dimensions := positiveEnvInt("LCTK_EMBEDDING_DIMENSIONS", 768)
+		model := envOr("LCTK_EMBEDDING_MODEL", "nomic-embed-text-v1.5.Q4_K_M.gguf")
+		semanticStore, err = semantic.Open(semantic.Config{
+			Path: filepath.Join(stateDir, "semantic", "semantic.db"), Model: model,
+			Dimensions: dimensions, BatchSize: positiveEnvInt("LCTK_EMBEDDING_BATCH", 32),
+			MaxFileBytes: outliner.MaxBytes(),
+		}, store, outliner, &semantic.HTTPEmbedder{
+			Endpoint: endpoint, Model: model, Dimensions: dimensions,
+		})
+		if err != nil {
+			return err
+		}
+		defer semanticStore.Close()
+	}
+
+	server := httpapi.NewWithSemantic(store, outliner, semanticStore, logger)
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(ListenPort))
 	if err != nil {
 		return err
@@ -122,6 +140,13 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
 	}
+}
+
+func positiveEnvInt(name string, fallback int) int {
+	if value, err := strconv.Atoi(os.Getenv(name)); err == nil && value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func envOr(name, fallback string) string {

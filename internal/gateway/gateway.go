@@ -553,6 +553,9 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 						"file_outline", "find_definition", "find_references")
 					output.OutlineLanguages = status.OutlineLanguages
 				}
+				if status.Semantic != nil {
+					output.Capabilities = append(output.Capabilities, "code_search_semantic")
+				}
 				changes, freshness := describeChanges(state, watching, status.Indexing)
 				output.Changes = changes
 				output.Index = &indexInfo{
@@ -648,6 +651,7 @@ func (g *Gateway) newProjectServer(resolved serveContext) *mcp.Server {
 
 	g.registerOutlineTool(server, resolved)
 	g.registerSymbolTools(server, resolved)
+	g.registerSemanticTool(server, resolved)
 	g.registerGitTools(server, resolved)
 	g.registerRunTool(server, resolved)
 	return server

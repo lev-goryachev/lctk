@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -117,9 +118,18 @@ func (dockerRunner) Run(ctx context.Context, args ...string) (string, string, er
 	return stdout.String(), stderr.String(), err
 }
 
+type inferenceLifecycle interface {
+	Ensure(context.Context, time.Duration) (inference.Status, error)
+}
+
 // Manager drives project stacks.
 type Manager struct {
 	runner Runner
+	// inference is shared stateless compute and is ensured before any project
+	// receives its endpoint. It is nil only in narrow lifecycle unit tests that
+	// intentionally exercise Compose behavior in isolation.
+	sharedInference inferenceLifecycle
+	inferenceErr    error
 	// settings resolves the machine's background-load policy. It is a function so
 	// a change takes effect on the next start without restarting the daemon, and
 	// so a test can drive a policy without writing a file.
@@ -128,12 +138,22 @@ type Manager struct {
 
 // NewManager returns a manager backed by the local Docker CLI.
 func NewManager() *Manager {
-	return &Manager{runner: dockerRunner{}, settings: hostsettings.Load}
+	runner := dockerRunner{}
+	shared, err := inference.NewManager(runner)
+	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, settings: hostsettings.Load}
 }
 
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
 func NewManagerWithRunner(runner Runner) *Manager {
 	return &Manager{runner: runner, settings: hostsettings.Load}
+}
+
+// WithInference injects the shared lifecycle for tests that verify ordering.
+// Production uses NewManager, which always configures the pinned implementation.
+func (m *Manager) WithInference(shared inferenceLifecycle) *Manager {
+	m.sharedInference = shared
+	m.inferenceErr = nil
+	return m
 }
 
 // WithSettings replaces the policy source, for tests and for callers that have
@@ -218,6 +238,14 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 	}
 	if err := m.ImageAvailable(ctx, names.Image); err != nil {
 		return Status{}, err
+	}
+	if m.inferenceErr != nil {
+		return Status{}, m.inferenceErr
+	}
+	if m.sharedInference != nil {
+		if _, err := m.sharedInference.Ensure(ctx, wait); err != nil {
+			return Status{}, err
+		}
 	}
 
 	composePath, err := Write(project, m.Budget(project))

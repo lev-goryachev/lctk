@@ -36,6 +36,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" -o /out/lctk-code-intel ./
 
+# The explicit test target gives local and release validation the exact Linux
+# compiler environment used for the image without placing test code or a Go
+# toolchain in the runtime image.
+FROM build AS test
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=1 go test ./...
+
 FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 
 LABEL org.opencontainers.image.title="LCTK code-intel" \

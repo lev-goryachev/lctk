@@ -756,31 +756,33 @@ This closes Stage 4. Symbols, definitions, references, syntax diagnostics, lifec
 
 ### Slice 5.1: Semantic contract and measured backend choice
 
-**Status:** accepted for implementation. [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md) fixes the shared inference, model, chunk, storage, ranking, and freshness boundaries.
+**Status:** complete. [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md) fixes the shared inference, model, chunk, storage, ranking, and freshness boundaries. The selected image is pinned by a multi-architecture OCI digest; the model is pinned by repository commit, byte length, SHA-256, and Apache-2.0 attribution. The rejected `sqlite-vec` bindings were compile-tested on the shipped toolchain rather than accepted from documentation.
 
 Acceptance requires an immutable model and runtime identity, license attribution, a reproducible quality corpus with lexical and semantic counterexamples, and measured CPU, memory, disk, cold-start, and query costs.
 
 ### Slice 5.2: Persistent AST-aware chunks
 
-Implement declaration-bounded chunks for supported languages, bounded text chunks elsewhere, stable identities, content digests, transactional metadata, full rebuild, and exact incremental add/change/delete behavior.
+**Status:** complete. Supported source uses grouped Tree-sitter declaration extents with line-bounded splitting; other text uses bounded overlapping chunks. Structural identity and content digest are separate, unchanged chunks reuse embeddings, and add/change/delete publication is one SQLite transaction.
 
 Acceptance requires restart persistence, rename and deletion retraction, no work for unchanged content, explicit chunk precision, and project-scope refusal tests.
 
 ### Slice 5.3: Shared local embedding and vector indexing
 
-Implement one managed CPU inference service, verified model installation, the replaceable project vector adapter, bounded batching, cancellation, resource modes, and atomic publication.
+**Status:** complete. One loopback-only llama.cpp server is shared by project containers through Docker's explicit host gateway. `lctk bootstrap` verifies and installs the pinned image and model, performs a real 768-dimensional embedding self-test, and revision-labels runtime arguments so configuration changes replace old containers. Failed batches leave the preceding semantic generation intact.
 
 Acceptance requires two projects sharing one inference process while retaining separate stores, offline query after installation, typed unavailable/busy/model-mismatch failures, and a failed batch preserving the previous generation.
 
 ### Slice 5.4: Hybrid semantic search through MCP
 
-Implement `code_search_semantic` with deterministic reciprocal-rank fusion, provenance, model identity, generation, freshness, source state, pagination, bounds, and actionable refusals.
+**Status:** complete. `code_search_semantic` performs deterministic reciprocal-rank fusion over exact cosine and lexical rankings, reports both ranks and scores, model/dimension identity, semantic and exact generations, disk freshness, structural precision, bounds, and typed remediation.
 
 Acceptance requires real semantic wins over exact search, exact identifiers surviving hybrid ranking, saved edits visible before the answer, and calls through every supported MCP client path.
 
 ### Slice 5.5: Semantic lifecycle and resource proof
 
-Verify initial indexing, incremental updates, stop/start persistence, rebuild after model/schema change, quiet/normal/fast limits, corruption recovery, and measured upper-bound behavior.
+**Status:** complete for the Stage 5 product path; the million-file upper bound remains the explicit Stage 7.5 release gate. A real three-file project published exact and semantic generation 1 with three persistent chunks, then answered through an independent MCP Go SDK client. The conceptual retry/backoff query ranked the syntax chunk first (`vector_score` 0.7003, lexical rank 1) while exact identifiers remained present. The shared process measured approximately 515-769 MiB during active CPU inference; the project service measured approximately 56 MiB. A full-repository dry run exposed and fixed physical-batch, per-slot context, batching, and progress-reporting defects without ever publishing a partial generation.
+
+The live external client completed MCP handshake, tool listing, `project_info`, `exact_search`, and `code_search_semantic` through the authenticated project route. It observed `scope_source: route_and_registry`, `/workspace` paths, exact generation 1, semantic generation 1, and `freshness: fresh`.
 
 ## Stage 6 — Graph, repository map, and memory
 

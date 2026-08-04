@@ -33,6 +33,10 @@ const SchemaVersion = 1
 // nothing in the protocol depends on the value.
 const Backend = "zoekt"
 
+// SemanticBackend names LCTK's owned exact cosine adapter. It is provenance,
+// not a selector exposed to callers.
+const SemanticBackend = "lctk_exact_cosine"
+
 // DefaultSearchTimeout bounds a search when the caller sets no deadline of its
 // own. Index operations are deliberately not bounded here: a full rebuild of a
 // large project legitimately takes minutes, and the caller that asked for one
@@ -73,6 +77,13 @@ const (
 	// resource policy allows. It is retryable, which is the distinction: the file is
 	// fine and the answer exists, the project was busy at that moment.
 	CodeParseBusy = "PARSE_BUSY"
+	// Semantic failures are separate from exact index failures because retrying
+	// inference and rebuilding corrupt semantic state are different actions.
+	CodeSemanticNotReady     = "SEMANTIC_NOT_READY"
+	CodeEmbeddingUnavailable = "EMBEDDING_UNAVAILABLE"
+	CodeSemanticCorrupt      = "SEMANTIC_CORRUPT"
+	CodeModelMismatch        = "MODEL_MISMATCH"
+	CodeInvalidQuery         = "INVALID_QUERY"
 )
 
 // Error is a typed failure a caller can act on.
@@ -162,7 +173,62 @@ type Status struct {
 	OutlineLanguages []string `json:"outline_languages,omitempty"`
 	// SymbolParallelism is how many files the project will parse at once, zero
 	// meaning unbounded. It explains a PARSE_BUSY refusal without guesswork.
-	SymbolParallelism int `json:"symbol_parallelism,omitempty"`
+	SymbolParallelism int             `json:"symbol_parallelism,omitempty"`
+	Semantic          *SemanticStatus `json:"semantic,omitempty"`
+}
+
+// SemanticStatus states which exact generation the persistent semantic store
+// describes. It is nil when the project stack has no inference configuration.
+type SemanticStatus struct {
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	ChunkCount     int    `json:"chunk_count"`
+	Model          string `json:"model,omitempty"`
+	Dimensions     int    `json:"dimensions,omitempty"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
+	Freshness      string `json:"freshness"`
+	Reason         string `json:"reason,omitempty"`
+	ChunksTotal    int    `json:"chunks_total,omitempty"`
+	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
+	ChunksReused   int    `json:"chunks_reused,omitempty"`
+}
+
+// SemanticRequest is the host-owned request contract for conceptual retrieval.
+type SemanticRequest struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// SemanticMatch is one syntax-aware or bounded text chunk. Independent rank
+// fields make the hybrid result inspectable by an agent.
+type SemanticMatch struct {
+	Path           string  `json:"path"`
+	Language       string  `json:"language"`
+	ChunkPrecision string  `json:"chunk_precision"`
+	Anchor         string  `json:"anchor"`
+	StartLine      int     `json:"start_line"`
+	EndLine        int     `json:"end_line"`
+	Preview        string  `json:"preview"`
+	VectorScore    float64 `json:"vector_score,omitempty"`
+	LexicalScore   float64 `json:"lexical_score,omitempty"`
+	HybridScore    float64 `json:"hybrid_score"`
+	VectorRank     int     `json:"vector_rank,omitempty"`
+	LexicalRank    int     `json:"lexical_rank,omitempty"`
+}
+
+// SemanticResponse carries both semantic and exact generations so stale state
+// is a field, never an inference from timestamps.
+type SemanticResponse struct {
+	Matches         []SemanticMatch `json:"matches"`
+	Total           int             `json:"total"`
+	Truncated       bool            `json:"truncated"`
+	Generation      uint64          `json:"generation"`
+	ExactGeneration uint64          `json:"exact_generation"`
+	Freshness       string          `json:"freshness"`
+	Model           string          `json:"model"`
+	Dimensions      int             `json:"dimensions"`
 }
 
 // Symbol is one declaration in a file.
@@ -288,6 +354,25 @@ func (c *Client) Search(ctx context.Context, request Request) (Response, error) 
 	}
 	if response.Matches == nil {
 		response.Matches = []Match{}
+	}
+	return response, nil
+}
+
+// SemanticSearch asks the project-local store for hybrid conceptual retrieval.
+// It uses the search timeout because both paths may wait briefly for the shared
+// local inference service, but neither is an unbounded indexing operation.
+func (c *Client) SemanticSearch(ctx context.Context, request SemanticRequest) (SemanticResponse, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultSearchTimeout)
+		defer cancel()
+	}
+	var response SemanticResponse
+	if err := c.call(ctx, "/semantic/search", request, &response); err != nil {
+		return SemanticResponse{}, err
+	}
+	if response.Matches == nil {
+		response.Matches = []SemanticMatch{}
 	}
 	return response, nil
 }
@@ -657,6 +742,16 @@ func ActionFor(code string) string {
 	case CodeParseBusy:
 		// The only one of these that waiting fixes, so it is the only one that says so.
 		return "The project is busy parsing; retry shortly, or ask about fewer files."
+	case CodeSemanticNotReady:
+		return "Wait for semantic indexing to finish, then retry. project_info reports its generation and reason."
+	case CodeEmbeddingUnavailable:
+		return "Check the shared local inference service with lctk doctor, then retry."
+	case CodeSemanticCorrupt:
+		return "Rebuild semantic state with lctk project reindex --full."
+	case CodeModelMismatch:
+		return "Run lctk update or rebuild semantic state with the installed model; do not mix model generations."
+	case CodeInvalidQuery:
+		return "Correct the semantic query or limit and try again."
 	default:
 		return ""
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -47,6 +48,7 @@ type composeService struct {
 	Volumes     []composeMount     `yaml:"volumes"`
 	Ports       []string           `yaml:"ports"`
 	Networks    []string           `yaml:"networks"`
+	ExtraHosts  []string           `yaml:"extra_hosts"`
 	Healthcheck composeHealthcheck `yaml:"healthcheck"`
 	Labels      []string           `yaml:"labels"`
 }
@@ -141,6 +143,10 @@ func Render(project projectregistry.Project, budget hostsettings.Budget) ([]byte
 				// unambiguous here because a port specification contains no paths.
 				Ports:    []string{"127.0.0.1::" + strconv.Itoa(ServicePort)},
 				Networks: []string{"project"},
+				// The shared inference port is loopback-only on the host. Docker's
+				// explicit host gateway is therefore the sole route from an isolated
+				// project network to stateless embedding compute.
+				ExtraHosts: []string{"host.docker.internal:host-gateway"},
 				Healthcheck: composeHealthcheck{
 					Test:        []string{"CMD", "test", "-f", StateMount + "/ready"},
 					Interval:    "5s",
@@ -184,6 +190,9 @@ func environment(project projectregistry.Project, budget hostsettings.Budget) []
 		"LCTK_PROJECT_PROFILE=" + string(project.Profile),
 		"LCTK_WORKSPACE=" + WorkspaceMount,
 		"LCTK_STATE_DIR=" + StateMount,
+		"LCTK_EMBEDDING_URL=" + inference.ProjectEndpoint,
+		"LCTK_EMBEDDING_MODEL=" + inference.ModelAlias,
+		"LCTK_EMBEDDING_DIMENSIONS=" + strconv.Itoa(inference.Dimensions),
 	}
 	if budget.IndexParallelism > 0 {
 		values = append(values, "LCTK_INDEX_PARALLELISM="+strconv.Itoa(budget.IndexParallelism))

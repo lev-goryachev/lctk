@@ -14,7 +14,7 @@ The Tree-sitter layer already provides declaration byte extents for eight source
 
 Run one CPU-only embedding inference service per LCTK installation. It is shared stateless compute, managed by the host daemon, and exposes only an embedding endpoint to project services. The first pinned implementation is `llama.cpp` serving the official Apache-2.0 `nomic-ai/nomic-embed-text-v1.5-GGUF` Q4_K_M model. Model and image identities include immutable digests and are installed only after checksum verification.
 
-Each project keeps its own semantic state in its existing persistent volume. The first vector adapter is `sqlite-vec` behind an LCTK-owned interface, with metadata and vectors in one transactional SQLite database. No project service can name or open another project's store.
+Each project keeps its own semantic state in its existing persistent volume. The first vector adapter stores normalized little-endian `float32` vectors beside metadata in one transactional SQLite database and performs exact cosine ranking in LCTK-owned Go code. SQLite is provided through the cross-platform `ncruces/go-sqlite3` adapter. No project service can name or open another project's store.
 
 Supported source files are chunked on Tree-sitter declaration extents. Oversized declarations are split on line boundaries without crossing the declaration. Other indexable text uses bounded overlapping line chunks and reports `chunk_precision: text`. Stable chunk identity is derived from project-relative path, structural anchor, and ordinal; a separate content digest decides whether embedding work is required.
 
@@ -28,7 +28,8 @@ Incremental indexing deletes chunks removed from a changed file, reuses unchange
 - **A shared vector server.** Rejected because collection names and credentials would become an additional cross-project isolation boundary.
 - **Cloud embeddings.** Rejected because core semantic search must work offline after installation.
 - **A hash or bag-of-words pseudo-embedding.** Rejected because it is lexical search represented as vectors, not semantic retrieval.
-- **An unstable ANN index in the first adapter.** Rejected. The stable `sqlite-vec` SQL surface is used first; the adapter boundary permits replacement after measured scale evidence.
+- **`sqlite-vec` as the first adapter.** Rejected after build measurement. Its published cgo binding fails on the pinned Alpine/GCC toolchain, while its published WASM bundle has an incompatible host-function ABI with the Go runtime version declared by that bundle. Carrying a fork or false platform compile definition would make an experimental dependency part of the release boundary. The owned exact adapter is smaller and replaceable after scale evidence.
+- **An unstable ANN index in the first adapter.** Rejected. Exact ranking establishes the correctness baseline; the adapter boundary permits replacement after measured scale evidence.
 
 ## Consequences
 
@@ -37,7 +38,7 @@ Incremental indexing deletes chunks removed from a changed file, reuses unchange
 - Model memory is paid once, while every project's persistent state remains isolated.
 - Chunks reuse the byte boundaries Stage 4 already verified.
 - SQLite transactions give one publication boundary for metadata and vectors.
-- The public MCP contract does not expose `llama.cpp`, GGUF, SQLite, or `sqlite-vec`.
+- The public MCP contract does not expose `llama.cpp`, GGUF, SQLite, or the vector table layout.
 
 ### Negative
 
@@ -49,4 +50,3 @@ Incremental indexing deletes chunks removed from a changed file, reuses unchange
 
 - Measure retrieval quality, cold start, indexing throughput, memory, disk, and query latency on the accepted corpus and stress suite.
 - Treat a model or embedding-dimension change as a semantic schema migration requiring a rebuild and rollback path.
-

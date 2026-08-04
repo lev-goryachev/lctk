@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/semantic"
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
 )
 
@@ -51,6 +52,15 @@ type Outliner interface {
 	Parallelism() int
 }
 
+// Semantic is the optional persistent retrieval layer. It consumes only an
+// exact state already published by Indexer, preserving the exact index as the
+// authority for project scope and generation order.
+type Semantic interface {
+	Sync(ctx context.Context, exact searchindex.State) (semantic.Status, error)
+	Status() (semantic.Status, error)
+	Search(ctx context.Context, request semantic.Request) (semantic.Response, error)
+}
+
 // Server exposes the indexer over HTTP.
 type Server struct {
 	indexer Indexer
@@ -58,13 +68,15 @@ type Server struct {
 	// answers the outline route with a typed refusal, which is better than a
 	// route that exists and returns nothing useful.
 	outliner Outliner
+	semantic Semantic
 	logger   *slog.Logger
 
 	// indexing serializes every operation that publishes a generation. Two
 	// concurrent builds would race to publish and could leave the newer
 	// generation shadowed by the older one.
-	indexing sync.Mutex
-	progress atomic
+	indexing         sync.Mutex
+	progress         atomic
+	semanticProgress atomic
 }
 
 // atomic tracks whether an index build is in flight, so a caller that gets
@@ -101,10 +113,16 @@ func (a *atomic) snapshot() (bool, string) {
 
 // New builds a server.
 func New(indexer Indexer, outliner Outliner, logger *slog.Logger) *Server {
+	return NewWithSemantic(indexer, outliner, nil, logger)
+}
+
+// NewWithSemantic builds a server with persistent semantic retrieval enabled.
+// New remains available for exact-only tests and old development stacks.
+func NewWithSemantic(indexer Indexer, outliner Outliner, semanticStore Semantic, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{indexer: indexer, outliner: outliner, logger: logger}
+	return &Server{indexer: indexer, outliner: outliner, semantic: semanticStore, logger: logger}
 }
 
 // Handler returns the routed HTTP surface.
@@ -117,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /watchset", s.handleWatchSet)
 	mux.HandleFunc("POST /outline", s.handleOutline)
 	mux.HandleFunc("POST /locate", s.handleLocate)
+	mux.HandleFunc("POST /semantic/search", s.handleSemanticSearch)
 	return mux
 }
 
@@ -161,6 +180,27 @@ type StatusView struct {
 	// unbounded. It is reported because it is a policy an operator sets and a figure
 	// that explains a PARSE_BUSY refusal.
 	SymbolParallelism int `json:"symbol_parallelism,omitempty"`
+	// Semantic is absent when this stack has no embedding service configured. A
+	// present but stale value is useful capability evidence and must not disappear.
+	Semantic *SemanticStatusView `json:"semantic,omitempty"`
+}
+
+// SemanticStatusView combines the semantic store's committed state with the
+// exact generation and any in-flight sync failure.
+type SemanticStatusView struct {
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	ChunkCount     int    `json:"chunk_count"`
+	Model          string `json:"model,omitempty"`
+	Dimensions     int    `json:"dimensions,omitempty"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
+	Freshness      string `json:"freshness"`
+	Reason         string `json:"reason,omitempty"`
+	ChunksTotal    int    `json:"chunks_total,omitempty"`
+	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
+	ChunksReused   int    `json:"chunks_reused,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -199,7 +239,58 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	view.IgnoreSources = state.IgnoreSources
 	view.DeltaDepth = state.DeltaDepth
 	view.IndexedAt = state.BuiltAt.Format(time.RFC3339)
+	if s.semantic != nil {
+		running, lastErr := s.semanticProgress.snapshot()
+		semanticStatus, semanticErr := s.semantic.Status()
+		semanticView := &SemanticStatusView{
+			Ready: semanticStatus.Ready, Indexing: running, Generation: semanticStatus.Generation,
+			FileCount: semanticStatus.FileCount, ChunkCount: semanticStatus.ChunkCount,
+			Model: semanticStatus.Model, Dimensions: semanticStatus.Dimensions,
+			IndexedAt: semanticStatus.IndexedAt, Freshness: "stale", Reason: semanticStatus.Reason,
+			ChunksTotal: semanticStatus.ChunksTotal, ChunksEmbedded: semanticStatus.ChunksEmbedded,
+			ChunksReused: semanticStatus.ChunksReused,
+		}
+		if semanticErr != nil {
+			semanticView.Reason = semanticErr.Error()
+		} else if lastErr != "" {
+			semanticView.Reason = lastErr
+		}
+		if semanticStatus.Ready && semanticStatus.Generation == state.Generation && !running {
+			semanticView.Freshness = "fresh"
+		}
+		view.Semantic = semanticView
+	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
+	if s.semantic == nil {
+		writeTyped(w, semantic.CodeNotReady,
+			"This project service has no semantic index configured.", false, http.StatusServiceUnavailable)
+		return
+	}
+	var request semantic.Request
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeTyped(w, semantic.CodeInvalidQuery,
+			"The semantic request body is not valid JSON.", false, http.StatusBadRequest)
+		return
+	}
+	response, err := s.semantic.Search(r.Context(), request)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	state, err := s.indexer.State()
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	response.ExactGeneration = state.Generation
+	response.Freshness = "stale"
+	if response.Generation == state.Generation {
+		response.Freshness = "fresh"
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // WatchSetView tells the host which directories it must watch to see every
@@ -458,6 +549,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	if err := s.syncSemantic(r.Context(), state); err != nil {
+		s.writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, indexResponse{
 		Generation: state.Generation,
 		FileCount:  state.FileCount,
@@ -485,11 +580,32 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.syncSemantic(ctx, state); err != nil {
+		return err
+	}
 	s.logger.Info("index ready",
 		slog.Uint64("generation", state.Generation),
 		slog.Int("files", state.FileCount),
 		slog.Int("caught_up", applied.Changed),
 		slog.Bool("full_build", applied.Rebuilt))
+	return nil
+}
+
+func (s *Server) syncSemantic(ctx context.Context, state searchindex.State) error {
+	if s.semantic == nil {
+		return nil
+	}
+	s.semanticProgress.start()
+	status, err := s.semantic.Sync(ctx, state)
+	s.semanticProgress.finish(err)
+	if err != nil {
+		return err
+	}
+	s.logger.Info("semantic index ready",
+		slog.Uint64("generation", status.Generation),
+		slog.Int("files", status.FileCount),
+		slog.Int("chunks", status.ChunkCount),
+		slog.String("model", status.Model))
 	return nil
 }
 
