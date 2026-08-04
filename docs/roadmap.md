@@ -546,12 +546,47 @@ Six variants earned their way into the [harness](../spikes/codex-end-to-end/), w
 
 Add language adapters in small, independent slices without fixing their order in advance:
 
+- Go;
 - TypeScript/JavaScript;
 - Python;
 - Rust;
 - C/C++.
 
-For each language, separately verify symbols, definitions, references, diagnostics, lifecycle, and resource behavior. Where possible, the Tree-sitter/AST layer provides file outlines and chunks independently of a specific LSP.
+Go was added to the list because it is what LCTK is written in, which makes it the one language whose real corpus is this repository itself. Every other language is verified against source from that language's own project; Go is verified against the code under the verifier's hands.
+
+For each language, separately verify symbols, definitions, references, diagnostics, lifecycle, and resource behavior. The Tree-sitter/AST layer provides file outlines and chunks independently of a specific LSP.
+
+### Slice 4.1: Choosing the symbol engine
+
+**Status:** complete. The decision is recorded in [ADR-0019](adr/0019-tree-sitter-symbol-layer.md), measured against the [evaluation contract](spikes/symbol-backend-evaluation.md) with the results in [`symbol-backend-evaluation-results.md`](spikes/symbol-backend-evaluation-results.md).
+
+Tree-sitter and Universal Ctags were run over the same 933 files of real source — `requests`, `ripgrep`, `zlib`, `nlohmann/json`, `axios`, and this repository — with the extraction queries a production layer would carry rather than simplified stand-ins.
+
+A language server was excluded before measurement, and the reason is a constraint rather than a preference: `tsserver`, `pyright`, `rust-analyzer`, `clangd`, and `gopls` reach their stated precision only with the project's dependencies resolved, and LCTK mounts the source read-only and installs nothing. A server here would answer at a precision it cannot reach while costing a per-language toolchain in a shared image and a per-language process to supervise.
+
+Tree-sitter is selected. Universal Ctags fails two gates that are not a matter of configuration:
+
+| | Tree-sitter | Universal Ctags |
+|---|---|---|
+| Symbols bounded in bytes | 16,466 of 16,466 | **0 of 27,064** |
+| Truncated file reported as broken | 7 of 7 | **0 of 7** |
+| End line for JavaScript, TypeScript, Rust | yes | none at all |
+| `axios/index.d.ts` declarations | 137 | 24 |
+| 933 files, 10 MiB | 9.9 s, 68 MiB peak | 5.0 s, 12 MiB peak |
+
+The last row is ctags' advantage and is recorded rather than dismissed, along with 148 languages out of the box against seven grammars. It does not outweigh a chunk model with no boundaries and a diagnostic that cannot fire.
+
+Three findings came from running against real code rather than a fixture.
+
+**The syntax diagnostic is only trustworthy per language.** The C and C++ grammars have no preprocessor, so 58 of 69 real C files and 134 of 438 real C++ files parse with errors while compiling perfectly. Across the other 426 files — Go, Python, Rust, JavaScript, TypeScript — zero were reported as broken. A verdict is therefore published for those five and withheld for C and C++, where it would otherwise report a defect in most of a project on the first look. A hand-written C fixture parses, so nothing but real code would have shown this.
+
+**Universal Ctags' interactive protocol stalls on ordinary JavaScript.** Driving one warm process — how Zoekt uses it, and the configuration a service would want — stopped replying on a 3.5 KB file from `axios`, after 18 tags. The same file through the command line takes 40 ms and produces 24 tags plus `ignoring null tag`, which is where the framing appears to be lost. Reproduced with a minimal independent driver against versions 5.9.0 and 6.1.0. The protocol offers no way to abandon one file, so recovering costs the warm process that was the reason to use the mode.
+
+**The measurement produced a list of gaps in LCTK's own queries**, which is what it was for: no preprocessor definitions for C and C++, no module-level assignment for Python, no module-level non-function bindings for JavaScript. `requests/docs/conf.py` is 34 names to ctags and zero to Tree-sitter for exactly that reason. They are now written down instead of being discovered later as missing answers.
+
+A fourth finding is about the harness rather than the product: enumerating the corpus through a Windows bind mount took longer than analysing it, so the first attempt measured the filesystem. The corpus lives in a Docker volume.
+
+Not verified here: the grammars **cross-compile** for `linux/arm64` in 27 seconds, but nothing shows the arm64 result running. An emulated build exceeded ten minutes and was abandoned, so that gate is a partial pass and the execution belongs to the release pipeline, next to the same open item [ADR-0011](adr/0011-zoekt-exact-search-backend.md) already carries.
 
 ## Stage 5 — Persistent semantic intelligence
 
