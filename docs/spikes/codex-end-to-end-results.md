@@ -123,7 +123,7 @@ so no external image is assumed and the command runs in a real container.
 | Step | Outcome |
 |---|---|
 | `approve_a_command` | **pass.** `lint` approved for the project in `lctk/code-intel:0.1.0-dev`. |
-| `client_connects` | **pass.** The client discovered every tool the endpoint offers: `exact_search`, `file_outline`, `git_diff`, `git_status`, `project_info`, `run_command`. |
+| `client_connects` | **pass.** The client discovered every tool the endpoint offers: `exact_search`, `file_outline`, `find_definition`, `find_references`, `git_diff`, `git_status`, `project_info`, `run_command`. |
 | `exact_search_through_client` | **pass.** A line that was **saved and never committed** was found through the client. This is the claim the whole indexing design exists to make, checked from outside LCTK: the index describes the working tree, not the last commit. |
 | `bad_pattern_refused_visibly` | **pass.** An uncompilable regular expression produced `INVALID_PATTERN: the regular expression is invalid: error parsing regexp: missing closing ]`, not an empty result set — which would have read as "no such code in this project" and sent an agent looking elsewhere. |
 | `invented_argument_refused` | **pass.** An undeclared argument was refused by schema validation before any handler saw it: `unexpected additional properties ["invented_filter"]`. |
@@ -131,6 +131,9 @@ so no external image is assumed and the command runs in a real container.
 | `unparsed_file_is_reported` | **pass.** A file truncated mid-body came back `valid: false` with a line to look at, **and** still listed the declaration that did parse. Losing either half would make the tool useless in the case it exists for. |
 | `unsupported_language_refused` | **pass.** `LANGUAGE_UNSUPPORTED: Outlines are not available for ".txt"; this build understands go. Use exact_search on this file instead; project_info lists the languages this project can outline.` An empty outline would have read as "this file declares nothing". |
 | `outline_path_escape_refused` | **pass.** `../outside.go` produced `INVALID_PATH: the path must stay inside the project`, so the scope boundary holds on this tool as it does on the Git ones. |
+| `find_definition_through_client` | **pass.** The declaring file and location came back with `"precision":"name_match"` — deliberately a weaker word than the `syntax` an outline reports, because across files nothing resolves which declaration a use refers to. |
+| `find_references_ignores_prose` | **pass.** The fixture holds three files: one declaring `Widget`, one using it inside a function, and one mentioning it **only in a comment and a string**. The lookup reports the real use inside its enclosing function and does not report the third file at all. A text search returns it, which is the whole reason this tool exists. |
+| `a_pattern_is_not_a_name` | **pass.** `Widget\|Consume` produced `INVALID_PATTERN: "Widget\|Consume" is not an identifier; a name may hold letters, digits, underscores, and dollars.` The name reaches a regular expression inside the service, so it is refused rather than escaped — escaping would quietly answer a different question. |
 | `git_status_through_client` | **pass.** The uncommitted change was reported with the branch and commit, `root: /workspace`, and no host path. |
 | `git_diff_through_client` | **pass.** A unified diff of the one named path came back through the client. |
 | `escaping_path_refused_visibly` | **pass.** `../outside.txt` produced `INVALID_PATH: the path must stay inside the repository` in the client's own tool result, marked `isError`. |

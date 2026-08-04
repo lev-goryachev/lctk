@@ -34,15 +34,46 @@ The vocabulary is LCTK's, not a grammar's. A caller should not have to learn one
 
 **The extent is the declaration and excludes what precedes it.** A doc comment above a type is not part of the type. One consequence is worth knowing: in Go a `const` or `var` *spec* is the declaration, not the enclosing `const (...)` group, so a single `const Limit = 10` reports a signature of `Limit = 10` rather than `const Limit = 10`. The `kind` field already says which it is, and using the spec is what makes a grouped declaration report its members individually.
 
+**Containment is the innermost declaration**, and it is sometimes tighter than expected. In `other := Needle{Size: 1}` inside a function `Use`, the occurrence of `Needle` is inside the declaration of `other`, which is inside `Use`. Both are true; only one can be the innermost, and the innermost is what is reported.
+
+**Parameters, receivers, and `range` bindings are not reported as declarations.** They are declarations, and including them would put every parameter of every function into an outline — noise in the answer a reader actually asked for, when the declaration's own signature already shows them. A lookup for such a name reports zero declarations and its uses, each placed in the declaration that holds it, which is enough to find it.
+
 ## Precision
 
-Every answer states `"precision": "syntax"`. It means exactly what it says:
+An answer about **one file** states `"precision": "syntax"`:
 
 - declarations are what the file's syntax says they are;
 - nothing is type-resolved;
 - nothing outside the file is consulted.
 
-That is stated in the answer rather than only here, because a caller that reads a syntax-only answer as a type-resolved one will act on it.
+An answer **across files** states `"precision": "name_match"`, which is weaker and named differently on purpose. Within one file the syntax settles what is a declaration. Across files nothing here resolves *which* declaration a use refers to, so two unrelated things that share a name both appear.
+
+Both are stated in the answer rather than only here, because a caller that reads a name-matched answer as a type-resolved one will act on it.
+
+## Finding a name across the project
+
+`find_definition` answers where a name is declared. `find_references` answers where it is used, and where it is declared, with each location saying which it is.
+
+The work is split, and the split is the design:
+
+- **the index narrows.** It knows which files contain the letters, as a whole word — so `Read` does not bring in `ReadAll`.
+- **the parser decides.** Only a syntax tree knows whether those letters are an identifier or prose. A file whose only occurrence is in a comment or a string contributes nothing to the answer.
+
+Measured against this repository: a doc comment reading `// MaxDeltaGenerations is how many delta builds…` sits directly above the field it documents, and the lookup reports the field's declaration and fifteen uses — and not the comment.
+
+Because the index chooses the candidates, this answer **is** index-dependent, unlike an outline. It carries the index generation and the host's freshness verdict, and a search-style flush runs first for the same reason: a file the index has not caught up with is a file the lookup never opens.
+
+### Bounds, and why they are reported
+
+Every candidate file is parsed, so the work is proportional to how many files hold the name. At most **200** files are examined, and `find_references` accepts a lower `max_files`.
+
+When the candidate list is cut, the answer says `truncated`. That flag matters more than it looks: without it, a caller reading a bounded answer concludes "nothing else refers to this", which is the one wrong conclusion available here. `err` in this repository, bounded to 25 files, reports 1008 occurrences and `truncated: true` in 0.75 s.
+
+`skipped_unsupported_language` and `skipped_unreadable` count candidates that were never examined — a language with no grammar, or a file that vanished between the index and the read. They are counted rather than dropped, because a partial answer that looks complete is worse than a smaller one that says so.
+
+### A name is not a pattern
+
+The name reaches a regular expression inside the service, so anything that is not a plausible identifier is **refused** rather than escaped. Letters, digits, underscores, dollars, and non-ASCII letters are accepted; `Widget|Consume` is not. Escaping it would quietly answer a question the caller did not ask.
 
 ## The syntax verdict
 

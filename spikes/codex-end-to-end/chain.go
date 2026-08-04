@@ -313,6 +313,8 @@ func runChain(ctx context.Context, e *environment, keep bool) (*report, error) {
 			"exact_search_through_client", "bad_pattern_refused_visibly", "invented_argument_refused",
 			"file_outline_through_client", "unparsed_file_is_reported",
 			"unsupported_language_refused", "outline_path_escape_refused",
+			"find_definition_through_client", "find_references_ignores_prose",
+			"a_pattern_is_not_a_name",
 			"git_status_through_client", "git_diff_through_client", "staged_and_worktree_diffs_differ",
 			"escaping_path_refused_visibly", "approved_command_runs", "smuggled_command_ignored",
 			"unapproved_command_refused", "unproposed_command_refused", "unknown_command_refused",
@@ -478,8 +480,22 @@ func prepareSourceProject(ctx context.Context, dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "half.go"), []byte(half), 0o644); err != nil {
 		return err
 	}
+	// A real use of Widget in a second file, inside a function, so a cross-file
+	// lookup has something to place.
+	uses := "package fixture\n\nfunc Consume(w Widget) int {\n\treturn w.Size\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "uses.go"), []byte(uses), 0o644); err != nil {
+		return err
+	}
+	// And a third file that mentions Widget only in a comment and a string. A text
+	// search returns this file; a syntax-aware lookup must not, and that difference
+	// is the reason the tool exists.
+	prose := "package fixture\n\n// Widget is discussed here and nowhere used.\n" +
+		"const note = \"Widget again, in a string\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "prose.go"), []byte(prose), 0o644); err != nil {
+		return err
+	}
 
-	if err := git("add", "tracked.txt", ".mcp-project.yaml", "outline.go"); err != nil {
+	if err := git("add", "tracked.txt", ".mcp-project.yaml", "outline.go", "uses.go", "prose.go"); err != nil {
 		return err
 	}
 	if err := git(
@@ -634,6 +650,58 @@ func verifyTools(ctx context.Context, client *appServerClient, rep *report, serv
 		rep.pass("outline_path_escape_refused", "%s", truncate(combined, 300))
 	} else {
 		rep.fail("outline_path_escape_refused", "%s", truncate(combined, 400))
+	}
+
+	// find_definition reaches across files. The fixture declares Widget in one file
+	// and mentions it in two others, one of which mentions it only in a comment.
+	body, err = toolCall(ctx, client, server, "find_definition", threadID,
+		map[string]any{"name": "Widget"})
+	switch {
+	case err != nil:
+		rep.fail("find_definition_through_client", "%v", err)
+	case !strings.Contains(body, `"path":"outline.go"`) || !strings.Contains(body, `"declaration":true`):
+		rep.fail("find_definition_through_client", "%s", truncate(body, 600))
+	case !strings.Contains(body, `"precision":"name_match"`):
+		rep.fail("find_definition_through_client",
+			"the answer does not state that it is name-matched: %s", truncate(body, 600))
+	default:
+		rep.pass("find_definition_through_client",
+			"the declaring file and location came back, stated as name_match precision")
+	}
+
+	// The property that makes this worth more than a text search: the file that
+	// mentions Widget only in a comment must not appear. A grep would return it.
+	body, err = toolCall(ctx, client, server, "find_references", threadID,
+		map[string]any{"name": "Widget"})
+	switch {
+	case err != nil:
+		rep.fail("find_references_ignores_prose", "%v", err)
+	case strings.Contains(body, "prose.go"):
+		rep.fail("find_references_ignores_prose",
+			"a file mentioning the name only in a comment was reported: %s", truncate(body, 600))
+	case !strings.Contains(body, "uses.go"):
+		rep.fail("find_references_ignores_prose",
+			"the file that really uses the name is missing: %s", truncate(body, 600))
+	case !strings.Contains(body, `"container":"Consume"`):
+		rep.fail("find_references_ignores_prose",
+			"a use is not placed in the function that encloses it: %s", truncate(body, 600))
+	default:
+		rep.pass("find_references_ignores_prose",
+			"the real use is reported inside its enclosing function and the comment-only file is not")
+	}
+
+	// A name is not a pattern. Accepting one would quietly answer a question the
+	// caller did not ask.
+	body, err = toolCall(ctx, client, server, "find_references", threadID,
+		map[string]any{"name": "Widget|Consume"})
+	combined = body
+	if err != nil {
+		combined = strings.TrimPrefix(combined+" | "+err.Error(), " | ")
+	}
+	if strings.Contains(combined, "is not an identifier") {
+		rep.pass("a_pattern_is_not_a_name", "%s", truncate(combined, 300))
+	} else {
+		rep.fail("a_pattern_is_not_a_name", "%s", truncate(combined, 400))
 	}
 
 	body, err = toolCall(ctx, client, server, "git_status", threadID, map[string]any{})
