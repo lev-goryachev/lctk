@@ -87,9 +87,38 @@ Anything beyond syntax belongs to the project's own toolchain. `build`, `test`, 
 
 ## Languages
 
+| Language | Extensions | Syntax verdict |
+|---|---|---|
+| Go | `.go` | yes |
+| Python | `.py`, `.pyi` | yes |
+| Rust | `.rs` | yes |
+| JavaScript | `.js`, `.mjs`, `.cjs`, `.jsx` | yes |
+| TypeScript | `.ts`, `.mts`, `.cts` | yes |
+| TSX | `.tsx` | yes |
+| C | `.c`, `.h` | **no** — see above |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx` | **no** — see above |
+
 A language with no configured grammar is **explicitly refused**, with `LANGUAGE_UNSUPPORTED` naming what this build does understand. An empty outline would read as "this file declares nothing", which is a different and wrong claim.
 
-`project_info` reports `outline_languages`, so a caller learns the boundary by asking rather than by being refused on a file. It reports what the project's own service advertises, not what the host build expects: a project whose container predates the symbol layer answers nothing there, and `file_outline` is then not offered at all.
+`project_info` reports `outline_languages`, so a caller learns the boundary by asking rather than by being refused on a file. It reports what the project's own service advertises, not what the host build expects: a project whose container predates the symbol layer answers nothing there, and the symbol tools are then not offered at all.
+
+TSX is a separate grammar rather than a dialect of TypeScript: the two disagree about how `<T>` is read, so one cannot serve both.
+
+A `.h` is read as **C**. The extension genuinely does not say which language it holds, and C is the reading that parses a C header correctly. A C++ header in a `.h` parses with errors — which costs nothing here, because no syntax verdict is published for either language.
+
+### What each language reports as a declaration
+
+The set is per language and follows that language's own idea of a declaration, not a lowest common denominator. Some entries are worth naming because their absence would be surprising:
+
+- **C and C++**: `#define` and function-style macros. In C a macro is often exactly the declaration a reader is looking for.
+- **Python**: module-level and class-level assignment. A configuration module is mostly assignment, and an outline reporting nothing about one would be useless.
+- **Go**: `var`, `const`, and `:=`, including inside a function body. `:=` is how most Go variables are declared.
+- **Rust**: `let` bindings, enum variants, and trait method signatures.
+- **JavaScript and TypeScript**: a `const` bound to an arrow function is reported as a function and one bound to anything else as a variable — the grammar node is the same and only the pattern knows which.
+
+A **Rust `impl` block** is reported as a declaration of kind `implementation`, and it gives the methods inside it the type as their container. It is not counted as a declaration *of that type*: the word `Config` in `impl Config` is a use of a type declared elsewhere, and reporting it otherwise would make `find_definition` say a type is declared in two places.
+
+A **struct, union, enum, or class in C and C++** is reported only where it has a body. In C, `struct Widget *w` in a parameter list is syntactically a struct declaration carrying the name, so matching it would report a *use* as a declaration. The cost is that a forward declaration is not reported — an omission, where the other was a false claim.
 
 ## What may be read
 

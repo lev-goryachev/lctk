@@ -663,6 +663,53 @@ Containment turned out to be tighter than expected and is documented rather than
 
 Not done here: parameters, receivers, and `range` bindings are not reported as declarations. Including them would put every parameter of every function into an outline, which is noise in the answer a reader asked for when the signature already shows them.
 
+### Slice 4.4: The other four language families
+
+**Status:** complete. The per-language boundaries are described in [symbols](symbols.md#languages).
+
+Python, Rust, C, C++, JavaScript, TypeScript, and TSX join Go. All three tools serve all eight without a second code path: one engine, one vocabulary, one set of failure modes, and a query per language.
+
+The declaration set is per language and follows that language's own idea of one rather than a lowest common denominator. Four entries exist because [Slice 4.1](#slice-41-choosing-the-symbol-engine) measured their absence: preprocessor macros for C and C++, module-level and class-level assignment for Python, `let` bindings and trait method signatures for Rust, and a plain `const` binding for JavaScript. `requests/docs/conf.py` was thirty-four names to a tag generator and zero to a query that knew only functions and classes.
+
+Measured with the production engine and the production queries over the same 967 real files from `requests`, `ripgrep`, `zlib`, `nlohmann/json`, `axios`, and this repository:
+
+| Language | Files | KiB | Declarations | Nested | Unparsed | ms |
+|---|---|---|---|---|---|---|
+| c | 87 | 2059 | 2897 | 762 | — | 1042 |
+| cpp | 443 | 4801 | 7703 | 3085 | — | 2083 |
+| go | 127 | 1022 | 8120 | 6404 | 0 | 381 |
+| javascript | 163 | 982 | 4978 | 2736 | 0 | 361 |
+| python | 42 | 406 | 940 | 602 | 0 | 124 |
+| rust | 98 | 1654 | 7249 | 5942 | 0 | 555 |
+| typescript | 7 | 65 | 641 | 483 | 0 | 27 |
+
+**32,528 declarations across 10,992 KiB in 4.57 s, peak RSS 69 MiB.** No file hit the parse budget and none failed. Against the same corpus, Slice 4.1's simplified queries found 16,466 in 9.9 s: the gaps that measurement named account for most of the difference.
+
+Zero unparsed files across Go, Python, Rust, JavaScript, and TypeScript on real code, which is why the verdict is published for those five and withheld for C and C++.
+
+Verified live through the endpoint, one file per language:
+
+```
+w.py     python       3 decls  valid=True   Widget:class size:field describe:function
+w.rs     rust         4 decls  valid=True   Widget:struct size:field Widget:implementation size_of:function
+w.c      c            4 decls  no verdict   WIDGET_MAX:macro Widget:struct size:field widget_size:function
+w.hpp    cpp          4 decls  no verdict   shapes:module Widget:class Size:method size_:field
+w.js     javascript   3 decls  valid=True   Widget:class describe:method build:function
+w.ts     typescript   4 decls  valid=True   Widget:interface size:field Alias:type build:function
+w.tsx    tsx          1 decls  valid=True   View:function
+```
+
+And `find_definition` for `Widget` across all of them at once: **six declarations, one per language, each with its own kind**, with three candidates counted as an unsupported language rather than dropped.
+
+**One defect came out of that live run and nothing else would have found it.** The C outline reported `Widget` twice. In C, `struct Widget *w` in a parameter list is syntactically a struct declaration carrying the name, so the query was reporting a *use* as a declaration — and `find_definition` in C would have said a struct is declared once per function that takes one. A struct, union, enum, or class is now matched only with its body. A forward declaration is no longer reported, which is an omission where the other was a false claim. The regression test was confirmed to fail without the fix.
+
+Two mechanisms were needed and are worth naming, because both are about not lying:
+
+- **A scope that declares nothing.** A Rust `impl Config` block must give the methods inside it `Config` as their container, and must not be a second declaration of `Config`. It is captured as a scope rather than as a declaration.
+- **A pattern that decides a kind.** In JavaScript a `const` bound to an arrow function and one bound to a number are the same grammar node. Two patterns match, so the first one listed wins, and the specific patterns are written before the general ones. Without that rule the same declaration appeared twice with two kinds.
+
+Cost of the seven extra grammars: the image from 56.9 MB to **66.7 MB**, the service binary from 33,056,616 to **41,987,368 bytes**, and a cold image build of about **67 s**. Generated C dominates the build, which is why the build caches are not optional.
+
 ## Stage 5 — Persistent semantic intelligence
 
 - AST-aware chunk model;

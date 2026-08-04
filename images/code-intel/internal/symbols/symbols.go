@@ -22,7 +22,13 @@ import (
 	"time"
 
 	ts "github.com/tree-sitter/go-tree-sitter"
+	tsc "github.com/tree-sitter/tree-sitter-c/bindings/go"
+	tscpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tspython "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tsrust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
+	tsts "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 // SchemaVersion is the version of the shapes this package produces. It is
@@ -32,8 +38,25 @@ const SchemaVersion = 1
 // Language names. They are LCTK's, not a grammar's, and they are what a caller
 // sees.
 const (
-	LanguageGo = "go"
+	LanguageGo         = "go"
+	LanguagePython     = "python"
+	LanguageRust       = "rust"
+	LanguageC          = "c"
+	LanguageCPP        = "cpp"
+	LanguageJavaScript = "javascript"
+	LanguageTypeScript = "typescript"
+	LanguageTSX        = "tsx"
 )
+
+// noPreprocessorNote explains a withheld syntax verdict for C and C++.
+//
+// Slice 4.1 measured the reason rather than assuming it: 58 of 69 real files from
+// zlib and 134 of 438 from nlohmann/json parse with errors while compiling
+// perfectly, because the grammars have no preprocessor. Publishing a verdict would
+// report a defect in most of a C project on the first look.
+const noPreprocessorNote = "The C and C++ grammars have no preprocessor, so valid code " +
+	"often parses with errors. No syntax verdict is published for this language; " +
+	"use the project's own build or lint command instead."
 
 // DefaultBudget bounds one file's parse.
 //
@@ -300,38 +323,120 @@ func (e *Engine) Outline(name string, content []byte, digest string) (Outline, e
 		outline.Syntax.FirstErrorLine = firstLine
 	}
 
+	outline.Symbols = symbolsOf(nest(e.capture(g, root, content)))
+	return outline, nil
+}
+
+// byteRange is a half-open extent in a file.
+type byteRange struct{ start, end int }
+
+// captured is one query match resolved into a symbol, plus where its name sits and
+// whether that name node is a declaration.
+type captured struct {
+	symbol Symbol
+	nameAt byteRange
+	// pattern is the index of the query pattern that matched, used to settle which of
+	// two patterns describing one declaration decides its kind.
+	pattern uint
+	// declares says the name node is where this name is introduced. A scope capture
+	// nests but declares nothing: a Rust `impl Config` block gives methods inside it
+	// a container, while the word `Config` there is a use of a type declared
+	// elsewhere. Reporting it as a second declaration of Config would be wrong.
+	declares bool
+}
+
+// capture runs the language's symbol query and resolves every match.
+//
+// It is shared by the outline and the lookup because they need the same list for
+// different reasons -- one to nest, one to decide what counts as a declaration --
+// and two walks that must agree would eventually not.
+func (e *Engine) capture(g *grammar, root *ts.Node, content []byte) []captured {
 	cursor := ts.NewQueryCursor()
 	defer cursor.Close()
-	captures := g.query.CaptureNames()
+	names := g.query.CaptureNames()
 	matches := cursor.Matches(g.query, root, content)
 
-	var found []Symbol
+	var found []captured
+	// at maps a declaration's name extent to its entry in found.
+	//
+	// Two patterns matching one declaration is normal and useful: in JavaScript a
+	// variable_declarator holds a function when its value is one and a plain binding
+	// otherwise, and both patterns match. Something has to decide, and the rule is
+	// that the first pattern listed in the query wins -- which is why the specific
+	// patterns are written before the general ones. Without it, one declaration would
+	// appear twice with two different kinds.
+	at := map[byteRange]int{}
+
 	for match := matches.Next(); match != nil; match = matches.Next() {
 		var name, def *ts.Node
+		kind, declares := Kind(""), false
 		for index := range match.Captures {
 			capture := match.Captures[index]
-			switch captures[capture.Index] {
+			role, suffix := splitCapture(names[capture.Index])
+			switch role {
 			case "name":
 				name = &capture.Node
-			case "def":
+			case "def", "scope":
 				def = &capture.Node
+				declares = role == "def"
+				kind = Kind(suffix)
 			}
 		}
 		if name == nil || def == nil {
 			continue
 		}
-		found = append(found, Symbol{
-			Name:      name.Utf8Text(content),
-			Kind:      kindOf(def.Kind()),
-			StartLine: int(def.StartPosition().Row) + 1,
-			EndLine:   int(def.EndPosition().Row) + 1,
-			StartByte: int(def.StartByte()),
-			EndByte:   int(def.EndByte()),
-			Signature: firstLine(content, int(def.StartByte()), int(def.EndByte())),
-		})
+		if kind == "" {
+			kind = kindOf(def.Kind())
+		}
+		nameAt := byteRange{int(name.StartByte()), int(name.EndByte())}
+		entry := captured{
+			symbol: Symbol{
+				Name:      name.Utf8Text(content),
+				Kind:      kind,
+				StartLine: int(def.StartPosition().Row) + 1,
+				EndLine:   int(def.EndPosition().Row) + 1,
+				StartByte: int(def.StartByte()),
+				EndByte:   int(def.EndByte()),
+				Signature: firstLine(content, int(def.StartByte()), int(def.EndByte())),
+			},
+			nameAt:   nameAt,
+			declares: declares,
+			pattern:  match.PatternIndex,
+		}
+
+		if index, already := at[nameAt]; already {
+			// The cursor does not promise to yield matches in pattern order, so the
+			// winner is chosen by pattern index rather than by arrival.
+			if entry.pattern < found[index].pattern {
+				found[index] = entry
+			}
+			continue
+		}
+		at[nameAt] = len(found)
+		found = append(found, entry)
 	}
-	outline.Symbols = nest(found)
-	return outline, nil
+	return found
+}
+
+// splitCapture reads a capture name of the form role or role.kind.
+//
+// The suffix exists because one grammar node can be two things: in JavaScript a
+// variable_declarator holds a function when its value is one and a plain binding
+// otherwise, and the node type alone cannot say which. Naming the kind in the
+// query is more honest than a table that has to guess.
+func splitCapture(name string) (role, suffix string) {
+	if index := strings.IndexByte(name, '.'); index >= 0 {
+		return name[:index], name[index+1:]
+	}
+	return name, ""
+}
+
+func symbolsOf(found []captured) []Symbol {
+	symbols := make([]Symbol, 0, len(found))
+	for _, entry := range found {
+		symbols = append(symbols, entry.symbol)
+	}
+	return symbols
 }
 
 // parse runs the parser, bounded when a budget is set.
@@ -385,28 +490,28 @@ func describeErrors(node *ts.Node) (int, int) {
 }
 
 // nest fills in each symbol's container and depth from the byte ranges.
-func nest(found []Symbol) []Symbol {
+func nest(found []captured) []captured {
 	if len(found) == 0 {
-		return []Symbol{}
+		return found
 	}
 	sort.SliceStable(found, func(a, b int) bool {
-		if found[a].StartByte != found[b].StartByte {
-			return found[a].StartByte < found[b].StartByte
+		if found[a].symbol.StartByte != found[b].symbol.StartByte {
+			return found[a].symbol.StartByte < found[b].symbol.StartByte
 		}
 		// The wider declaration comes first, so a field never becomes the parent of
 		// the type that contains it.
-		return found[a].EndByte > found[b].EndByte
+		return found[a].symbol.EndByte > found[b].symbol.EndByte
 	})
 	var stack []Symbol
 	for index := range found {
-		for len(stack) > 0 && found[index].StartByte >= stack[len(stack)-1].EndByte {
+		for len(stack) > 0 && found[index].symbol.StartByte >= stack[len(stack)-1].EndByte {
 			stack = stack[:len(stack)-1]
 		}
 		if len(stack) > 0 {
-			found[index].Container = stack[len(stack)-1].Name
+			found[index].symbol.Container = stack[len(stack)-1].Name
 		}
-		found[index].Depth = len(stack)
-		stack = append(stack, found[index])
+		found[index].symbol.Depth = len(stack)
+		stack = append(stack, found[index].symbol)
 	}
 	return found
 }
@@ -482,11 +587,89 @@ var configuredLanguages = []struct {
 		optionalPatterns: goInterfaceMethodPatterns,
 		reportsSyntax:    true,
 	},
+	{
+		name:          LanguagePython,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tspython.Language()) },
+		query:         pythonQuery,
+		identifiers:   pythonIdentifiers,
+		reportsSyntax: true,
+	},
+	{
+		name:          LanguageRust,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tsrust.Language()) },
+		query:         rustQuery,
+		identifiers:   rustIdentifiers,
+		reportsSyntax: true,
+	},
+	{
+		name:        LanguageC,
+		grammar:     func() *ts.Language { return ts.NewLanguage(tsc.Language()) },
+		query:       cQuery,
+		identifiers: cIdentifiers,
+		// No syntax verdict: see noPreprocessorNote.
+		reportsSyntax: false,
+		syntaxNote:    noPreprocessorNote,
+	},
+	{
+		name:          LanguageCPP,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tscpp.Language()) },
+		query:         cppQuery,
+		identifiers:   cppIdentifiers,
+		reportsSyntax: false,
+		syntaxNote:    noPreprocessorNote,
+	},
+	{
+		name:          LanguageJavaScript,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tsjs.Language()) },
+		query:         javascriptQuery,
+		identifiers:   ecmaIdentifiers,
+		reportsSyntax: true,
+	},
+	{
+		name:          LanguageTypeScript,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tsts.LanguageTypescript()) },
+		query:         typescriptQuery,
+		identifiers:   typescriptIdentifiers,
+		reportsSyntax: true,
+	},
+	{
+		// TSX is a separate grammar rather than a dialect: the two disagree about
+		// how `<T>` is read, so one grammar cannot serve both.
+		name:          LanguageTSX,
+		grammar:       func() *ts.Language { return ts.NewLanguage(tsts.LanguageTSX()) },
+		query:         typescriptQuery,
+		identifiers:   typescriptIdentifiers,
+		reportsSyntax: true,
+	},
 }
 
 // languageByExtension is LCTK's own extension map. It lists every extension the
 // project may eventually understand; LanguageOf then refuses one whose grammar is
 // not configured in this build, so an extension here is not a promise.
+//
+// A `.h` is read as C rather than C++. The extension genuinely does not say which,
+// and C is the reading that parses a C header correctly; a C++ header in a `.h`
+// yields errors, which is why no syntax verdict is published for either language.
 var languageByExtension = map[string]string{
-	".go": LanguageGo,
+	".go":  LanguageGo,
+	".py":  LanguagePython,
+	".pyi": LanguagePython,
+	".rs":  LanguageRust,
+	".c":   LanguageC,
+	".h":   LanguageC,
+	".cc":  LanguageCPP,
+	".cpp": LanguageCPP,
+	".cxx": LanguageCPP,
+	".hh":  LanguageCPP,
+	".hpp": LanguageCPP,
+	".hxx": LanguageCPP,
+	".js":  LanguageJavaScript,
+	".mjs": LanguageJavaScript,
+	".cjs": LanguageJavaScript,
+	".jsx": LanguageJavaScript,
+	// A `.d.ts` is matched by `.ts`: path.Ext returns only the last extension.
+	".ts":  LanguageTypeScript,
+	".mts": LanguageTypeScript,
+	".cts": LanguageTypeScript,
+	".tsx": LanguageTSX,
 }
