@@ -34,6 +34,8 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`spikes/codex-compatibility-results.md`](spikes/codex-compatibility-results.md) | Slice 0.4 measurements and accepted Codex integration contract |
 | [`spikes/codex-end-to-end-results.md`](spikes/codex-end-to-end-results.md) | Slice 1.4 end-to-end measurements against the real client, daemon, and containers |
 | [`spikes/codebase-memory-mcp-assessment.md`](spikes/codebase-memory-mcp-assessment.md) | Comparative assessment of Codebase Memory MCP and the accepted reference-only disposition |
+| [`spikes/symbol-backend-evaluation.md`](spikes/symbol-backend-evaluation.md) | Slice 4.1 symbol engine test contract |
+| [`spikes/symbol-backend-evaluation-results.md`](spikes/symbol-backend-evaluation-results.md) | Slice 4.1 measurements and the accepted Tree-sitter recommendation |
 | [`open-questions.md`](open-questions.md) | Unresolved product and technical questions |
 | [`adr/`](adr/README.md) | Architecture decision log |
 
