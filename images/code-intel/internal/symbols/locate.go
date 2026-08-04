@@ -134,62 +134,22 @@ func (e *Engine) Locate(path string, content []byte, digest, wanted string) (Loc
 	return located, nil
 }
 
-type byteRange struct{ start, end int }
-
 // declarations returns the file's nested declaration list and an index from each
 // declaration's *name* extent to the declaration.
 //
 // The name extent is what identifies a declaration's own identifier among the
-// occurrences: the declaration's full extent contains many identifiers, and only
-// one of them is the name being declared.
+// occurrences: a declaration's full extent contains many identifiers, and only one
+// of them is the name being declared. A scope capture contributes to the nesting
+// and not to this index, because it declares nothing.
 func (e *Engine) declarations(g *grammar, root *ts.Node, content []byte) ([]Symbol, map[byteRange]Symbol) {
-	cursor := ts.NewQueryCursor()
-	defer cursor.Close()
-	captures := g.query.CaptureNames()
-	matches := cursor.Matches(g.query, root, content)
-
-	var found []Symbol
-	var nameRanges []byteRange
-	for match := matches.Next(); match != nil; match = matches.Next() {
-		var name, def *ts.Node
-		for index := range match.Captures {
-			capture := match.Captures[index]
-			switch captures[capture.Index] {
-			case "name":
-				name = &capture.Node
-			case "def":
-				def = &capture.Node
-			}
-		}
-		if name == nil || def == nil {
-			continue
-		}
-		found = append(found, Symbol{
-			Name:      name.Utf8Text(content),
-			Kind:      kindOf(def.Kind()),
-			StartLine: int(def.StartPosition().Row) + 1,
-			EndLine:   int(def.EndPosition().Row) + 1,
-			StartByte: int(def.StartByte()),
-			EndByte:   int(def.EndByte()),
-		})
-		nameRanges = append(nameRanges, byteRange{int(name.StartByte()), int(name.EndByte())})
-	}
-
-	// nest sorts in place, so the name ranges are paired with their declarations by
-	// extent afterwards rather than by position in the slice.
-	byExtent := make(map[byteRange]byteRange, len(found))
-	for index := range found {
-		byExtent[byteRange{found[index].StartByte, found[index].EndByte}] = nameRanges[index]
-	}
-	nested := nest(found)
-
+	nested := nest(e.capture(g, root, content))
 	names := make(map[byteRange]Symbol, len(nested))
-	for _, symbol := range nested {
-		if name, ok := byExtent[byteRange{symbol.StartByte, symbol.EndByte}]; ok {
-			names[name] = symbol
+	for _, entry := range nested {
+		if entry.declares {
+			names[entry.nameAt] = entry.symbol
 		}
 	}
-	return nested, names
+	return symbolsOf(nested), names
 }
 
 // innermostContaining names the tightest declaration whose extent holds a range.
