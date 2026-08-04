@@ -754,29 +754,74 @@ This closes Stage 4. Symbols, definitions, references, syntax diagnostics, lifec
 
 ## Stage 5 — Persistent semantic intelligence
 
-- AST-aware chunk model;
-- a local CPU embedding model;
-- replaceable vector adapter;
-- shared inference compute, isolated project collections;
-- incremental invalidation;
-- hybrid lexical and vector ranking;
-- freshness and commit awareness.
+### Slice 5.1: Semantic contract and measured backend choice
+
+**Status:** accepted for implementation. [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md) fixes the shared inference, model, chunk, storage, ranking, and freshness boundaries.
+
+Acceptance requires an immutable model and runtime identity, license attribution, a reproducible quality corpus with lexical and semantic counterexamples, and measured CPU, memory, disk, cold-start, and query costs.
+
+### Slice 5.2: Persistent AST-aware chunks
+
+Implement declaration-bounded chunks for supported languages, bounded text chunks elsewhere, stable identities, content digests, transactional metadata, full rebuild, and exact incremental add/change/delete behavior.
+
+Acceptance requires restart persistence, rename and deletion retraction, no work for unchanged content, explicit chunk precision, and project-scope refusal tests.
+
+### Slice 5.3: Shared local embedding and vector indexing
+
+Implement one managed CPU inference service, verified model installation, the replaceable project vector adapter, bounded batching, cancellation, resource modes, and atomic publication.
+
+Acceptance requires two projects sharing one inference process while retaining separate stores, offline query after installation, typed unavailable/busy/model-mismatch failures, and a failed batch preserving the previous generation.
+
+### Slice 5.4: Hybrid semantic search through MCP
+
+Implement `code_search_semantic` with deterministic reciprocal-rank fusion, provenance, model identity, generation, freshness, source state, pagination, bounds, and actionable refusals.
+
+Acceptance requires real semantic wins over exact search, exact identifiers surviving hybrid ranking, saved edits visible before the answer, and calls through every supported MCP client path.
+
+### Slice 5.5: Semantic lifecycle and resource proof
+
+Verify initial indexing, incremental updates, stop/start persistence, rebuild after model/schema change, quiet/normal/fast limits, corruption recovery, and measured upper-bound behavior.
 
 ## Stage 6 — Graph, repository map, and memory
 
-- persistent code graph adapter;
-- callers/callees/dependency paths/impact;
-- compact repository map;
-- explicit project-memory CRUD and decision records;
-- provenance, confidence, and review metadata.
+### Slice 6.1: Persistent derived graph
+
+Implement declaration nodes, import dependencies, call sites, incremental replacement, schema migration, and the graph adapter defined by [ADR-0021](adr/0021-derived-code-graph-and-explicit-project-memory.md).
+
+### Slice 6.2: Graph tools
+
+Implement `callers_find`, `callees_find`, `dependency_path`, and `impact_analyze` with name-match precision, ambiguity, evidence, bounds, pagination, and freshness.
+
+### Slice 6.3: Compact repository map
+
+Implement deterministic importance ranking and `repository_map` with a caller-supplied character budget, explicit truncation, generation, and source state.
+
+### Slice 6.4: Explicit reviewed project memory
+
+Implement `memory_get`, `memory_search`, `memory_put`, and `memory_delete` with stable keys, kinds, optimistic revisions, provenance, confidence, commit awareness, review metadata, semantic and lexical retrieval, persistence, and purge behavior.
+
+### Slice 6.5: Graph and memory end-to-end proof
+
+Verify edits, renames, deletes, ambiguous names, cross-language calls, dependency paths, stale memory, concurrent revision conflicts, restart persistence, project isolation, and every tool through real clients.
 
 ## Stage 7 — Hardening and public release
 
-- installer/bootstrap command;
-- explicit `lctk update` with a migration plan and rollback;
-- signed and notarized artifacts/images;
-- generated dependency attribution, SBOM, and provenance;
-- production release automation and support policy;
-- target-hardware and Docker Desktop certification matrix;
-- performance stress suite up to the upper target of one million files;
-- Linux roadmap based on measured portability gaps.
+### Slice 7.1: Transactional bootstrap
+
+Implement the plan-first `lctk bootstrap` contract from [ADR-0022](adr/0022-transactional-bootstrap-update-and-release-evidence.md), immutable downloads, complete cancellation before download, disk preflight, installation, and functional verification.
+
+### Slice 7.2: Update, migration, and rollback
+
+Implement signed release manifests, read-only update plans, schema compatibility, rollback bundles, copy-validate-swap migrations, atomic activation, and automatic restoration after a failed health gate.
+
+### Slice 7.3: Release supply-chain evidence
+
+Generate dependency attribution, SPDX SBOMs, checksums, artifact attestations, image signatures, release notes, and migration metadata. Official publication fails closed without Windows Authenticode and Apple signing/notarization credentials.
+
+### Slice 7.4: Packaged and client-path verification
+
+Extract and execute both target archives, build and inspect both image architectures, run Docker lifecycle and every MCP tool through Codex plus independent protocol clients, and preserve machine-readable evidence.
+
+### Slice 7.5: Compatibility and stress evidence
+
+Provide a parameterized suite through one million files, record resource and latency curves, verify low-disk and corruption refusals, update the honest certification matrix, and document measured Linux portability gaps without promoting Linux to a first-release target.

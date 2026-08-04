@@ -32,5 +32,8 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0017](0017-command-policy-and-the-runner.md) | A repository proposes commands, the owner approves them, a client runs them by name | accepted |
 | [0018](0018-the-index-describes-the-disk.md) | The index describes the disk, and a write that changed nothing costs nothing | accepted |
 | [0019](0019-tree-sitter-symbol-layer.md) | Tree-sitter is the symbol layer, and diagnostics stop at syntax | accepted |
+| [0020](0020-shared-embedding-and-project-semantic-store.md) | Shared local embedding inference and an isolated SQLite semantic store per project | accepted |
+| [0021](0021-derived-code-graph-and-explicit-project-memory.md) | A derived name-matched code graph and explicit reviewed project memory | accepted |
+| [0022](0022-transactional-bootstrap-update-and-release-evidence.md) | Transactional bootstrap, update rollback, and evidence-gated releases | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.
