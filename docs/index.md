@@ -20,6 +20,7 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`architecture.md`](architecture.md) | Control plane, project stacks, MCP routing, and component boundaries |
 | [`project-lifecycle.md`](project-lifecycle.md) | Add/start/stop/restart/remove operations and project states |
 | [`indexing.md`](indexing.md) | Watcher, incremental indexing, freshness, and persistence |
+| [`symbols.md`](symbols.md) | What a file declares, whether it parses, and how precise either answer is |
 | [`security.md`](security.md) | Trusted-local model, project isolation, and client grants |
 | [`compatibility.md`](compatibility.md) | Platform targets, current evidence, and certification gaps |
 | [`development.md`](development.md) | Go prerequisites, local checks, and foundation commands |

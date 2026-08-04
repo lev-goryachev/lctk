@@ -55,6 +55,20 @@ const (
 	CodeServiceOffline    = "SERVICE_UNAVAILABLE"
 	CodeInternalError     = "INTERNAL_ERROR"
 	CodeSearchUnsupported = "SEARCH_UNAVAILABLE"
+	// CodeInvalidPath reports a path that is not project-relative.
+	CodeInvalidPath = "INVALID_PATH"
+	// CodeFileNotFound reports a path the project does not hold, which includes a
+	// path its own ignore rules exclude.
+	CodeFileNotFound = "FILE_NOT_FOUND"
+	// CodeFileTooLarge reports a file above the limit for the operation asked for.
+	CodeFileTooLarge = "FILE_TOO_LARGE"
+	// CodeLanguageUnsupported reports a file this build has no grammar for. It is a
+	// stated gap rather than an empty answer, which would read as "this file
+	// declares nothing".
+	CodeLanguageUnsupported = "LANGUAGE_UNSUPPORTED"
+	// CodeParseIncomplete reports a file the parser did not finish inside its
+	// budget.
+	CodeParseIncomplete = "PARSE_INCOMPLETE"
 )
 
 // Error is a typed failure a caller can act on.
@@ -139,6 +153,62 @@ type Status struct {
 	IndexBytes  int64  `json:"index_bytes"`
 	IndexedAt   string `json:"indexed_at,omitempty"`
 	Reason      string `json:"reason,omitempty"`
+	// OutlineLanguages names what the service can outline. It is empty for a
+	// service that predates the symbol layer, which reads correctly as "none".
+	OutlineLanguages []string `json:"outline_languages,omitempty"`
+}
+
+// Symbol is one declaration in a file.
+type Symbol struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// StartLine and EndLine are 1-based and inclusive.
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
+	// StartByte and EndByte bound the declaration in the file, so a caller can be
+	// shown the declaration rather than a cursor position.
+	StartByte int `json:"start_byte"`
+	EndByte   int `json:"end_byte"`
+	// Container is the enclosing declaration's name, empty at the top level.
+	Container string `json:"container,omitempty"`
+	// Depth is how deeply the declaration is nested, so a flat list renders as a
+	// tree without recomputing containment.
+	Depth int `json:"depth"`
+	// Signature is the declaration's own first line.
+	Signature string `json:"signature,omitempty"`
+}
+
+// Syntax is what the parser can say about a file being whole.
+type Syntax struct {
+	// Reported says a verdict is published for this language at all. False must be
+	// read as "unknown" rather than as "fine".
+	Reported bool `json:"reported"`
+	Valid    bool `json:"valid"`
+	// Errors counts the broken regions located: places to look, not the size of the
+	// damage.
+	Errors         int `json:"errors,omitempty"`
+	FirstErrorLine int `json:"first_error_line,omitempty"`
+	// Note explains a withheld verdict, so "reported: false" is not a silence a
+	// caller has to interpret.
+	Note string `json:"note,omitempty"`
+}
+
+// Outline is one file's declarations.
+//
+// It describes the file as it is on disk, not as the index holds it, so it carries
+// a content digest rather than an index generation: there is nothing to flush and
+// no generation it could be behind.
+type Outline struct {
+	Path     string `json:"path"`
+	Language string `json:"language"`
+	Bytes    int    `json:"bytes"`
+	Lines    int    `json:"lines"`
+	// Digest is the content this answer describes, so a caller can tell whether two
+	// answers are about the same bytes.
+	Digest        string   `json:"digest,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	Symbols       []Symbol `json:"symbols"`
+	Syntax        Syntax   `json:"syntax"`
 }
 
 // WatchSet is the set of project-relative directories a host watcher must
@@ -222,6 +292,34 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	return status, nil
+}
+
+// DefaultOutlineTimeout bounds one file's outline.
+//
+// It is shorter than a search because a search may wait behind an index build,
+// while an outline is one parse of one file that the service bounds itself. A
+// caller waiting longer than this is waiting on something that has already gone
+// wrong.
+const DefaultOutlineTimeout = 15 * time.Second
+
+// Outline asks the service for one file's declarations.
+func (c *Client) Outline(ctx context.Context, path string) (Outline, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultOutlineTimeout)
+		defer cancel()
+	}
+
+	var outline Outline
+	if err := c.call(ctx, "/outline", map[string]string{"path": path}, &outline); err != nil {
+		return Outline{}, err
+	}
+	if outline.Symbols == nil {
+		// An empty list, never a null: a null reads to a model as "no answer" rather
+		// than "no declarations".
+		outline.Symbols = []Symbol{}
+	}
+	return outline, nil
 }
 
 // WatchSet asks the service which directories a host watcher should observe.
@@ -443,8 +541,20 @@ func ActionFor(code string) string {
 		// request was wrong when it was made: the index moved underneath it, and
 		// the fix is to start again rather than to adjust an argument.
 		return "Run the search again without the cursor; a cursor is only valid for the index generation that produced it."
-	case CodeInvalidPattern, CodeLimitExceeded:
+	case CodeInvalidPattern, CodeLimitExceeded, CodeInvalidPath:
 		return "Correct the request and try again."
+	case CodeFileNotFound:
+		// Naming the ignore rules matters: a file plainly present in the checkout can
+		// be absent here, and without this the caller re-sends the same path.
+		return "Check the path with exact_search or git_status; a file the project's ignore rules exclude is not readable either."
+	case CodeFileTooLarge:
+		return "Ask about a smaller file, or search within this one instead."
+	case CodeLanguageUnsupported:
+		// There is nothing to retry and nothing to correct. The useful advice is the
+		// tool that does work on any file.
+		return "Use exact_search on this file instead; project_info lists the languages this project can outline."
+	case CodeParseIncomplete:
+		return "This file is too costly to parse; search within it instead."
 	default:
 		return ""
 	}

@@ -10,7 +10,11 @@ module github.com/lev-goryachev/lctk/images/code-intel
 
 go 1.25.9
 
-require github.com/sourcegraph/zoekt v0.0.0-20260724095353-2b2ce2e398e6
+require (
+	github.com/sourcegraph/zoekt v0.0.0-20260724095353-2b2ce2e398e6
+	github.com/tree-sitter/go-tree-sitter v0.25.0
+	github.com/tree-sitter/tree-sitter-go v0.25.0
+)
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.19.0 // indirect
@@ -36,6 +40,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect

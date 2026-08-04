@@ -6,11 +6,22 @@
 #
 # Both stages are pinned by digest so a rebuild produces the same content.
 
-# The build stage compiles the per-project search service. Zoekt's low-level
-# index package is Unix-specific and outside its stable public API, which is why
-# that code lives in a separate module and is compiled here rather than on the
-# host, per ADR-0011.
-FROM golang@sha256:298734aec230b5f3e8cee450ce6d7eccc39f1797ba548ee90d57e9803030c6c3 AS build
+# The build stage compiles the per-project search and symbol service.
+#
+# Two things keep this code out of the portable host executable, both required by
+# ADR-0011 and ADR-0019: Zoekt's low-level index package is Unix-specific and
+# outside its stable public API, and the Tree-sitter symbol layer is reached
+# through cgo. Neither may enter a Windows or macOS build, which is why they live
+# in a separate module compiled here.
+#
+# The builder is Alpine rather than Debian because cgo is now required and the
+# runtime stage is Alpine: linking against musl here is what allows the result to
+# be one static binary on the same libc. ADR-0019 records that this revises the
+# earlier position that no C toolchain enters the build; what that position was
+# protecting -- a runtime image with no toolchain in it -- still holds.
+FROM golang@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS build
+
+RUN apk add --no-cache gcc musl-dev
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -18,11 +29,12 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY main.go ./
 COPY internal ./internal
-# CGO is off so the result is a static binary that runs on the Alpine stage
-# without a libc shim, and so no C toolchain enters the supply chain.
+# Statically linked, so the runtime stage needs no libc shim and no compiler. The
+# build cache matters more than it used to: a grammar is generated C and dominates
+# a rebuild.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/lctk-code-intel ./
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" -o /out/lctk-code-intel ./
 
 FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 

@@ -1,8 +1,8 @@
 # Codex end-to-end harness
 
 Runs the Slice 1.4 scenario against real components and prints an evidence
-report, and since [Slice 3.5](../../docs/roadmap.md#slice-35-stage-3-against-a-second-client)
-the Stage 3 tools as well. The measured outcome is recorded in
+report, and since [Slice 3.5](../../docs/roadmap.md#slice-35-every-tool-called-through-a-second-client)
+every other tool the endpoint offers as well. The measured outcome is recorded in
 [`docs/spikes/codex-end-to-end-results.md`](../../docs/spikes/codex-end-to-end-results.md).
 
 It grows with the client-facing surface rather than being frozen, and it **calls**
@@ -31,6 +31,9 @@ directory, the containers, and the registrations in place for inspection.
   specifies;
 - the Git repository the Stage 3 tools describe, created and committed by the
   harness, with an uncommitted edit for `git_status` and `git_diff` to report;
+- real Go source for `file_outline`: one file with a field inside a type and a
+  constant inside a method, so containment is checked rather than assumed, and one
+  file truncated mid-body so the syntax verdict has something to report;
 - the container the approved command runs in, using the image this repository
   builds so nothing external is assumed.
 

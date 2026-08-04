@@ -39,9 +39,13 @@ func (s *stubIndexer) WatchSet(context.Context) ([]string, bool, error) { return
 
 func (s *stubIndexer) DiskBytes() (int64, error) { return 0, nil }
 
+func (s *stubIndexer) ReadProjectFile(string, int64) ([]byte, string, error) {
+	return nil, "", nil
+}
+
 func postIndex(t *testing.T, indexer Indexer, body string) indexResponse {
 	t.Helper()
-	server := httptest.NewServer(New(indexer, nil).Handler())
+	server := httptest.NewServer(New(indexer, nil, nil).Handler())
 	t.Cleanup(server.Close)
 
 	response, err := http.Post(server.URL+"/index", "application/json", strings.NewReader(body))

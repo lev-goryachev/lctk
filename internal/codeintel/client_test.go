@@ -261,3 +261,82 @@ func TestStatusAndReindexUseTheServiceContract(t *testing.T) {
 		t.Errorf("status = %+v", status)
 	}
 }
+
+func TestOutlineTranslatesTheServiceResponseIntoTheStableShape(t *testing.T) {
+	var received string
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		_, _ = io.WriteString(w, `{"path":"internal/a.go","language":"go","bytes":120,"lines":9,`+
+			`"digest":"abc","schema_version":1,`+
+			`"symbols":[{"name":"Needle","kind":"function","start_line":7,"end_line":9,`+
+			`"start_byte":40,"end_byte":118,"container":"Outer","depth":1,"signature":"func Needle() {"}],`+
+			`"syntax":{"reported":true,"valid":false,"errors":2,"first_error_line":8}}`)
+	}))
+
+	outline, err := client.Outline(context.Background(), "internal/a.go")
+	if err != nil {
+		t.Fatalf("Outline: %v", err)
+	}
+	if !strings.Contains(received, `"path":"internal/a.go"`) {
+		t.Errorf("request body = %s", received)
+	}
+	// Nothing that could redirect scope may reach the service.
+	for _, forbidden := range []string{"project_id", "repository_root", "workspace", "root"} {
+		if strings.Contains(received, forbidden) {
+			t.Errorf("request body carries %q: %s", forbidden, received)
+		}
+	}
+	if len(outline.Symbols) != 1 {
+		t.Fatalf("symbols = %+v", outline.Symbols)
+	}
+	symbol := outline.Symbols[0]
+	if symbol.Name != "Needle" || symbol.Kind != "function" || symbol.Container != "Outer" || symbol.Depth != 1 {
+		t.Errorf("symbol = %+v", symbol)
+	}
+	if symbol.StartByte != 40 || symbol.EndByte != 118 {
+		t.Errorf("the extent did not survive: %+v", symbol)
+	}
+	if outline.Digest != "abc" || outline.Lines != 9 || outline.SchemaVersion != 1 {
+		t.Errorf("outline = %+v", outline)
+	}
+	// A file that does not parse still reports its declarations, and says where to
+	// look. Losing either half would make the tool useless mid-edit.
+	if outline.Syntax.Valid || outline.Syntax.Errors != 2 || outline.Syntax.FirstErrorLine != 8 {
+		t.Errorf("syntax = %+v", outline.Syntax)
+	}
+}
+
+func TestOutlineNeverReturnsANilSymbolSlice(t *testing.T) {
+	// A null reads to a model as "no answer" rather than "no declarations", which is
+	// a different and wrong claim about a file.
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"path":"a.go","language":"go","symbols":null,"syntax":{"reported":true,"valid":true}}`)
+	}))
+
+	outline, err := client.Outline(context.Background(), "a.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outline.Symbols == nil {
+		t.Error("symbols is nil")
+	}
+}
+
+func TestEveryOutlineFailureCarriesAnActionAndNoneSaysRetry(t *testing.T) {
+	// These four are the whole outline failure surface. None of them is fixed by
+	// waiting, so none may read as retryable, and each has to point somewhere.
+	for _, code := range []string{
+		CodeLanguageUnsupported, CodeFileNotFound, CodeFileTooLarge, CodeParseIncomplete,
+	} {
+		t.Run(code, func(t *testing.T) {
+			action := ActionFor(code)
+			if action == "" {
+				t.Fatal("the code carries no recommended action")
+			}
+			if strings.Contains(strings.ToLower(action), "retry") {
+				t.Errorf("the action tells the caller to retry: %q", action)
+			}
+		})
+	}
+}
