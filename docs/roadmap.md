@@ -710,6 +710,48 @@ Two mechanisms were needed and are worth naming, because both are about not lyin
 
 Cost of the seven extra grammars: the image from 56.9 MB to **66.7 MB**, the service binary from 33,056,616 to **41,987,368 bytes**, and a cold image build of about **67 s**. Generated C dominates the build, which is why the build caches are not optional.
 
+### Slice 4.5: Lifecycle, resources, and what there is to invalidate
+
+**Status:** complete. The bounds and the lifecycle are described in [symbols](symbols.md#bounds).
+
+The slice began as verification of what Stage 4 requires per language — lifecycle and resource behaviour — and turned up a defect in the process.
+
+**A wall-clock budget is not load-independent.** Measured on a 920 KiB C++ header in a container limited to two CPUs and 2 GiB:
+
+| Concurrent parses | Peak memory | Answered | Refused as `PARSE_INCOMPLETE` |
+|---|---|---|---|
+| 16, unbounded | 269 MiB | 16 | 0 |
+| 32, unbounded | 522 MiB | 32 | 0 |
+| 64, unbounded | **675 MiB** | **2** | **62** |
+| 16, bound 2 | 96 MiB | 16 | 0 |
+| 32, bound 2 | 97 MiB | 32 | 0 |
+| 64, bound 2 | **97 MiB** | **64** | **0** |
+
+Unbounded, memory grows with whatever arrives together, and past the CPU allowance a file that parses in a third of a second starts exceeding its five-second budget. The service was refusing perfectly ordinary files because it was busy — a correctness failure wearing a resource failure's clothes, and one that only shows up under concurrency.
+
+Implemented:
+
+- a bound on how many files are parsed at once, taken from the project's **resource mode** rather than invented here, because it answers the same question the index's own cap answers — how much of this machine the project may spend;
+- a slot released when the caller gives up, so an abandoned request holds nothing;
+- `PARSE_BUSY`, **retryable**, distinct from `PARSE_INCOMPLETE`: the file is fine and the answer exists, the project was busy. Reporting the second would be a claim about the file;
+- the bound reported on the service's status, so the policy in force is visible rather than inferred from a refusal.
+
+Verified live, by inspecting the running container rather than reading the setting back:
+
+| Mode | Container CPUs | Files parsed at once |
+|---|---|---|
+| `quiet` | 1 | 1 |
+| `normal` | 2 | 2 |
+| `fast` | no limit | 12, the machine's processors |
+
+Bounded, memory is flat and every request is answered. At 32 concurrent the bound costs **nothing** in wall clock — 5960 ms against 6061 ms — and at 64 it costs latency to return 64 answers instead of 2.
+
+**Lifecycle and invalidation: there is nothing to invalidate, and that is the answer.** The layer persists no symbol table, no cache, and no index of its own, so nothing goes stale, nothing is rebuilt after a restart, and no per-language process exists to supervise. Measured live: an outline answered **205 ms after the project's listener first answered**, with 207 declarations, *while the search index was still building*.
+
+A cache was considered and deliberately not added. A Go file here parses in about 3 ms, and a cache would trade a stale answer about a file being edited — exactly the case these tools exist for — for nothing worth having.
+
+This closes Stage 4. Symbols, definitions, references, syntax diagnostics, lifecycle, and resource behaviour are verified for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX.
+
 ## Stage 5 — Persistent semantic intelligence
 
 - AST-aware chunk model;

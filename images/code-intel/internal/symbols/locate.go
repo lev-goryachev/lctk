@@ -1,6 +1,7 @@
 package symbols
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -58,7 +59,7 @@ type Located struct {
 // resolution and nothing outside the file is consulted, so two unrelated
 // declarations that happen to share a name both match. That is what makes the
 // answer name-based, and it is why the tool reports its precision.
-func (e *Engine) Locate(path string, content []byte, digest, wanted string) (Located, error) {
+func (e *Engine) Locate(ctx context.Context, path string, content []byte, digest, wanted string) (Located, error) {
 	language, known := e.LanguageOf(path)
 	if !known {
 		return Located{}, fail(CodeUnsupportedLanguage,
@@ -66,6 +67,11 @@ func (e *Engine) Locate(path string, content []byte, digest, wanted string) (Loc
 				strings.Join(e.Languages(), ", ")+".", false, nil)
 	}
 	g := e.grammars[language]
+
+	if err := e.acquire(ctx); err != nil {
+		return Located{}, err
+	}
+	defer e.release()
 
 	parser := e.parsers.Get().(*ts.Parser)
 	defer e.parsers.Put(parser)

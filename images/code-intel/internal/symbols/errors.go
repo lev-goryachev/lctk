@@ -45,3 +45,12 @@ func (e *Error) Failure() (string, string, bool) { return e.Code, e.Message, e.R
 func fail(code, message string, retryable bool, cause error) error {
 	return &Error{Code: code, Message: message, Retryable: retryable, Cause: cause}
 }
+
+// CodeParseBusy reports that the project is already parsing as many files as its
+// resource policy allows and the caller gave up waiting.
+//
+// It is retryable, which is the whole point of distinguishing it: the file is fine
+// and the answer exists, the project was simply busy. Reporting it as
+// PARSE_INCOMPLETE would tell a caller the file is too costly to parse, which is a
+// claim about the file rather than about the moment.
+const CodeParseBusy = "PARSE_BUSY"

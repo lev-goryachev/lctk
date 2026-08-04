@@ -135,7 +135,47 @@ The store decides, using the same rules that decide what is indexed. That is one
 |---|---|
 | Per-file parse budget | 5 s, `LCTK_SYMBOL_BUDGET` |
 | Largest file outlined | 4 MiB, `LCTK_SYMBOL_MAX_FILE_BYTES` |
+| Files parsed at once | the project's resource mode, `LCTK_SYMBOL_PARALLELISM` |
 
 The parse bound is wall clock rather than a byte count because the cost is not proportional to size: a pathological construct in a file of ordinary length is what holds a parser, and the container it would hold is the project's own. A file abandoned to the budget reports `PARSE_INCOMPLETE`, never an empty outline — "not analysed" and "declares nothing" must not arrive as the same answer.
 
 The size bound is deliberately larger than the index's own 1 MiB file limit, because the two exist for different reasons. A large file costs the index space in every generation it appears in; an outline costs one parse and is not stored.
+
+### Why the concurrency bound is not an optimization
+
+A wall-clock budget is not load-independent, and that turns out to matter. Measured on a 920 KiB C++ header in a container limited to two CPUs and 2 GiB:
+
+| Concurrent parses | Peak memory | Answered | Refused as `PARSE_INCOMPLETE` |
+|---|---|---|---|
+| 16, unbounded | 269 MiB | 16 | 0 |
+| 32, unbounded | 522 MiB | 32 | 0 |
+| 64, unbounded | **675 MiB** | **2** | **62** |
+| 16, bound 2 | 96 MiB | 16 | 0 |
+| 32, bound 2 | 97 MiB | 32 | 0 |
+| 64, bound 2 | **97 MiB** | **64** | **0** |
+
+Unbounded, memory grows with whatever arrives together, and past the CPU allowance a file that parses in a third of a second starts exceeding a five-second budget — so the service refuses perfectly ordinary files because it is busy. That is a correctness failure wearing a resource failure's clothes.
+
+Bounded, memory is flat and every request is answered. At 32 concurrent the bound costs nothing in wall clock (5960 ms against 6061 ms); at 64 it costs latency and returns 64 answers instead of 2.
+
+The bound comes from the project's **resource mode** — the same figure that caps index work, because it answers the same question: how much of this machine the project may spend.
+
+| Mode | Container CPUs | Files parsed at once |
+|---|---|---|
+| `quiet` | 1 | 1 |
+| `normal` | 2 | 2 |
+| `fast` | no limit | the machine's processors |
+
+`fast` sets no CPU limit, so the machine's processor count is used. That is not a compromise: past the number of things that can actually parse in parallel, more concurrency adds memory and latency and never throughput.
+
+A request that waits and is then abandoned gets `PARSE_BUSY`, which is **retryable** — the only refusal here that waiting fixes. The file is fine and the answer exists; the project was busy at that moment. Reporting it as `PARSE_INCOMPLETE` would be a claim about the file.
+
+## Lifecycle
+
+The symbol layer has none of its own, and that is the design rather than an omission.
+
+- **Nothing is persisted.** No symbol table, no cache, no index of its own. There is therefore nothing to invalidate when a file changes, nothing to rebuild after a restart, and no way for an answer to be stale: every answer is produced from the bytes on disk at the moment it is asked for.
+- **No warm-up.** Measured live: an outline answered **205 ms after the project's listener first answered**, returning 207 declarations, *while the search index was still building*.
+- **No per-language process.** One engine in the process that already exists, so the container lifecycle and resource modes govern it unchanged. There is nothing to supervise, restart, or bound separately.
+
+A cache was considered and deliberately not added. A Go file in this repository parses in about 3 ms; a cache would trade a correctness risk — a stale answer about a file being edited, which is the case these tools exist for — for nothing worth having.

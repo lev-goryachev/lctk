@@ -14,6 +14,7 @@
 package symbols
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"sort"
@@ -185,6 +186,68 @@ type Engine struct {
 	Budget time.Duration
 	// MaxFileBytes bounds the file a caller may ask about. Zero means unlimited.
 	MaxFileBytes int64
+
+	// slots bounds how many files are parsed at once. See SetParallelism.
+	slots chan struct{}
+}
+
+// SetParallelism bounds how many files this engine parses at once.
+//
+// It is not an optimization, and the measurement is why. Parsing a 920 KB C++
+// header on a container limited to two CPUs costs about 9 MB of resident memory per
+// concurrent parse, so memory grows linearly with however many requests happen to
+// arrive together. Worse, the per-file budget is wall clock: at 64 concurrent
+// parses of a file that takes 350 ms alone, *every one* exceeded five seconds and
+// was refused as PARSE_INCOMPLETE. Without a cap a busy service starts declining
+// perfectly ordinary files, which is a correctness failure dressed as a resource
+// one.
+//
+// The value comes from the host's background-load policy -- the same figure that
+// caps index work -- because it answers the same question: how much of this machine
+// the project may spend. Two answers to that would be one answer too many.
+//
+// Zero or negative leaves it unbounded, which is right for a test and wrong for a
+// service.
+func (e *Engine) SetParallelism(limit int) {
+	if limit <= 0 {
+		e.slots = nil
+		return
+	}
+	e.slots = make(chan struct{}, limit)
+}
+
+// Parallelism reports the current bound, zero meaning unbounded.
+func (e *Engine) Parallelism() int {
+	if e.slots == nil {
+		return 0
+	}
+	return cap(e.slots)
+}
+
+// acquire waits for a parsing slot, or gives up when the caller does.
+//
+// A caller that has already gone away must not hold a slot: the queue exists to
+// keep work bounded, and a slot held for an abandoned request is a slot spent on
+// nothing.
+func (e *Engine) acquire(ctx context.Context) error {
+	if e.slots == nil {
+		return nil
+	}
+	select {
+	case e.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fail(CodeParseBusy,
+			"The project is parsing as many files as its resource policy allows; the request was not queued further.",
+			true, ctx.Err())
+	}
+}
+
+func (e *Engine) release() {
+	if e.slots == nil {
+		return
+	}
+	<-e.slots
 }
 
 // MaxBytes is the largest file this engine will outline.
@@ -277,7 +340,7 @@ func (e *Engine) LanguageOf(name string) (string, bool) {
 }
 
 // Outline extracts one file's declarations from its content.
-func (e *Engine) Outline(name string, content []byte, digest string) (Outline, error) {
+func (e *Engine) Outline(ctx context.Context, name string, content []byte, digest string) (Outline, error) {
 	language, known := e.LanguageOf(name)
 	if !known {
 		return Outline{}, fail(CodeUnsupportedLanguage,
@@ -285,6 +348,12 @@ func (e *Engine) Outline(name string, content []byte, digest string) (Outline, e
 				path.Ext(name), strings.Join(e.Languages(), ", ")), false, nil)
 	}
 	g := e.grammars[language]
+
+	// The slot is taken before a parser is, so a queued request holds nothing.
+	if err := e.acquire(ctx); err != nil {
+		return Outline{}, err
+	}
+	defer e.release()
 
 	parser := e.parsers.Get().(*ts.Parser)
 	defer e.parsers.Put(parser)
