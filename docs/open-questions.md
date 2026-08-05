@@ -62,7 +62,7 @@ Settled in Slice 2.3: the background-load mode controls container CPU and index 
 
 The following must be defined:
 
-- the disk formula is anchored to one small repository and is a guess about large projects until one is measured;
+- Stage 7 measured index/database growth through one million synthetic files or chunks, but the disk formula for a heterogeneous large real repository remains open;
 - RAM and CPU budgets by profile and backend;
 - when to warn, prohibit startup, or permit swapping;
 - the lifetime of the shared embedding inference process;

@@ -1,6 +1,6 @@
 # Local Code ToolKit (LCTK)
 
-> **Status:** public pre-alpha. Project registration, per-project containers, route-bound project MCP endpoints, persistent exact and semantic search, a derived name-matched graph, repository maps, explicit project memory, resource policies, the Admin UI, Git awareness, constrained command execution, and syntax-aware symbol tools are implemented and measured against real components. Release hardening is the active stage. See the [roadmap](docs/roadmap.md) for exact claims and evidence.
+> **Status:** public pre-alpha. Project registration, route-bound MCP, persistent exact and semantic search, syntax and graph intelligence, explicit project memory, transactional bootstrap/update/rollback, and a fail-closed release pipeline are implemented. Exact support claims remain limited to the evidence in the [roadmap](docs/roadmap.md) and [compatibility matrix](docs/compatibility.md).
 
 Local Code ToolKit is a local, extensible MCP platform for software development. It decouples code intelligence, indexing, project memory, and command execution from any specific LLM or IDE.
 
@@ -49,6 +49,7 @@ Around that:
 
 - `lctk daemon` hosts the gateway, the per-project grants, and the filesystem watcher;
 - `lctk bootstrap` for a read-only installation plan and confirmed immutable model/inference installation with a functional self-test;
+- `lctk update` for a signed read-only release plan, candidate project health gates, atomic host activation, and verified rollback;
 - `lctk project status/stop/restart/remove/reindex/watch/resources` and `lctk grant`, `lctk image`, `lctk settings`, `lctk doctor` for the rest of the lifecycle;
 - `lctk admin open` for a local page with the same operations, over an API a project credential cannot reach;
 - the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
@@ -67,6 +68,7 @@ The source of truth is under [`docs/`](docs/index.md):
 - [compatibility targets and evidence](docs/compatibility.md);
 - [development workflow](docs/development.md);
 - [versioning](docs/versioning.md) and [release process](docs/releasing.md);
+- [Stage 7 stress evidence](docs/stress.md);
 - [delivery roadmap](docs/roadmap.md);
 - [Codebase Memory MCP comparative assessment](docs/spikes/codebase-memory-mcp-assessment.md);
 - [Codex verification contract](docs/spikes/codex-compatibility.md) and [measured results](docs/spikes/codex-compatibility-results.md);

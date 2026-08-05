@@ -2,9 +2,9 @@
 
 ## Status
 
-Working requirements document. Last updated: 2026-08-04.
+Working requirements document. Last updated: 2026-08-05.
 
-LCTK is public pre-alpha software. Stages 0 through 4 implement and verify the first end-to-end lifecycle, persistent incremental exact search, safe coding operations, and syntax-aware symbol intelligence. Persistent semantic intelligence, the graph and memory layer, and release hardening remain future work.
+LCTK is public pre-alpha software. Stages 0 through 6 implement and verify the first end-to-end lifecycle, persistent incremental exact and semantic search, safe coding operations, syntax-aware symbol intelligence, the derived graph, repository map, and explicit project memory. Stage 7 implements transactional bootstrap, signed update and rollback, native multi-architecture release gates, and complete MCP client-path verification. These implementation stages do not by themselves certify the target operating systems or publish an official release; support claims remain limited to the evidence in the compatibility matrix.
 
 ## Goal
 

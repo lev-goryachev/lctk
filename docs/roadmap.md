@@ -780,7 +780,7 @@ Acceptance requires real semantic wins over exact search, exact identifiers surv
 
 ### Slice 5.5: Semantic lifecycle and resource proof
 
-**Status:** complete for the Stage 5 product path; the million-file upper bound remains the explicit Stage 7.5 release gate. A real three-file project published exact and semantic generation 1 with three persistent chunks, then answered through an independent MCP Go SDK client. The conceptual retry/backoff query ranked the syntax chunk first (`vector_score` 0.7003, lexical rank 1) while exact identifiers remained present. The shared process measured approximately 515-769 MiB during active CPU inference; the project service measured approximately 56 MiB. A full-repository dry run exposed and fixed physical-batch, per-slot context, batching, and progress-reporting defects without ever publishing a partial generation.
+**Status:** complete. A real three-file project published exact and semantic generation 1 with three persistent chunks, then answered through an independent MCP Go SDK client. The conceptual retry/backoff query ranked the syntax chunk first (`vector_score` 0.7003, lexical rank 1) while exact identifiers remained present. The shared process measured approximately 515-769 MiB during active CPU inference; the project service measured approximately 56 MiB. A full-repository dry run exposed and fixed physical-batch, per-slot context, batching, and progress-reporting defects without ever publishing a partial generation. Stage 7.5 subsequently closed the upper stress gate through one million semantic chunks and one million exact-search files.
 
 The live external client completed MCP handshake, tool listing, `project_info`, `exact_search`, and `code_search_semantic` through the authenticated project route. It observed `scope_source: route_and_registry`, `/workspace` paths, exact generation 1, semantic generation 1, and `freshness: fresh`.
 
@@ -814,18 +814,28 @@ The live five-file fixture migrated an existing Stage 5 database in place: exact
 
 Implement the plan-first `lctk bootstrap` contract from [ADR-0022](adr/0022-transactional-bootstrap-update-and-release-evidence.md), immutable downloads, complete cancellation before download, disk preflight, installation, and functional verification.
 
+**Status:** complete. Bootstrap resolves the signed release envelope when an official component is absent, reports the complete core/image/model download and disk plan before writing, and checks cancellation before every external operation. Apply verifies immutable identities, installs the code image, inference image and model, performs a real embedding self-test, copies the packaged core into the versioned store, and creates the first atomic activation document. A locally packaged Windows launcher/core pair completed this path against an isolated home and then launched through the activated digest.
+
 ### Slice 7.2: Update, migration, and rollback
 
 Implement signed release manifests, read-only update plans, schema compatibility, rollback bundles, copy-validate-swap migrations, atomic activation, and automatic restoration after a failed health gate.
+
+**Status:** complete. Ed25519 verification authenticates the exact payload bytes before any URL is trusted. Update refuses non-newer and incompatible releases, pulls the immutable candidate image, migrates each running project on a durable SQLite copy, restores migrated projects in reverse order after a failed health gate, and activates the verified host core last. Explicit rollback restores every available registered-project bundle, restarts only projects that were running, verifies the previous executable, and changes host activation last. Tests cover read-only plans, low disk before network, corrupt bytes, candidate health failure, stopped projects, activation tampering, and two-version rollback.
 
 ### Slice 7.3: Release supply-chain evidence
 
 Generate dependency attribution, SPDX SBOMs, checksums, artifact attestations, image signatures, release notes, and migration metadata. Official publication fails closed without Windows Authenticode and Apple signing/notarization credentials.
 
+**Status:** complete as a fail-closed publication implementation; no official release has been claimed. The protected tag workflow requires the Ed25519, Authenticode, Developer ID, installer, and notarization credentials; runs host tests on both host targets; signs the Windows and macOS packages; executes the packaged launcher; builds and executes each Linux image architecture on its native GitHub runner; joins them by digest; and publishes SBOMs, checksums, module attribution, signatures, attestations, migration notes, and the signed manifest only after every gate succeeds.
+
 ### Slice 7.4: Packaged and client-path verification
 
 Extract and execute both target archives, build and inspect both image architectures, run Docker lifecycle and every MCP tool through Codex plus independent protocol clients, and preserve machine-readable evidence.
 
+**Status:** complete for the Stage 7 evidence boundary, not target-OS certification. The bound Windows launcher/core package bootstrapped and executed from an isolated installation. Codex CLI `0.146.0-alpha.9.2` and an independent Go MCP SDK v1.7.0 client each called the complete 18-tool catalog against the live persistent stack, including typed refusals, route-bound foreign IDs, memory writes, and restart recovery; the SDK pass was repeated against final local image `sha256:4785290b20b5d707d8515e13c5bb800da8461cfd83802b49dc7469da80743d9e`. Hosted run `31012555479` built, extracted, executed, and preserved machine-readable evidence for Windows amd64 and macOS arm64 packages plus healthy native Linux amd64 and arm64 images at commit `7679060`. Earlier native image runs exposed an exact-only typed-nil semantic panic and migration crash windows; regressions, Docker test/race passes, local runtime smoke, and the final rerun close those defects. See [Stage 7 client verification](stage7-client-verification.md) and [releasing](releasing.md).
+
 ### Slice 7.5: Compatibility and stress evidence
 
 Provide a parameterized suite through one million files, record resource and latency curves, verify low-disk and corruption refusals, update the honest certification matrix, and document measured Linux portability gaps without promoting Linux to a first-release target.
+
+**Status:** complete for the documented synthetic evidence boundary. Production-schema semantic publication and bounded exact-vector ranking passed at 1,000, 10,000, 100,000, and 1,000,000 chunks. Production exact inventory and Zoekt publication passed the same curve using ordinary bind-mounted files with project state in a Docker volume. Every point published the requested count; the exact target returned one untruncated match, and semantic returned the exact total while retaining only bounded top-K results. Low-disk, corrupt artifact/database, incompatible schema/model, candidate health, and rollback failures are fail-closed in automated tests. The measured Linux portability limits and remaining target certification gaps are recorded in [compatibility](compatibility.md) and [stress evidence](stress.md).
