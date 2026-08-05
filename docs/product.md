@@ -58,10 +58,11 @@ The target bootstrap experience is a single command that:
 
 1. checks prerequisites;
 2. shows the required components and total download size;
-3. allows the entire operation to be canceled before downloading;
-4. installs host components;
-5. downloads compatible images, models, and language tooling;
-6. verifies functionality.
+3. allows the installation and large runtime-data locations to be selected;
+4. allows the entire operation to be canceled before downloading;
+5. installs host components;
+6. downloads compatible images, models, and language tooling;
+7. verifies functionality.
 
 This screen does not offer partial installation of the required component set.
 

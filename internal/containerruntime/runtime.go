@@ -40,6 +40,28 @@ const (
 // unhealthy managed machine.
 var ErrClientMissing = errors.New("the managed Podman client is not installed")
 
+// MachineExists reports whether the one LCTK-owned WSL machine already exists
+// at the currently selected runtime-data location. Setup uses this read-only
+// gate to prevent an implicit and destructive storage migration.
+func MachineExists(ctx context.Context) (bool, error) {
+	command, err := MachineCommand(ctx, "inspect", MachineName)
+	if err != nil {
+		if errors.Is(err, ErrClientMissing) {
+			return false, nil
+		}
+		return false, err
+	}
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	message := strings.ToLower(string(output) + " " + err.Error())
+	if strings.Contains(message, "does not exist") || strings.Contains(message, "no such") {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect managed Podman machine: %s: %w", strings.TrimSpace(string(output)), err)
+}
+
 // ExecutablePath resolves the private client without creating any directory.
 func ExecutablePath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv(ExecutableOverride)); override != "" {
@@ -74,7 +96,11 @@ func Command(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	}
 	selected := []string{"--connection", ConnectionName}
 	selected = append(selected, args...)
-	return exec.CommandContext(ctx, path, selected...), nil
+	command := exec.CommandContext(ctx, path, selected...)
+	if err := attachRuntimeDataHome(command); err != nil {
+		return nil, err
+	}
+	return command, nil
 }
 
 // MachineCommand builds one local machine-lifecycle command. Machine commands
@@ -92,7 +118,30 @@ func MachineCommand(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	}
 	selected := []string{"machine"}
 	selected = append(selected, args...)
-	return exec.CommandContext(ctx, path, selected...), nil
+	command := exec.CommandContext(ctx, path, selected...)
+	if err := attachRuntimeDataHome(command); err != nil {
+		return nil, err
+	}
+	return command, nil
+}
+
+// attachRuntimeDataHome gives every private Podman process the same explicit
+// WSL storage root selected in setup. The child environment is rebuilt without
+// a duplicate XDG_DATA_HOME so ambient shell state cannot win by ordering.
+func attachRuntimeDataHome(command *exec.Cmd) error {
+	dataHome, err := lctkhome.RuntimeDataDir()
+	if err != nil {
+		return err
+	}
+	environment := command.Environ()
+	filtered := environment[:0]
+	for _, entry := range environment {
+		if !strings.EqualFold(strings.SplitN(entry, "=", 2)[0], "XDG_DATA_HOME") {
+			filtered = append(filtered, entry)
+		}
+	}
+	command.Env = append(filtered, "XDG_DATA_HOME="+dataHome)
+	return nil
 }
 
 // Runner executes OCI commands through the private client.

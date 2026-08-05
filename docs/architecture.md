@@ -26,7 +26,7 @@ The current implementation includes the Windows one-click product path:
 - the syntax and symbol layer from Stage 4: one Tree-sitter engine in the project service for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX; live file outlines; bounded name-matched definition and reference lookup; per-language syntax verdicts; and parse concurrency governed by the existing resource mode.
 - persistent semantic intelligence from Stage 5: AST-aware chunks, transactional per-project SQLite state, hybrid lexical/vector ranking, and one shared pinned local embedding process with explicit model, generation, freshness, and failure evidence.
 - the Stage 6 graph, repository map, and explicit memory layer: derived name-match calls and imports committed with semantic generations, deterministic bounded graph tools and maps, and revision-checked reviewed knowledge with provenance and Git awareness.
-- Stage 7 installation and release hardening plus ADR-0023: a digest-verifying stable launcher, schema-2 signed manifests, plan-first browser setup, pinned Podman/WSL artifacts, WSL prerequisite and reboot continuation, sign-in/Start-menu registration, transactional update and rollback, and fail-closed Windows-only publication gates.
+- Stage 7 installation and release hardening plus ADR-0023 and ADR-0024: a digest-verifying stable launcher, schema-2 signed manifests, plan-first native Windows setup with user-selected storage, pinned Podman/WSL artifacts, WSL prerequisite and reboot continuation, sign-in/Start-menu registration, transactional update and rollback, and fail-closed Windows-only publication gates.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
 
@@ -203,6 +203,8 @@ The user selects one global machine mode:
 The first on-demand call may remain open until the stack is ready, subject to a separate startup timeout. The client must receive progress or status rather than an ambiguous `connection refused`.
 
 ## Installation and release activation
+
+The native Windows setup records the user-selected installation and runtime-data directories before applying its verified plan. The installation directory owns host executables and state. LCTK passes the runtime-data directory to every private Podman process as `XDG_DATA_HOME`, placing the managed WSL disk, OCI images, volumes, indexes, and project memory on the selected volume. An existing managed machine is never moved implicitly.
 
 The user-facing `lctk` executable is a stable launcher. Host cores live under `versions/<version>/lctk-core`; `installation.json` names the active and previous relative paths together with their exact sizes and SHA-256 digests. The launcher verifies the selected bytes before execution. A freshly extracted official package has no activation document, so its launcher accepts only the sibling core whose post-signing identity was embedded during the release build.
 

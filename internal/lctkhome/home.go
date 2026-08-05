@@ -18,6 +18,11 @@ import (
 // Tests set it so that they never touch real user state.
 const EnvOverride = "LCTK_HOME"
 
+// RuntimeDataEnvOverride names the environment variable that relocates the
+// Podman WSL data directory. Podman's supported XDG_DATA_HOME contract then
+// places the managed VM disk, images, volumes, and project indexes beneath it.
+const RuntimeDataEnvOverride = "LCTK_RUNTIME_DATA_HOME"
+
 // Dir returns the LCTK home directory without creating it.
 //
 // The override wins so that tests and portable installations stay isolated.
@@ -30,6 +35,11 @@ func Dir() (string, error) {
 			return "", fmt.Errorf("resolve %s: %w", EnvOverride, err)
 		}
 		return absolute, nil
+	}
+	if saved, err := loadSavedLocations(); err != nil {
+		return "", err
+	} else if saved.InstallDir != "" {
+		return saved.InstallDir, nil
 	}
 
 	switch runtime.GOOS {
@@ -60,6 +70,24 @@ func Dir() (string, error) {
 		return "", errors.New("resolve LCTK home: neither LocalAppData nor a user home directory is available")
 	}
 	return filepath.Join(home, "AppData", "Local", "lctk"), nil
+}
+
+// RuntimeDataDir returns the host directory whose Podman-owned descendants
+// contain the managed WSL disk, OCI images, volumes, and project indexes.
+func RuntimeDataDir() (string, error) {
+	if override := os.Getenv(RuntimeDataEnvOverride); override != "" {
+		absolute, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", RuntimeDataEnvOverride, err)
+		}
+		return absolute, nil
+	}
+	if saved, err := loadSavedLocations(); err != nil {
+		return "", err
+	} else if saved.RuntimeDataDir != "" {
+		return saved.RuntimeDataDir, nil
+	}
+	return defaultRuntimeDataDir()
 }
 
 // EnsureDir returns the LCTK home directory, creating it when absent.

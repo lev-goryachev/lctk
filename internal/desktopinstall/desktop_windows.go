@@ -5,14 +5,28 @@ package desktopinstall
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
+	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
 const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+
+var procCoCreateInstance = windows.NewLazySystemDLL("ole32.dll").NewProc("CoCreateInstance")
+
+var (
+	classShellLink = windows.GUID{Data1: 0x00021401, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+	iidShellLinkW  = windows.GUID{Data1: 0x000214f9, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+	iidPersistFile = windows.GUID{Data1: 0x0000010b, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+)
+
+type comObject struct {
+	VTable *[21]uintptr
+}
 
 func registerDesktop(launcher, uninstaller, version string) error {
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
@@ -26,7 +40,7 @@ func registerDesktop(launcher, uninstaller, version string) error {
 	if err := key.Close(); err != nil {
 		return fmt.Errorf("close sign-in startup registry: %w", err)
 	}
-	programs, err := windows.KnownFolderPath(windows.FOLDERID_StartMenuAllPrograms, windows.KF_FLAG_DEFAULT)
+	programs, err := startMenuPrograms()
 	if err != nil {
 		return fmt.Errorf("locate Start menu: %w", err)
 	}
@@ -35,9 +49,8 @@ func registerDesktop(launcher, uninstaller, version string) error {
 		return fmt.Errorf("create Start-menu group: %w", err)
 	}
 	shortcut := filepath.Join(dir, "LCTK.lnk")
-	script := `$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($args[1]); $shortcut.TargetPath = $args[0]; $shortcut.WorkingDirectory = Split-Path $args[0]; $shortcut.Description = 'Open LCTK'; $shortcut.Save()`
-	if output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, launcher, shortcut).CombinedOutput(); err != nil {
-		return fmt.Errorf("create Start-menu shortcut: %s: %w", string(output), err)
+	if err := createShortcut(launcher, shortcut); err != nil {
+		return fmt.Errorf("create Start-menu shortcut: %w", err)
 	}
 	uninstall, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\LCTK`, registry.SET_VALUE)
 	if err != nil {
@@ -66,7 +79,7 @@ func unregisterDesktop() error {
 		}
 		_ = key.Close()
 	}
-	programs, err := windows.KnownFolderPath(windows.FOLDERID_StartMenuAllPrograms, windows.KF_FLAG_DEFAULT)
+	programs, err := startMenuPrograms()
 	if err != nil {
 		return fmt.Errorf("locate Start menu: %w", err)
 	}
@@ -77,4 +90,90 @@ func unregisterDesktop() error {
 		return fmt.Errorf("remove uninstall registration: %w", err)
 	}
 	return nil
+}
+
+// startMenuPrograms resolves the current user's physical Programs directory.
+// FOLDERID_StartMenuAllPrograms is a virtual aggregate and can legitimately
+// return ERROR_FILE_NOT_FOUND, while FOLDERID_Programs is the writable folder
+// that owns per-user shortcuts on every supported Windows release.
+func startMenuPrograms() (string, error) {
+	return windows.KnownFolderPath(windows.FOLDERID_Programs, windows.KF_FLAG_DEFAULT)
+}
+
+// createShortcut uses the operating system's IShellLinkW implementation
+// directly. Shelling out to PowerShell would make spaces and non-ASCII user
+// profile paths part of a second command-language parser.
+func createShortcut(target, shortcut string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); err != nil {
+		return fmt.Errorf("initialize Windows shortcut COM apartment: %w", err)
+	}
+	defer windows.CoUninitialize()
+
+	var shellLink *comObject
+	hresult, _, _ := procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&classShellLink)), 0, windows.CLSCTX_INPROC_SERVER,
+		uintptr(unsafe.Pointer(&iidShellLinkW)), uintptr(unsafe.Pointer(&shellLink)),
+	)
+	if failedHRESULT(hresult) || shellLink == nil {
+		return hresultError("create IShellLinkW", hresult)
+	}
+	defer releaseCOM(shellLink)
+
+	targetText, err := windows.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	workingText, err := windows.UTF16PtrFromString(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	description, _ := windows.UTF16PtrFromString("Open LCTK")
+	settings := []struct {
+		name  string
+		index int
+		value *uint16
+	}{
+		{"set shortcut target", 20, targetText},
+		{"set shortcut working directory", 9, workingText},
+		{"set shortcut description", 7, description},
+	}
+	for _, setting := range settings {
+		hresult, _, _ = syscall.SyscallN(shellLink.VTable[setting.index], uintptr(unsafe.Pointer(shellLink)), uintptr(unsafe.Pointer(setting.value)))
+		if failedHRESULT(hresult) {
+			return hresultError(setting.name, hresult)
+		}
+	}
+
+	var persistFile *comObject
+	hresult, _, _ = syscall.SyscallN(
+		shellLink.VTable[0], uintptr(unsafe.Pointer(shellLink)), uintptr(unsafe.Pointer(&iidPersistFile)), uintptr(unsafe.Pointer(&persistFile)),
+	)
+	if failedHRESULT(hresult) || persistFile == nil {
+		return hresultError("query IPersistFile", hresult)
+	}
+	defer releaseCOM(persistFile)
+	shortcutText, err := windows.UTF16PtrFromString(shortcut)
+	if err != nil {
+		return err
+	}
+	// IPersistFile::Save is vtable slot 6; TRUE records this path as current.
+	hresult, _, _ = syscall.SyscallN(persistFile.VTable[6], uintptr(unsafe.Pointer(persistFile)), uintptr(unsafe.Pointer(shortcutText)), 1)
+	if failedHRESULT(hresult) {
+		return hresultError("save shortcut", hresult)
+	}
+	return nil
+}
+
+func releaseCOM(object *comObject) {
+	if object != nil {
+		syscall.SyscallN(object.VTable[2], uintptr(unsafe.Pointer(object)))
+	}
+}
+
+func failedHRESULT(value uintptr) bool { return int32(value) < 0 }
+
+func hresultError(operation string, value uintptr) error {
+	return fmt.Errorf("%s failed with HRESULT 0x%08x", operation, uint32(value))
 }

@@ -22,14 +22,16 @@ var ErrRebootRequired = errors.New("Windows must restart before LCTK setup can c
 
 // Plan is the complete read-only setup decision shown by setup.exe.
 type Plan struct {
-	Version       string              `json:"version"`
-	Host          windowssetup.Status `json:"host"`
-	Runtime       runtimeinstall.Plan `json:"runtime"`
-	Core          installation.Plan   `json:"core"`
-	Desktop       desktopinstall.Plan `json:"desktop"`
-	DownloadBytes int64               `json:"download_bytes"`
-	Ready         bool                `json:"ready"`
-	Writes        bool                `json:"writes"`
+	Version                   string              `json:"version"`
+	Host                      windowssetup.Status `json:"host"`
+	Runtime                   runtimeinstall.Plan `json:"runtime"`
+	Core                      installation.Plan   `json:"core"`
+	Desktop                   desktopinstall.Plan `json:"desktop"`
+	DownloadBytes             int64               `json:"download_bytes"`
+	RuntimeDataRequiredBytes  int64               `json:"runtime_data_required_bytes"`
+	RuntimeDataAvailableBytes uint64              `json:"runtime_data_available_bytes"`
+	Ready                     bool                `json:"ready"`
+	Writes                    bool                `json:"writes"`
 }
 
 // Progress is one durable user-facing setup phase.
