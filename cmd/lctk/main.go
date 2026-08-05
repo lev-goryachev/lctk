@@ -24,7 +24,9 @@ Usage:
   lctk version [--json]
   lctk daemon [--listen ADDRESS]
   lctk doctor [--json]
-  lctk bootstrap [--plan] [--yes] [--json]
+  lctk bootstrap [--manifest SOURCE] [--plan] [--yes] [--json]
+  lctk update [--manifest SOURCE] [--plan] [--yes] [--json]
+  lctk update rollback [--json]
   lctk watch-once [--timeout DURATION] DIRECTORY
   lctk project add [--profile minimal|full] [--json] PATH
   lctk project status [--json] [PROJECT]
@@ -64,6 +66,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runDoctor(ctx, args[1:], stdout)
 	case "bootstrap":
 		return runBootstrap(ctx, args[1:], stdout)
+	case "update":
+		return runUpdate(ctx, args[1:], stdout)
 	case "watch-once":
 		return runWatchOnce(ctx, args[1:], stdout)
 	case "project":

@@ -23,6 +23,9 @@ func (m *Manager) ImageAvailable(ctx context.Context) bool {
 // PullImage installs exactly the pinned multi-architecture manifest selected by
 // the host runtime. A mutable tag never crosses this boundary.
 func (m *Manager) PullImage(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, stderr, err := m.runner.Run(ctx, "pull", m.image); err != nil {
 		return fmt.Errorf("pull embedding inference image: %s", firstLine(stderr, err))
 	}
@@ -38,6 +41,9 @@ func (m *Manager) ModelAvailable() bool {
 // swaps it only after length, digest, fsync, and close all succeed. An existing
 // valid model is reused without network access.
 func (m *Manager) InstallModel(ctx context.Context, client *http.Client) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.ModelAvailable() {
 		return nil
 	}
@@ -51,6 +57,9 @@ func (m *Manager) InstallModel(ctx context.Context, client *http.Client) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.downloadURL, nil)
 	if err != nil {
 		return fmt.Errorf("create model download request: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	response, err := client.Do(request)
 	if err != nil {

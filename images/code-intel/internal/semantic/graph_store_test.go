@@ -2,6 +2,8 @@ package semantic
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,6 +113,44 @@ func TestSchemaOneMigratesWithoutDiscardingSemanticState(t *testing.T) {
 	graphStatus, err := reopened.GraphStatus()
 	if err != nil || !graphStatus.Ready || graphStatus.Generation != 1 || graphStatus.NodeCount == 0 {
 		t.Fatalf("graph after migration = %+v, err = %v", graphStatus, err)
+	}
+}
+
+func TestFailedSchemaOneActivationRestoresOriginalDatabase(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "semantic.db")
+	source := &sourceStub{files: map[string][]byte{"a.go": []byte("package a\nfunc A(){}\n")}}
+	embedder := &deterministicEmbedder{dimension: 16}
+	store, err := Open(Config{Path: database, Model: "model-a", Dimensions: 16}, source, outlineStub{}, embedder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE graph_calls; DROP TABLE graph_imports; DROP TABLE graph_nodes; DROP TABLE graph_files; PRAGMA user_version=1;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(Config{Path: database, Model: "model-b", Dimensions: 16}, source, outlineStub{}, embedder)
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != CodeModelMismatch {
+		t.Fatalf("Open incompatible migration error = %v, want MODEL_MISMATCH", err)
+	}
+	if _, err := os.Stat(database + ".failed-v2"); err != nil {
+		t.Fatalf("failed migrated database was not preserved: %v", err)
+	}
+
+	legacy, err := openMigrationDatabase(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	var version int
+	if err := legacy.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("restored database schema = %d, want 1", version)
 	}
 }
 

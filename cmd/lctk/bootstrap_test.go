@@ -3,24 +3,35 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/releasebundle"
 )
 
 type bootstrapRunner struct {
-	codeImage bool
+	codeImage   bool
+	tagID       string
+	referenceID string
 }
 
 func (r bootstrapRunner) Run(_ context.Context, args ...string) (string, string, error) {
 	if len(args) > 0 && args[0] == "version" {
 		return "29.0 linux\n", "", nil
 	}
-	if len(args) > 1 && args[0] == "image" && args[1] == "inspect" && r.codeImage {
+	if len(args) > 2 && args[0] == "image" && args[1] == "inspect" && r.codeImage {
+		if strings.Contains(args[2], "@sha256:") && r.referenceID != "" {
+			return r.referenceID + "\n", "", nil
+		}
+		if r.tagID != "" {
+			return r.tagID + "\n", "", nil
+		}
 		return "sha256:code\n", "", nil
 	}
 	return "", "missing", context.Canceled
@@ -86,14 +97,64 @@ func TestConfirmedBootstrapInstallsAndFunctionallyTestsMissingComponents(t *test
 	}
 }
 
+func TestOfficialBootstrapAlwaysVerifiesManifestAndRejectsAMutableForeignTag(t *testing.T) {
+	runner := bootstrapRunner{codeImage: true, tagID: "sha256:foreign", referenceID: "sha256:signed"}
+	stub := &bootstrapInferenceStub{image: true, model: true}
+	restoreBootstrapFactories(t, runner, stub)
+	oldVersion := buildinfo.Version
+	buildinfo.Version = "1.0.0"
+	t.Cleanup(func() { buildinfo.Version = oldVersion })
+
+	loaded := false
+	newBootstrapVerifier = func() (releasebundle.Verifier, error) { return releasebundle.Verifier{}, nil }
+	loadBootstrapManifest = func(context.Context, string, releasebundle.Verifier) (releasebundle.Manifest, error) {
+		loaded = true
+		return releasebundle.Manifest{
+			Version: "1.0.0",
+			CodeImage: releasebundle.Image{
+				Reference:       "ghcr.io/example/code@sha256:signed",
+				CompressedBytes: 123,
+			},
+			InferenceImage: releasebundle.Image{Reference: inference.Image},
+			EmbeddingModel: releasebundle.Model{SHA256: inference.ModelSHA256, Bytes: inference.ModelBytes},
+		}, nil
+	}
+
+	var output bytes.Buffer
+	if err := runBootstrap(t.Context(), []string{"--plan", "--json"}, &output); err != nil {
+		t.Fatalf("runBootstrap: %v", err)
+	}
+	if !loaded {
+		t.Fatal("official bootstrap skipped its signed release manifest")
+	}
+	var plan bootstrapPlan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, component := range plan.Components {
+		if component.Name == "code-intel" {
+			if component.Installed || component.DownloadBytes != 123 {
+				t.Fatalf("mutable foreign tag was trusted: %+v", component)
+			}
+			return
+		}
+	}
+	t.Fatal("bootstrap plan omitted code-intel")
+}
+
 func restoreBootstrapFactories(t *testing.T, runner projectstack.Runner, shared bootstrapInference) {
 	t.Helper()
+	t.Setenv("LCTK_HOME", t.TempDir())
 	oldStack := newStackManager
 	oldInference := newBootstrapInference
+	oldVerifier := newBootstrapVerifier
+	oldLoader := loadBootstrapManifest
 	newStackManager = func() *projectstack.Manager { return projectstack.NewManagerWithRunner(runner) }
 	newBootstrapInference = func() (bootstrapInference, error) { return shared, nil }
 	t.Cleanup(func() {
 		newStackManager = oldStack
 		newBootstrapInference = oldInference
+		newBootstrapVerifier = oldVerifier
+		loadBootstrapManifest = oldLoader
 	})
 }

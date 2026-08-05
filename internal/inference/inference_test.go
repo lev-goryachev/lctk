@@ -97,6 +97,22 @@ func TestVerifyModelRejectsAnUnpinnedFile(t *testing.T) {
 	}
 }
 
+func TestCancelledInstallStartsNoDownloadOrDockerOperation(t *testing.T) {
+	runner := &scriptedRunner{t: t}
+	manager := NewManagerForTest(runner, "image@sha256:test", filepath.Join(t.TempDir(), "missing.gguf"), "http://127.0.0.1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.PullImage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PullImage error = %v, want context cancellation", err)
+	}
+	if err := manager.InstallModel(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("InstallModel error = %v, want context cancellation", err)
+	}
+	if len(runner.seen) != 0 {
+		t.Fatalf("cancelled install executed Docker calls: %v", runner.seen)
+	}
+}
+
 func writeTestModel(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "model.gguf")

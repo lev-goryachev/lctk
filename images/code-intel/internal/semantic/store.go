@@ -97,6 +97,10 @@ func Open(config Config, source Source, outliner Outliner, embedder Embedder) (*
 	if err := os.MkdirAll(filepath.Dir(config.Path), 0o755); err != nil {
 		return nil, fail(CodeInternalError, "The semantic state directory could not be created.", false, err)
 	}
+	rollbackPath, err := prepareDatabaseMigration(config.Path)
+	if err != nil {
+		return nil, err
+	}
 	// The ncruces driver embeds SQLite's cross-platform WASM runtime. PRAGMAs live
 	// in the DSN so every connection receives the same durability and integrity
 	// policy.
@@ -104,6 +108,9 @@ func Open(config Config, source Source, outliner Outliner, embedder Embedder) (*
 		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
+		if restoreErr := restoreMigratedDatabase(config.Path, rollbackPath); restoreErr != nil {
+			return nil, restoreErr
+		}
 		return nil, fail(CodeInternalError, "The semantic database could not be opened.", false, err)
 	}
 	db.SetMaxOpenConns(1)
@@ -113,14 +120,29 @@ func Open(config Config, source Source, outliner Outliner, embedder Embedder) (*
 	}
 	store.graph, _ = outliner.(GraphExtractor)
 	if err := store.initialize(); err != nil {
-		db.Close()
+		closeErr := db.Close()
+		if restoreErr := restoreMigratedDatabase(config.Path, rollbackPath); restoreErr != nil {
+			return nil, restoreErr
+		}
+		if closeErr != nil {
+			return nil, fail(CodeCorrupt, "The failed migrated database could not be closed cleanly.", false, closeErr)
+		}
 		return nil, err
 	}
 	return store, nil
 }
 
 // Close flushes SQLite and releases the project database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	// A clean checkpoint makes the database file itself a complete rollback and
+	// migration unit. Startup migration runs only while the prior service is down.
+	_, checkpointErr := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	closeErr := s.db.Close()
+	if checkpointErr != nil {
+		return fail(CodeCorrupt, "The project intelligence database could not be checkpointed.", false, checkpointErr)
+	}
+	return closeErr
+}
 
 func (s *Store) initialize() error {
 	var version int
@@ -133,7 +155,20 @@ func (s *Store) initialize() error {
 	if version < 0 || (version != 0 && version != 1 && version != schemaVersion) {
 		return fail(CodeCorrupt, "The project intelligence database requires an unsupported migration.", false, nil)
 	}
-	schema := fmt.Sprintf(`
+	if _, err := s.db.Exec(schemaDDL()); err != nil {
+		return fail(CodeCorrupt, "The semantic schema could not be initialized.", false, err)
+	}
+	if err := s.requireCompatibility("model", s.config.Model); err != nil {
+		return err
+	}
+	if err := s.requireCompatibility("dimensions", strconv.Itoa(s.config.Dimensions)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func schemaDDL() string {
+	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS semantic_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -214,16 +249,6 @@ CREATE TABLE IF NOT EXISTS memory_records (
 CREATE INDEX IF NOT EXISTS memory_records_kind ON memory_records(kind);
 CREATE INDEX IF NOT EXISTS memory_records_updated ON memory_records(updated_at);
 PRAGMA user_version = %d;`, schemaVersion)
-	if _, err := s.db.Exec(schema); err != nil {
-		return fail(CodeCorrupt, "The semantic schema could not be initialized.", false, err)
-	}
-	if err := s.requireCompatibility("model", s.config.Model); err != nil {
-		return err
-	}
-	if err := s.requireCompatibility("dimensions", strconv.Itoa(s.config.Dimensions)); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *Store) requireCompatibility(key, wanted string) error {

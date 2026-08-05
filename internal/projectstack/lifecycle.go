@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
@@ -134,18 +135,31 @@ type Manager struct {
 	// a change takes effect on the next start without restarting the daemon, and
 	// so a test can drive a policy without writing a file.
 	settings func() (hostsettings.Settings, error)
+	// version selects the code-intel tag. Production defaults to the host build;
+	// update sets a candidate explicitly before its health gate.
+	version string
 }
 
 // NewManager returns a manager backed by the local Docker CLI.
 func NewManager() *Manager {
 	runner := dockerRunner{}
 	shared, err := inference.NewManager(runner)
-	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, settings: hostsettings.Load}
+	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, settings: hostsettings.Load, version: buildinfo.Version}
 }
 
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
 func NewManagerWithRunner(runner Runner) *Manager {
-	return &Manager{runner: runner, settings: hostsettings.Load}
+	return &Manager{runner: runner, settings: hostsettings.Load, version: buildinfo.Version}
+}
+
+// WithVersion selects the candidate code-intel tag for transactional update.
+func (m *Manager) WithVersion(version string) *Manager {
+	m.version = version
+	return m
+}
+
+func (m *Manager) names(projectID string) (Names, error) {
+	return DeriveNamesForVersion(projectID, m.version)
 }
 
 // WithInference injects the shared lifecycle for tests that verify ordering.
@@ -205,8 +219,92 @@ func (m *Manager) RuntimeAvailable(ctx context.Context) error {
 
 // ImageAvailable reports whether the reusable image exists locally.
 func (m *Manager) ImageAvailable(ctx context.Context, image string) error {
-	if _, stderr, err := m.runner.Run(ctx, "image", "inspect", image, "--format", "{{.Id}}"); err != nil {
-		return fmt.Errorf("%w: %s: %s", ErrImageMissing, image, firstLine(stderr, err))
+	_, found, err := m.inspectImageID(ctx, image)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", ErrImageMissing, image)
+	}
+	return nil
+}
+
+// ImageMatches proves that the Compose version tag resolves to the exact
+// signed digest selected by a release manifest. Existence of the tag alone is
+// insufficient because local tags are mutable Docker state.
+func (m *Manager) ImageMatches(ctx context.Context, tag, immutableReference string) (bool, error) {
+	tagID, tagFound, err := m.inspectImageID(ctx, tag)
+	if err != nil || !tagFound {
+		return false, err
+	}
+	referenceID, referenceFound, err := m.inspectImageID(ctx, immutableReference)
+	if err != nil || !referenceFound {
+		return false, err
+	}
+	return tagID == referenceID, nil
+}
+
+func (m *Manager) inspectImageID(ctx context.Context, image string) (string, bool, error) {
+	stdout, stderr, err := m.runner.Run(ctx, "image", "inspect", image, "--format", "{{.Id}}")
+	if err != nil {
+		if isNoSuchImage(stdout, stderr) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("inspect image %s: %s", image, firstLine(stderr, err))
+	}
+	id := strings.TrimSpace(stdout)
+	if id == "" {
+		return "", false, fmt.Errorf("inspect image %s returned no identity", image)
+	}
+	return id, true, nil
+}
+
+// InstallImage pulls an immutable OCI reference, then assigns the local unified
+// version tag consumed by Compose. The tag is derived state; the signed digest
+// remains the authority checked by the pull.
+func (m *Manager) InstallImage(ctx context.Context, immutableReference, version string) error {
+	if immutableReference == "" || version == "" {
+		return errors.New("code-intel image reference or version is empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, stderr, err := m.runner.Run(ctx, "pull", immutableReference); err != nil {
+		return fmt.Errorf("pull code-intel image: %s", firstLine(stderr, err))
+	}
+	tag := ImageRepository + ":" + version
+	if _, stderr, err := m.runner.Run(ctx, "tag", immutableReference, tag); err != nil {
+		return fmt.Errorf("tag code-intel image %s: %s", tag, firstLine(stderr, err))
+	}
+	return nil
+}
+
+// RestoreSchemaRollback swaps the fixed semantic database rollback bundle back
+// into place inside one project volume. It is invoked only after the candidate
+// container has been stopped; source remains unmounted and the helper has no
+// network access.
+func (m *Manager) RestoreSchemaRollback(ctx context.Context, project projectregistry.Project, version string) error {
+	names, err := DeriveNamesForVersion(project.ID, version)
+	if err != nil {
+		return err
+	}
+	script := `set -eu
+db=/state/semantic/semantic.db
+rollback=${db}.rollback-v1
+failed=${db}.failed-update
+test -f "$rollback" || exit 0
+# The displaced candidate is diagnostic, not an activation boundary. Replacing
+# its preceding copy keeps the latest failed state while allowing another
+# fully verified update/rollback cycle to restore the authoritative bundle.
+mv "$db" "$failed"
+if ! mv "$rollback" "$db"; then mv "$failed" "$db"; exit 5; fi`
+	args := []string{
+		"run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
+		"--mount", "type=volume,source=" + names.Volume + ",target=/state",
+		names.Image, "-c", script,
+	}
+	if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
+		return fmt.Errorf("restore schema rollback for %s: %s", project.ID, firstLine(stderr, err))
 	}
 	return nil
 }
@@ -229,7 +327,7 @@ func (m *Manager) BuildImage(ctx context.Context, image, contextDir string) erro
 // or in the product version takes effect, and so a hand-edited file cannot
 // persist.
 func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wait time.Duration) (Status, error) {
-	names, err := DeriveNames(project.ID)
+	names, err := m.names(project.ID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -248,7 +346,7 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 		}
 	}
 
-	composePath, err := Write(project, m.Budget(project))
+	composePath, err := WriteForVersion(project, m.Budget(project), m.version)
 	if err != nil {
 		return Status{}, err
 	}
@@ -265,7 +363,7 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 // This is the stop of docs/project-lifecycle.md, not purge: containers and the
 // network go away, persistent state does not.
 func (m *Manager) Stop(ctx context.Context, project projectregistry.Project) (Status, error) {
-	names, err := DeriveNames(project.ID)
+	names, err := m.names(project.ID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -303,7 +401,7 @@ func (m *Manager) Restart(ctx context.Context, project projectregistry.Project, 
 
 // Status reports the current runtime state without changing it.
 func (m *Manager) Status(ctx context.Context, project projectregistry.Project) (Status, error) {
-	names, err := DeriveNames(project.ID)
+	names, err := m.names(project.ID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -443,6 +541,12 @@ func isNoSuchContainer(stdout, stderr string) bool {
 	combined := strings.ToLower(stdout + " " + stderr)
 	return strings.Contains(combined, "no such object") ||
 		strings.Contains(combined, "no such container")
+}
+
+func isNoSuchImage(stdout, stderr string) bool {
+	combined := strings.ToLower(stdout + " " + stderr)
+	return strings.Contains(combined, "no such image") ||
+		strings.Contains(combined, "no such object")
 }
 
 func firstLine(stderr string, err error) string {

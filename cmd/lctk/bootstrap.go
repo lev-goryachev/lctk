@@ -7,12 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/diskspace"
 	"github.com/lev-goryachev/lctk/internal/inference"
+	"github.com/lev-goryachev/lctk/internal/installation"
+	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/releasebundle"
 )
 
 type bootstrapInference interface {
@@ -27,6 +33,13 @@ type bootstrapInference interface {
 var newBootstrapInference = func() (bootstrapInference, error) {
 	return inference.NewDockerManager()
 }
+
+var (
+	newBootstrapVerifier  = releasebundle.ProductionVerifier
+	loadBootstrapManifest = func(ctx context.Context, source string, verifier releasebundle.Verifier) (releasebundle.Manifest, error) {
+		return releasebundle.Load(ctx, source, http.DefaultClient, verifier)
+	}
+)
 
 type bootstrapComponent struct {
 	Name          string `json:"name"`
@@ -43,6 +56,7 @@ type bootstrapPlan struct {
 	Ready             bool                 `json:"ready"`
 	Components        []bootstrapComponent `json:"components"`
 	DiskBytes         int64                `json:"disk_bytes"`
+	AvailableBytes    uint64               `json:"available_bytes"`
 	Applied           bool                 `json:"applied"`
 	SelfTest          bool                 `json:"self_test"`
 	RecommendedAction string               `json:"recommended_action,omitempty"`
@@ -54,11 +68,12 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer) error {
 	planOnly := flags.Bool("plan", false, "inspect prerequisites and planned writes without changing state")
 	proceed := flags.Bool("yes", false, "apply the displayed bootstrap plan")
 	asJSON := flags.Bool("json", false, "write the plan and result as JSON")
+	manifestSource := flags.String("manifest", "", "signed release manifest HTTPS URL or local file")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: lctk bootstrap [--plan] [--yes] [--json]")
+		return errors.New("usage: lctk bootstrap [--manifest SOURCE] [--plan] [--yes] [--json]")
 	}
 
 	stack := newStackManager()
@@ -75,19 +90,81 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer) error {
 	codeInstalled := stack.ImageAvailable(probeCtx, codeImage) == nil
 	inferenceInstalled := shared.ImageAvailable(probeCtx)
 	modelInstalled := shared.ModelAvailable()
+	var release releasebundle.Manifest
+	manifestRequired := !strings.HasSuffix(buildinfo.Version, "-dev")
+	if *manifestSource != "" || releasebundle.DefaultManifestURL != "" || manifestRequired {
+		verifier, verifyErr := newBootstrapVerifier()
+		if verifyErr != nil {
+			return verifyErr
+		}
+		release, err = loadBootstrapManifest(ctx, *manifestSource, verifier)
+		if err != nil {
+			return err
+		}
+		if release.Version != buildinfo.Version || release.InferenceImage.Reference != inference.Image ||
+			release.EmbeddingModel.SHA256 != inference.ModelSHA256 || release.EmbeddingModel.Bytes != inference.ModelBytes {
+			return errors.New("signed bootstrap manifest does not match this host build")
+		}
+		codeInstalled, err = stack.ImageMatches(probeCtx, codeImage, release.CodeImage.Reference)
+		if err != nil {
+			return err
+		}
+	}
+	home, err := lctkhome.Dir()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate packaged host core: %w", err)
+	}
+	executableInfo, err := os.Stat(executable)
+	if err != nil {
+		return fmt.Errorf("inspect packaged host core: %w", err)
+	}
+	hostInstalled := false
+	if activation, loadErr := installation.Load(home); loadErr == nil {
+		hostInstalled = activation.ActiveVersion == buildinfo.Version
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return loadErr
+	}
+	available, err := diskspace.Available(home)
+	if err != nil {
+		return err
+	}
+	downloadBytes := missingBytes(modelInstalled, inference.ModelBytes) + missingBytes(hostInstalled, executableInfo.Size())
+	if release.Version != "" {
+		downloadBytes += missingBytes(codeInstalled, release.CodeImage.CompressedBytes)
+		downloadBytes += missingBytes(inferenceInstalled, release.InferenceImage.CompressedBytes)
+	}
+	requiredBytes := installation.RequiredBytes(downloadBytes)
+	var codeImageBytes, inferenceImageBytes int64
+	codeIdentity := codeImage
+	if release.Version != "" {
+		codeImageBytes = missingBytes(codeInstalled, release.CodeImage.CompressedBytes)
+		inferenceImageBytes = missingBytes(inferenceInstalled, release.InferenceImage.CompressedBytes)
+		codeIdentity = release.CodeImage.Reference
+	}
 	plan := bootstrapPlan{
 		Version: buildinfo.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Writes: false, Ready: codeInstalled && inferenceInstalled && modelInstalled,
+		Writes: false, Ready: codeInstalled && available >= uint64(requiredBytes),
 		Components: []bootstrapComponent{
-			{Name: "code-intel", Identity: codeImage, Installed: codeInstalled},
-			{Name: "embedding-inference", Identity: inference.Image, Installed: inferenceInstalled},
+			{Name: "host-core", Identity: buildinfo.Version, Installed: hostInstalled,
+				DownloadBytes: missingBytes(hostInstalled, executableInfo.Size())},
+			{Name: "code-intel", Identity: codeIdentity, Installed: codeInstalled, DownloadBytes: codeImageBytes},
+			{Name: "embedding-inference", Identity: inference.Image, Installed: inferenceInstalled, DownloadBytes: inferenceImageBytes},
 			{Name: "embedding-model", Identity: inference.ModelSHA256, Installed: modelInstalled,
 				DownloadBytes: missingBytes(modelInstalled, inference.ModelBytes)},
 		},
-		DiskBytes: missingBytes(modelInstalled, inference.ModelBytes),
+		DiskBytes: requiredBytes, AvailableBytes: available,
 	}
 	if !codeInstalled {
-		plan.RecommendedAction = "Install the matching code-intel image; in a source checkout run lctk image build."
+		if release.Version == "" {
+			plan.RecommendedAction = "Install the matching code-intel image; in a source checkout run lctk image build."
+		}
+	}
+	if available < uint64(requiredBytes) {
+		plan.RecommendedAction = fmt.Sprintf("Free disk space: bootstrap requires %d bytes and only %d are available.", requiredBytes, available)
 	}
 	if *planOnly || !*proceed {
 		if *asJSON {
@@ -99,7 +176,13 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return nil
 	}
-	if !codeInstalled {
+	if !codeInstalled && release.Version == "" {
+		if *asJSON {
+			_ = writeJSON(stdout, plan)
+		}
+		return errors.New(plan.RecommendedAction)
+	}
+	if available < uint64(requiredBytes) {
 		if *asJSON {
 			_ = writeJSON(stdout, plan)
 		}
@@ -107,6 +190,11 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	applyCtx, applyCancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer applyCancel()
+	if !codeInstalled {
+		if err := stack.InstallImage(applyCtx, release.CodeImage.Reference, buildinfo.Version); err != nil {
+			return err
+		}
+	}
 	if !inferenceInstalled {
 		if err := shared.PullImage(applyCtx); err != nil {
 			return err
@@ -121,6 +209,10 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	if err := shared.SelfTest(applyCtx); err != nil {
+		return err
+	}
+	installer := installation.NewManager(home)
+	if _, err := installer.Adopt(executable, buildinfo.Version); err != nil {
 		return err
 	}
 	plan.Writes = true
