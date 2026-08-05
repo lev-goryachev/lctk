@@ -114,6 +114,60 @@ func TestSchemaOneMigratesWithoutDiscardingSemanticState(t *testing.T) {
 	if err != nil || !graphStatus.Ready || graphStatus.Generation != 1 || graphStatus.NodeCount == 0 {
 		t.Fatalf("graph after migration = %+v, err = %v", graphStatus, err)
 	}
+	activeInfo, err := os.Stat(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validatedInfo, err := os.Stat(database + ".validated-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(activeInfo, validatedInfo) {
+		t.Fatal("successful migration validation marker does not name the active database inode")
+	}
+}
+
+func TestActivatedMigrationRequiresValidationAfterRestart(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "semantic.db")
+	source := &sourceStub{files: map[string][]byte{"a.go": []byte("package a\nfunc A(){}\n")}}
+	embedder := &deterministicEmbedder{dimension: 16}
+	store, err := Open(Config{Path: database, Model: "model-a", Dimensions: 16}, source, outlineStub{}, embedder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE graph_calls; DROP TABLE graph_imports; DROP TABLE graph_nodes; DROP TABLE graph_files; PRAGMA user_version=1;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rollback, err := prepareDatabaseMigration(database)
+	if err != nil || rollback == "" {
+		t.Fatalf("activate migration rollback=%q err=%v", rollback, err)
+	}
+	retriedRollback, err := prepareDatabaseMigration(database)
+	if err != nil || retriedRollback != rollback {
+		t.Fatalf("recover unvalidated activation rollback=%q err=%v", retriedRollback, err)
+	}
+	if err := os.Link(database, database+".validated-v2.pending"); err != nil {
+		t.Fatal(err)
+	}
+	committedRollback, err := prepareDatabaseMigration(database)
+	if err != nil || committedRollback != "" {
+		t.Fatalf("recover committed validation rollback=%q err=%v", committedRollback, err)
+	}
+	activeInfo, err := os.Stat(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validatedInfo, err := os.Stat(database + ".validated-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(activeInfo, validatedInfo) {
+		t.Fatal("recovered validation marker does not name the active database inode")
+	}
 }
 
 func TestFailedSchemaOneActivationRestoresOriginalDatabase(t *testing.T) {
@@ -131,26 +185,85 @@ func TestFailedSchemaOneActivationRestoresOriginalDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Open(Config{Path: database, Model: "model-b", Dimensions: 16}, source, outlineStub{}, embedder)
-	var typed *Error
-	if !errors.As(err, &typed) || typed.Code != CodeModelMismatch {
-		t.Fatalf("Open incompatible migration error = %v, want MODEL_MISMATCH", err)
-	}
-	if _, err := os.Stat(database + ".failed-v2"); err != nil {
-		t.Fatalf("failed migrated database was not preserved: %v", err)
-	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		_, err = Open(Config{Path: database, Model: "model-b", Dimensions: 16}, source, outlineStub{}, embedder)
+		var typed *Error
+		if !errors.As(err, &typed) || typed.Code != CodeModelMismatch {
+			t.Fatalf("Open incompatible migration attempt %d error = %v, want MODEL_MISMATCH", attempt, err)
+		}
+		if _, err := os.Stat(database + ".failed-v2"); err != nil {
+			t.Fatalf("failed migrated database was not preserved on attempt %d: %v", attempt, err)
+		}
 
-	legacy, err := openMigrationDatabase(database)
-	if err != nil {
-		t.Fatal(err)
+		legacy, err := openMigrationDatabase(database)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var version int
+		if err := legacy.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+			legacy.Close()
+			t.Fatal(err)
+		}
+		if err := legacy.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if version != 1 {
+			t.Fatalf("restored database schema after attempt %d = %d, want 1", attempt, version)
+		}
 	}
-	defer legacy.Close()
-	var version int
-	if err := legacy.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 1 {
-		t.Fatalf("restored database schema = %d, want 1", version)
+}
+
+func TestInterruptedRestoreCompletesAtomicReplacement(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		pending bool
+	}{
+		{name: "committed diagnostic"},
+		{name: "pending diagnostic replaces old evidence", pending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			database := filepath.Join(directory, "semantic.db")
+			rollback := database + ".rollback-v1"
+			failed := database + ".failed-v2"
+			if err := os.WriteFile(database, []byte("schema-v2"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rollback, []byte("schema-v1"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			diagnosticPath := failed
+			if test.pending {
+				if err := os.WriteFile(failed, []byte("old-evidence"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				diagnosticPath += ".pending"
+			}
+			if err := os.Link(database, diagnosticPath); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := recoverInterruptedRestore(database, rollback, failed); err != nil {
+				t.Fatalf("recover interrupted restore: %v", err)
+			}
+			active, err := os.ReadFile(database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			diagnostic, err := os.ReadFile(failed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(active) != "schema-v1" || string(diagnostic) != "schema-v2" {
+				t.Fatalf("active=%q diagnostic=%q", active, diagnostic)
+			}
+			if _, err := os.Stat(rollback); !os.IsNotExist(err) {
+				t.Fatalf("consumed rollback remains: %v", err)
+			}
+			if _, err := os.Stat(failed + ".pending"); !os.IsNotExist(err) {
+				t.Fatalf("pending diagnostic remains: %v", err)
+			}
+		})
 	}
 }
 

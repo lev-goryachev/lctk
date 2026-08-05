@@ -129,6 +129,18 @@ func Open(config Config, source Source, outliner Outliner, embedder Embedder) (*
 		}
 		return nil, err
 	}
+	if rollbackPath != "" {
+		if err := markMigrationValidated(config.Path); err != nil {
+			closeErr := db.Close()
+			if restoreErr := restoreMigratedDatabase(config.Path, rollbackPath); restoreErr != nil {
+				return nil, restoreErr
+			}
+			if closeErr != nil {
+				return nil, fail(CodeCorrupt, "The uncommitted migrated database could not be closed cleanly.", false, closeErr)
+			}
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
