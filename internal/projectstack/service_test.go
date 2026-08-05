@@ -58,7 +58,7 @@ func TestInspectReadsThePublishedServiceAddress(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			runner := &fakeRunner{responses: []fakeResponse{
-				{match: "version", stdout: "29.5.3 linux\n"},
+				{match: "info", stdout: `{"host":{"os":"linux"}}`},
 				{match: "inspect", stdout: testCase.stdout},
 			}}
 			manager := NewManagerWithRunner(runner)
@@ -80,42 +80,50 @@ func TestInspectReadsThePublishedServiceAddress(t *testing.T) {
 	}
 }
 
-// TestComposePublishesTheServiceOnLoopbackWithoutAFixedPort pins two properties
+// TestRuntimePlanPublishesTheServiceOnLoopbackWithoutAFixedPort pins two properties
 // that together let many projects run at once without coordination: the runtime
 // chooses the host port, and it is never exposed beyond loopback.
-func TestComposePublishesTheServiceOnLoopbackWithoutAFixedPort(t *testing.T) {
-	rendered, err := Render(testProject("alpha-abcd1234", absPath("work", "alpha")), testBudget)
+func TestRuntimePlanPublishesTheServiceOnLoopbackWithoutAFixedPort(t *testing.T) {
+	plan, err := BuildRuntimePlan(testProject("alpha-abcd1234", absPath("work", "alpha")), testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	document := string(rendered)
+	document := strings.Join(plan.Arguments(), " ")
 
 	want := "127.0.0.1::" + strconv.Itoa(ServicePort)
 	if !strings.Contains(document, want) {
-		t.Errorf("compose does not publish %q:\n%s", want, document)
+		t.Errorf("runtime plan does not publish %q:\n%s", want, document)
 	}
 	// A fixed host port would make two projects contend for one number, which is
 	// exactly what per-project isolation must not require the operator to manage.
 	fixed := "127.0.0.1:" + strconv.Itoa(ServicePort) + ":" + strconv.Itoa(ServicePort)
 	if strings.Contains(document, fixed) {
-		t.Errorf("compose pins a fixed host port:\n%s", document)
+		t.Errorf("runtime plan pins a fixed host port:\n%s", document)
 	}
 	if strings.Contains(document, "0.0.0.0") {
-		t.Errorf("compose exposes the service beyond loopback:\n%s", document)
+		t.Errorf("runtime plan exposes the service beyond loopback:\n%s", document)
 	}
 }
 
-func TestComposeRenderingStaysReproducibleWithThePublishedPort(t *testing.T) {
+func TestRuntimePlanRenderingStaysReproducibleWithThePublishedPort(t *testing.T) {
 	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
-	first, err := Render(project, testBudget)
+	first, err := BuildRuntimePlan(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Render(project, testBudget)
+	second, err := BuildRuntimePlan(project, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(first) != string(second) {
+	firstBody, err := RenderRuntimePlan(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBody, err := RenderRuntimePlan(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstBody) != string(secondBody) {
 		t.Error("rendering the same project twice produced different bytes")
 	}
 }

@@ -10,7 +10,7 @@ import (
 // compared without regard to case.
 //
 // Windows can enable per-directory case sensitivity for WSL interoperability,
-// but the Win32 path surface that LCTK and Docker Desktop use continues to treat
+// but the Win32 path surface that LCTK and its managed runtime use continues to treat
 // names case-insensitively, so folding is correct for this purpose.
 func caseInsensitive(string) bool { return true }
 

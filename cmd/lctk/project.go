@@ -14,7 +14,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/daemon"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
 	"github.com/lev-goryachev/lctk/internal/projectmanifest"
-	"github.com/lev-goryachev/lctk/internal/projectpath"
+	"github.com/lev-goryachev/lctk/internal/projectregistration"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
 )
@@ -56,7 +56,7 @@ type projectView struct {
 	ManifestLocal   bool   `json:"manifest_local_override,omitempty"`
 	// State is the runtime lifecycle state. It is reported as unknown with a
 	// detail rather than failing when the container runtime cannot be reached, so
-	// that registry information stays available while Docker Desktop is closed.
+	// that registry information stays available while the managed runtime is stopped.
 	State     string `json:"state"`
 	Health    string `json:"health,omitempty"`
 	Retryable bool   `json:"retryable"`
@@ -195,50 +195,11 @@ func runProjectAdd(args []string, stdout, stderr io.Writer) error {
 		return errors.New("usage: lctk project add [--profile minimal|full] [--json] PATH")
 	}
 
-	canonical, err := projectpath.Resolve(flags.Arg(0))
+	registered, err := projectregistration.Register(flags.Arg(0), projectregistry.Profile(*profile), time.Now())
 	if err != nil {
 		return err
 	}
-
-	// The manifest is read for its safe declarations only. It cannot influence
-	// the path that was just resolved.
-	manifest, err := projectmanifest.Load(canonical.Display)
-	if err != nil {
-		return err
-	}
-
-	// Precedence: an explicit flag, then the manifest's proposal, then the
-	// default. The manifest may propose a profile because that is a safe
-	// declaration, but the operator's flag always wins.
-	selected := projectregistry.Profile(*profile)
-	if selected == "" {
-		selected = projectregistry.Profile(manifest.Manifest.Profile)
-	}
-
-	registry, err := projectregistry.Load()
-	if err != nil {
-		return err
-	}
-	project, err := registry.Add(canonical, selected, manifest.TrackedPresent)
-	if err != nil {
-		return err
-	}
-	if err := registry.Save(); err != nil {
-		return err
-	}
-
-	// The automatic project grant of roadmap Slice 1.3: registering a folder is
-	// enough to reach it locally, with no credential to copy by hand.
-	grants, err := projectgrant.Load()
-	if err != nil {
-		return err
-	}
-	if _, err := grants.EnsureForProject(project.ID, projectgrant.DefaultClient, time.Now()); err != nil {
-		return err
-	}
-	if err := grants.Save(); err != nil {
-		return err
-	}
+	project, manifest := registered.Project, registered.Manifest
 
 	view := viewOf(project)
 	view.ManifestLocal = manifest.LocalPresent

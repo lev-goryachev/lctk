@@ -40,6 +40,14 @@ func TestManifestRejectsMutableImageAndDuplicateHost(t *testing.T) {
 	}
 }
 
+func TestWindowsManifestRequiresTheCompleteOneClickSet(t *testing.T) {
+	manifest := validManifest()
+	manifest.Artifacts = manifest.Artifacts[:len(manifest.Artifacts)-1]
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("Windows release without its machine image was accepted")
+	}
+}
+
 func TestVersionAtLeastUsesNumericComponents(t *testing.T) {
 	for _, test := range []struct {
 		current, minimum string
@@ -59,8 +67,14 @@ func TestVersionAtLeastUsesNumericComponents(t *testing.T) {
 
 func validManifest() Manifest {
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	return Manifest{SchemaVersion: 1, Version: "1.0.0", Commit: "0123456789abcdef", PublishedAt: "2026-08-04T00:00:00Z", MinimumHostVersion: "0.1.0", ProjectSchemaFrom: 1, ProjectSchemaTo: 2,
-		Artifacts:      []Artifact{{Name: "lctk-core", Kind: "host-core", OS: "windows", Arch: "amd64", URL: "https://example/core", Bytes: 42, SHA256: hash}},
+	return Manifest{SchemaVersion: SchemaVersion, Version: "1.0.0", Commit: "0123456789abcdef", PublishedAt: "2026-08-04T00:00:00Z", MinimumHostVersion: "0.1.0", ProjectSchemaFrom: 1, ProjectSchemaTo: 2,
+		Artifacts: []Artifact{
+			{Name: "lctk-core", Kind: "host-core", OS: "windows", Arch: "amd64", URL: "https://example/core", Bytes: 42, SHA256: hash},
+			{Name: "lctk.exe", Kind: "host-launcher", OS: "windows", Arch: "amd64", URL: "https://example/launcher", Bytes: 42, SHA256: hash},
+			{Name: "setup.exe", Kind: "installer", OS: "windows", Arch: "amd64", URL: "https://example/setup", Bytes: 42, SHA256: hash},
+			{Name: "podman.zip", Kind: "podman-client", OS: "windows", Arch: "amd64", URL: "https://example/client", Bytes: 42, SHA256: hash},
+			{Name: "machine.tar.zst", Kind: "podman-machine", OS: "linux", Arch: "amd64", URL: "https://example/machine", Bytes: 42, SHA256: hash},
+		},
 		CodeImage:      Image{Name: "code", Reference: "ghcr.io/example/code@sha256:" + hash, Digest: "sha256:" + hash, CompressedBytes: 42, Platforms: []string{"linux/amd64", "linux/arm64"}},
 		InferenceImage: Image{Name: "inference", Reference: "ghcr.io/example/inference@sha256:" + hash, Digest: "sha256:" + hash, CompressedBytes: 42, Platforms: []string{"linux/amd64", "linux/arm64"}},
 		EmbeddingModel: Model{Name: "model", URL: "https://example/model", Bytes: 42, SHA256: hash, License: "Apache-2.0"}, MigrationNotesURL: "https://example/migration", RollbackInstructions: "lctk update rollback"}

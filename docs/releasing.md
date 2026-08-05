@@ -2,27 +2,27 @@
 
 ## Development artifacts
 
-`Dry-run release artifacts` is a manually triggered, unsigned workflow. It builds the stable launcher and versioned host core for Windows amd64 and macOS arm64, packages the legal notices, extracts each archive, executes `lctk version --json`, generates checksums, and uploads workflow artifacts. Separate native Ubuntu amd64 and arm64 jobs run the production image test target, build the runtime image, verify its platform identity, start it with a read-only workspace, and require container health. Its `-dev` version and lack of platform signatures make it unsuitable for an official release.
+`Dry-run release artifacts` is a manually triggered workflow. It builds the stable launcher and versioned host core for Windows amd64 and macOS arm64, packages the legal notices, extracts each archive, executes `lctk version --json`, generates checksums, and uploads workflow artifacts. Separate native Ubuntu amd64 and arm64 jobs run the production image test target, build the runtime image, verify its platform identity, start it with a read-only workspace, and require container health. Its `-dev` version, missing embedded production trust root, and incomplete publication inventory make it unsuitable for an official release.
 
 [CI run 31012552276](https://github.com/lev-goryachev/lctk/actions/runs/31012552276) and [artifact run 31012555479](https://github.com/lev-goryachev/lctk/actions/runs/31012555479) executed the final matrices at commit `7679060` on 2026-08-05. Windows, macOS, and Linux tests passed; both extracted host archives reported the intended OS and architecture; both native image jobs reported `healthy`; and the amd64 image test included the race detector. The artifact run preserves separate machine-readable host identity and image inspect/health JSON evidence.
 
-The downloaded `0.1.0-stage7-final3` archives independently matched both entries in the published `SHA256SUMS`. The Windows archive was then extracted again on Windows 10 build 19045 with an isolated installation home. Its packaged launcher executed its digest-bound sibling core and reported commit `7679060`, OS `windows`, and architecture `amd64`. This is target-machine dry-run evidence, not Authenticode evidence; the development archive is intentionally unsigned.
+The downloaded `0.1.0-stage7-final3` archives independently matched both entries in the published `SHA256SUMS`. The Windows archive was then extracted again on Windows 10 build 19045 with an isolated installation home. Its packaged launcher executed its digest-bound sibling core and reported commit `7679060`, OS `windows`, and architecture `amd64`. This is target-machine dry-run evidence; it predates the complete tagged one-click publication inventory.
 
 ## Official release boundary
 
 An official release is created only by pushing a clean `vMAJOR.MINOR.PATCH` tag. The protected `Official release` workflow:
 
-1. derives the Ed25519 public trust root from the protected private key and embeds the public key, key id, and release-manifest URL in both host cores;
-2. runs the complete host test suite, then builds the stable launcher plus versioned host core for Windows amd64 and macOS arm64;
-3. Authenticode-signs and verifies both Windows executables;
-4. Developer ID-signs both macOS executables, builds a signed installer package, submits it to Apple notarization, and staples and validates its ticket;
-5. extracts each archive and executes the packaged launcher on its hosted target architecture;
-6. tests, builds, and executes each code-intel architecture on its matching native Ubuntu runner, combines the two immutable manifests, verifies the index platforms, and keyless-signs that index with Sigstore;
-7. generates SPDX JSON SBOMs, module attribution, checksums, migration and rollback notes, and a signed component manifest;
+1. derives the Ed25519 public trust root from the protected private key and embeds the public key, key id, and release-manifest URL in the Windows host core and setup;
+2. runs the complete host test suite, then builds the stable launcher, versioned host core, and browser-based setup executable for Windows amd64;
+3. binds the stable Windows launcher to the exact unsigned core size and SHA-256 digest;
+4. extracts the Windows archive and executes its packaged launcher on the hosted Windows architecture;
+5. tests, builds, and executes each code-intel architecture on its matching native Ubuntu runner, combines the two immutable manifests, verifies the index platforms, and keyless-signs that index with Sigstore;
+6. mirrors the pinned Podman `5.8.2` Windows client and WSL machine image only after exact upstream size and SHA-256 verification;
+7. generates SPDX JSON SBOMs, module attribution, checksums, migration and rollback notes, and a schema-2 signed component manifest binding the setup, launcher, core, runtime, images, and model;
 8. creates GitHub artifact attestations for the publication set; and
 9. publishes the GitHub Release only after every preceding job succeeds.
 
-Publication fails closed when any Ed25519, Authenticode, Developer ID, notarization, GHCR, signature, package-execution, SBOM, checksum, or attestation gate is unavailable or invalid.
+Publication fails closed when any Ed25519, GHCR, signature, package-execution, SBOM, checksum, or attestation gate is unavailable or invalid. Windows Authenticode is intentionally absent under ADR-0023 rather than skipped conditionally. macOS is not part of the official release inventory and has no release credential or job.
 
 The two image architectures are built on `ubuntu-24.04` and `ubuntu-24.04-arm`, not through QEMU. Local measurement found that emulated arm64 cgo compilation did not complete, while a glibc cross-build produced a static-linker NSS warning incompatible with an Alpine runtime claim. Both alternatives were rejected. Native jobs preserve the existing static musl/Alpine boundary and execute the actual architecture before its digest can enter the combined index.
 
@@ -30,18 +30,21 @@ The two image architectures are built on `ubuntu-24.04` and `ubuntu-24.04-arm`, 
 
 The release environment must provide:
 
-- `LCTK_RELEASE_ED25519_PRIVATE_KEY`: base64 Ed25519 seed or private key;
-- `LCTK_WINDOWS_PFX_BASE64` and `LCTK_WINDOWS_PFX_PASSWORD`;
-- `LCTK_APPLE_CERTIFICATE_BASE64`, `LCTK_APPLE_CERTIFICATE_PASSWORD`, `LCTK_APPLE_APPLICATION_IDENTITY`, and `LCTK_APPLE_INSTALLER_IDENTITY`;
-- `LCTK_APPLE_ID`, `LCTK_APPLE_TEAM_ID`, and `LCTK_APPLE_APP_PASSWORD`.
+- `LCTK_RELEASE_ED25519_PRIVATE_KEY`: base64 Ed25519 seed or private key.
 
-No signing credential, private key, temporary certificate, or keychain is committed or uploaded. Each protected value is scoped only to the shell step that consumes it, so checkout, SBOM, artifact, attestation, and publication actions never receive platform or manifest signing secrets. Temporary certificate and keychain files remain under the checked-out job workspace and are removed before artifact upload.
+No private key is committed or uploaded as an artifact. The protected Ed25519 value is scoped only to the steps that derive the public trust root and sign the release manifest, so checkout, build, SBOM, artifact, attestation, and publication actions never receive it.
+
+The initial official publication is Windows amd64 only. The ordinary CI and dry-run artifact workflows continue to build and test macOS arm64 for portability evidence, but no macOS file enters a GitHub Release or the signed component manifest.
 
 ## Installation and update contract
 
 An extracted package starts through the stable `lctk` launcher. Before initial activation it may execute only its sibling packaged `lctk-core`; a successful `lctk bootstrap --yes` copies that exact core into the versioned installation store and writes the first activation document.
 
-Official bootstrap and update resolve the signed `release-manifest.json`, validate the embedded trust root, immutable image digests, artifact sizes and SHA-256 digests, model identity, host minimum, and project-schema range. Both commands are read-only unless `--yes` is present:
+Official setup, bootstrap, and update resolve the signed `release-manifest.json`, validate the embedded trust root, immutable image digests, artifact sizes and SHA-256 digests, model identity, host minimum, and project-schema range. Setup additionally requires the complete Windows launcher, installer, Podman client, and WSL machine set.
+
+The Windows setup, launcher, and core are intentionally not Authenticode-signed. Windows can show an unknown-publisher or SmartScreen warning, and managed-device policy can refuse execution. The GitHub Release page must state this explicitly; release integrity is established by the tagged workflow, GitHub attestations, `SHA256SUMS`, launcher-to-core binding, and the Ed25519-signed manifest rather than a Windows publisher certificate.
+
+CLI bootstrap and update remain read-only unless `--yes` is present:
 
 ```text
 lctk bootstrap --plan

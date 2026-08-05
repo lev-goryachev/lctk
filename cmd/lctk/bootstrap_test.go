@@ -22,8 +22,8 @@ type bootstrapRunner struct {
 }
 
 func (r bootstrapRunner) Run(_ context.Context, args ...string) (string, string, error) {
-	if len(args) > 0 && args[0] == "version" {
-		return "29.0 linux\n", "", nil
+	if len(args) > 0 && args[0] == "info" {
+		return `{"host":{"os":"linux"}}`, "", nil
 	}
 	if len(args) > 2 && args[0] == "image" && args[1] == "inspect" && r.codeImage {
 		if strings.Contains(args[2], "@sha256:") && r.referenceID != "" {

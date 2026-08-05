@@ -70,159 +70,59 @@ jobs:
           $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           $trust = "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$env:VERSION -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$env:GITHUB_SHA -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$date -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=$env:KEY_ID -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$env:PUBLIC_KEY -X github.com/lev-goryachev/lctk/internal/releasebundle.DefaultManifestURL=$env:MANIFEST_URL"
           go build -trimpath -ldflags $trust -o dist/package/lctk-core.exe ./cmd/lctk
+          go build -trimpath -ldflags "$trust -H=windowsgui" -o "dist/lctk-setup-$env:VERSION-windows-amd64.exe" ./cmd/lctk-setup
           Copy-Item LICENSE,NOTICE,README.md,THIRD_PARTY_NOTICES.md dist/package/
-      - name: Authenticode sign core, bind launcher identity, and verify both
-        env:
-          LCTK_WINDOWS_PFX_BASE64: ${{ secrets.LCTK_WINDOWS_PFX_BASE64 }}
-          LCTK_WINDOWS_PFX_PASSWORD: ${{ secrets.LCTK_WINDOWS_PFX_PASSWORD }}
+      - name: Bind launcher to the immutable core identity
         shell: pwsh
         run: |
-          if (-not $env:LCTK_WINDOWS_PFX_BASE64 -or -not $env:LCTK_WINDOWS_PFX_PASSWORD) { throw 'Protected Authenticode credentials are required.' }
-          New-Item -ItemType Directory -Force .artifacts | Out-Null
-          $path = Join-Path $PWD '.artifacts/authenticode.pfx'
-          try {
-            [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:LCTK_WINDOWS_PFX_BASE64))
-            $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($path, $env:LCTK_WINDOWS_PFX_PASSWORD, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
-            $core = 'dist/package/lctk-core.exe'
-            $signed = Set-AuthenticodeSignature -FilePath $core -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
-            if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $core: $($signed.StatusMessage)" }
-            $hash = (Get-FileHash -Algorithm SHA256 $core).Hash.ToLowerInvariant()
-            $bytes = (Get-Item $core).Length
-            go build -trimpath -ldflags "-s -w -X main.PackagedCoreSHA256=$hash -X main.PackagedCoreBytes=$bytes" -o dist/package/lctk.exe ./cmd/lctk-launcher
-            $launcher = 'dist/package/lctk.exe'
-            $signed = Set-AuthenticodeSignature -FilePath $launcher -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
-            if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $launcher: $($signed.StatusMessage)" }
-            foreach ($file in @($launcher, $core)) {
-              if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "Authenticode verification failed for $file" }
-            }
-          } finally {
-            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+          $core = 'dist/package/lctk-core.exe'
+          $hash = (Get-FileHash -Algorithm SHA256 $core).Hash.ToLowerInvariant()
+          $bytes = (Get-Item $core).Length
+          go build -trimpath -ldflags "-s -w -X main.PackagedCoreSHA256=$hash -X main.PackagedCoreBytes=$bytes" -o dist/package/lctk.exe ./cmd/lctk-launcher
+      - name: Verify the explicit unsigned Windows policy
+        shell: pwsh
+        run: |
+          foreach ($file in @('dist/package/lctk-core.exe', 'dist/package/lctk.exe', "dist/lctk-setup-$env:VERSION-windows-amd64.exe")) {
+            $status = (Get-AuthenticodeSignature $file).Status.ToString()
+            if ($status -ne 'NotSigned') { throw "Unsigned Windows release policy violated for $file: $status" }
           }
       - name: Package, extract, and execute the real client entry point
         shell: pwsh
         run: |
           Copy-Item dist/package/lctk-core.exe dist/lctk-core-windows-amd64.exe
+          Copy-Item dist/package/lctk.exe dist/lctk-launcher-windows-amd64.exe
           Compress-Archive -Path dist/package/* -DestinationPath "dist/lctk-$env:VERSION-windows-amd64.zip"
           Expand-Archive "dist/lctk-$env:VERSION-windows-amd64.zip" -DestinationPath dist/extracted
           $info = & dist/extracted/lctk.exe version --json | ConvertFrom-Json
           if ($info.version -ne $env:VERSION -or $info.os -ne 'windows' -or $info.arch -ne 'amd64') { throw 'Extracted Windows package identity is invalid.' }
+      - name: Mirror and verify the pinned Podman runtime
+        shell: pwsh
+        run: |
+          $client = "dist/lctk-podman-client-5.8.2-windows-amd64.zip"
+          $machine = "dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/containers/podman/releases/download/v5.8.2/podman-remote-release-windows_amd64.zip" -OutFile $client
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/containers/podman-machine-os/releases/download/v5.8.2/podman-machine.x86_64.wsl.tar.zst" -OutFile $machine
+          if ((Get-Item $client).Length -ne 30780191 -or (Get-FileHash -Algorithm SHA256 $client).Hash.ToLowerInvariant() -ne '1b60aae4bd4879c3932c283d2070bb87116ec1f0ab3a4a98eff7e65f318f9e4e') { throw 'Pinned Podman client identity differs.' }
+          if ((Get-Item $machine).Length -ne 257374129 -or (Get-FileHash -Algorithm SHA256 $machine).Hash.ToLowerInvariant() -ne 'e2b6cbcadd8b41b708fecb58a246a20d737dee0ef26872a3f75b575f77eba968') { throw 'Pinned Podman machine identity differs.' }
       - name: Generate Windows SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: ./dist/package
+          path: ./dist
           format: spdx-json
           output-file: ./dist/lctk-windows-amd64.spdx.json
           upload-artifact: false
-      - name: Upload signed Windows artifacts
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-windows
           path: |
             dist/lctk-core-windows-amd64.exe
+            dist/lctk-launcher-windows-amd64.exe
+            dist/lctk-setup-${{ needs.validate.outputs.version }}-windows-amd64.exe
             dist/lctk-${{ needs.validate.outputs.version }}-windows-amd64.zip
+            dist/lctk-podman-client-5.8.2-windows-amd64.zip
+            dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst
             dist/lctk-windows-amd64.spdx.json
-          if-no-files-found: error
-
-  macos:
-    needs: validate
-    runs-on: macos-15
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-      PUBLIC_KEY: ${{ needs.validate.outputs.public_key }}
-      MANIFEST_URL: ${{ needs.validate.outputs.manifest_url }}
-      KEY_ID: lctk-release-v1
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: "1.25.x"
-          cache: true
-      - name: Verify the host before packaging
-        shell: bash
-        run: |
-          set -euo pipefail
-          unformatted="$(gofmt -l ./cmd ./internal)"
-          test -z "$unformatted"
-          go vet ./...
-          go test ./...
-      - name: Build and sign host core, then bind and sign launcher
-        env:
-          LCTK_APPLE_CERTIFICATE_BASE64: ${{ secrets.LCTK_APPLE_CERTIFICATE_BASE64 }}
-          LCTK_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.LCTK_APPLE_CERTIFICATE_PASSWORD }}
-          LCTK_APPLE_APPLICATION_IDENTITY: ${{ secrets.LCTK_APPLE_APPLICATION_IDENTITY }}
-          LCTK_APPLE_INSTALLER_IDENTITY: ${{ secrets.LCTK_APPLE_INSTALLER_IDENTITY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in LCTK_APPLE_CERTIFICATE_BASE64 LCTK_APPLE_CERTIFICATE_PASSWORD LCTK_APPLE_APPLICATION_IDENTITY LCTK_APPLE_INSTALLER_IDENTITY; do
-            test -n "${!name}"
-          done
-          mkdir -p dist/package .artifacts
-          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          trust="-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$VERSION -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$GITHUB_SHA -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$date -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=$KEY_ID -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$PUBLIC_KEY -X github.com/lev-goryachev/lctk/internal/releasebundle.DefaultManifestURL=$MANIFEST_URL"
-          go build -trimpath -ldflags "$trust" -o dist/package/lctk-core ./cmd/lctk
-          echo "$LCTK_APPLE_CERTIFICATE_BASE64" | base64 --decode > .artifacts/apple.p12
-          security create-keychain -p "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
-          security set-keychain-settings -lut 21600 .artifacts/release.keychain-db
-          security unlock-keychain -p "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
-          security import .artifacts/apple.p12 -k .artifacts/release.keychain-db -P "$LCTK_APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
-          security list-keychains -d user -s .artifacts/release.keychain-db
-          codesign --force --options runtime --timestamp --sign "$LCTK_APPLE_APPLICATION_IDENTITY" dist/package/lctk-core
-          core_sha="$(shasum -a 256 dist/package/lctk-core | cut -d' ' -f1)"
-          core_bytes="$(stat -f%z dist/package/lctk-core)"
-          go build -trimpath -ldflags "-s -w -X main.PackagedCoreSHA256=$core_sha -X main.PackagedCoreBytes=$core_bytes" -o dist/package/lctk ./cmd/lctk-launcher
-          codesign --force --options runtime --timestamp --sign "$LCTK_APPLE_APPLICATION_IDENTITY" dist/package/lctk
-          codesign --verify --strict --verbose=2 dist/package/lctk dist/package/lctk-core
-          cp LICENSE NOTICE README.md THIRD_PARTY_NOTICES.md dist/package/
-          mkdir -p dist/pkgroot/usr/local/bin
-          cp dist/package/lctk dist/package/lctk-core dist/pkgroot/usr/local/bin/
-          pkgbuild --root dist/pkgroot --identifier tech.lctk.cli --version "$VERSION" --install-location / "dist/lctk-$VERSION-darwin-arm64.pkg"
-          productsign --sign "$LCTK_APPLE_INSTALLER_IDENTITY" "dist/lctk-$VERSION-darwin-arm64.pkg" "dist/lctk-$VERSION-darwin-arm64-signed.pkg"
-          mv "dist/lctk-$VERSION-darwin-arm64-signed.pkg" "dist/lctk-$VERSION-darwin-arm64.pkg"
-          rm -f .artifacts/apple.p12
-          security delete-keychain .artifacts/release.keychain-db
-      - name: Notarize, staple, package, extract, and execute
-        env:
-          LCTK_APPLE_ID: ${{ secrets.LCTK_APPLE_ID }}
-          LCTK_APPLE_TEAM_ID: ${{ secrets.LCTK_APPLE_TEAM_ID }}
-          LCTK_APPLE_APP_PASSWORD: ${{ secrets.LCTK_APPLE_APP_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in LCTK_APPLE_ID LCTK_APPLE_TEAM_ID LCTK_APPLE_APP_PASSWORD; do
-            test -n "${!name}"
-          done
-          xcrun notarytool submit "dist/lctk-$VERSION-darwin-arm64.pkg" --apple-id "$LCTK_APPLE_ID" --team-id "$LCTK_APPLE_TEAM_ID" --password "$LCTK_APPLE_APP_PASSWORD" --wait
-          xcrun stapler staple "dist/lctk-$VERSION-darwin-arm64.pkg"
-          xcrun stapler validate "dist/lctk-$VERSION-darwin-arm64.pkg"
-          cp dist/package/lctk-core dist/lctk-core-darwin-arm64
-          cp "dist/lctk-$VERSION-darwin-arm64.pkg" dist/package/
-          tar -C dist/package -czf "dist/lctk-$VERSION-darwin-arm64.tar.gz" .
-          mkdir dist/extracted
-          tar -C dist/extracted -xzf "dist/lctk-$VERSION-darwin-arm64.tar.gz"
-          dist/extracted/lctk version --json | tee dist/version.json
-          test "$(jq -r .version dist/version.json)" = "$VERSION"
-          test "$(jq -r .os dist/version.json)" = darwin
-          test "$(jq -r .arch dist/version.json)" = arm64
-      - name: Generate macOS SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          path: ./dist/package
-          format: spdx-json
-          output-file: ./dist/lctk-darwin-arm64.spdx.json
-          upload-artifact: false
-      - name: Upload signed and notarized macOS artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-macos
-          path: |
-            dist/lctk-core-darwin-arm64
-            dist/lctk-${{ needs.validate.outputs.version }}-darwin-arm64.tar.gz
-            dist/lctk-${{ needs.validate.outputs.version }}-darwin-arm64.pkg
-            dist/lctk-darwin-arm64.spdx.json
           if-no-files-found: error
 
   image-architecture:
@@ -420,7 +320,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [validate, windows, macos, image]
+    needs: [validate, windows, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -455,7 +355,9 @@ jobs:
           {
             echo "# LCTK $VERSION"
             echo
-            echo "Signed Windows amd64 and notarized macOS arm64 packages, a keyless-signed multi-architecture code image, SPDX SBOMs, checksums, provenance attestations, and a signed component manifest are attached."
+            echo "The unsigned Windows amd64 one-click setup, a keyless-signed multi-architecture code image, SPDX SBOMs, checksums, provenance attestations, and a signed component manifest are attached. macOS is not part of this release."
+            echo
+            echo "Windows can show an unknown-publisher or SmartScreen warning for the unsigned setup. Select More info and Run anyway only after confirming that the file came from this GitHub Release."
             echo
             sed -n '1,120p' CHANGELOG.md
           } > dist/RELEASE_NOTES.md
@@ -477,12 +379,12 @@ jobs:
             --base-url "$base" --code-image "$CODE_IMAGE" --code-image-bytes "$CODE_IMAGE_BYTES" \
             --inference-image-bytes "$INFERENCE_IMAGE_BYTES" --key-id lctk-release-v1 \
             --artifact "lctk-core-windows-amd64.exe,host-core,windows,amd64,dist/lctk-core-windows-amd64.exe" \
-            --artifact "lctk-core-darwin-arm64,host-core,darwin,arm64,dist/lctk-core-darwin-arm64" \
+            --artifact "lctk-launcher-windows-amd64.exe,host-launcher,windows,amd64,dist/lctk-launcher-windows-amd64.exe" \
+            --artifact "lctk-setup-$VERSION-windows-amd64.exe,installer,windows,amd64,dist/lctk-setup-$VERSION-windows-amd64.exe" \
+            --artifact "lctk-podman-client-5.8.2-windows-amd64.zip,podman-client,windows,amd64,dist/lctk-podman-client-5.8.2-windows-amd64.zip" \
+            --artifact "lctk-podman-machine-5.8.2-linux-amd64.tar.zst,podman-machine,linux,amd64,dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst" \
             --artifact "lctk-$VERSION-windows-amd64.zip,archive,windows,amd64,dist/lctk-$VERSION-windows-amd64.zip" \
-            --artifact "lctk-$VERSION-darwin-arm64.tar.gz,archive,darwin,arm64,dist/lctk-$VERSION-darwin-arm64.tar.gz" \
-            --artifact "lctk-$VERSION-darwin-arm64.pkg,installer,darwin,arm64,dist/lctk-$VERSION-darwin-arm64.pkg" \
             --artifact "lctk-windows-amd64.spdx.json,sbom-host-windows,windows,amd64,dist/lctk-windows-amd64.spdx.json" \
-            --artifact "lctk-darwin-arm64.spdx.json,sbom-host-darwin,darwin,arm64,dist/lctk-darwin-arm64.spdx.json" \
             --artifact "lctk-code-intel.spdx.json,sbom-code-image,linux,multi,dist/lctk-code-intel.spdx.json" \
             --artifact "dependency-inventory.json,dependency-inventory,,,dist/dependency-inventory.json" \
             --artifact "SHA256SUMS,checksums,,,dist/SHA256SUMS" \

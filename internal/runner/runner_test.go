@@ -3,15 +3,16 @@ package runner
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fakeDocker records the invocations, so the tests assert on the command line
+// fakeRuntime records the invocations, so the tests assert on the command line
 // that would actually reach the runtime. Every guardrail in docs/security.md is
 // a flag, and a flag that is not there is a guardrail that is not there.
-type fakeDocker struct {
+type fakeRuntime struct {
 	calls    [][]string
 	stdout   string
 	stderr   string
@@ -22,7 +23,7 @@ type fakeDocker struct {
 	block chan struct{}
 }
 
-func (f *fakeDocker) Run(ctx context.Context, _ string, args ...string) (string, string, int, error) {
+func (f *fakeRuntime) Run(ctx context.Context, _ string, args ...string) (string, string, int, error) {
 	f.calls = append(f.calls, args)
 	if len(args) > 0 && args[0] == "rm" {
 		return "", "", 0, nil
@@ -37,14 +38,14 @@ func (f *fakeDocker) Run(ctx context.Context, _ string, args ...string) (string,
 	return f.stdout, f.stderr, f.exitCode, f.err
 }
 
-func (f *fakeDocker) runArgs(t *testing.T) []string {
+func (f *fakeRuntime) runArgs(t *testing.T) []string {
 	t.Helper()
 	for _, call := range f.calls {
 		if len(call) > 0 && call[0] == "run" {
 			return call
 		}
 	}
-	t.Fatalf("docker run was never invoked: %v", f.calls)
+	t.Fatalf("Podman run was never invoked: %v", f.calls)
 	return nil
 }
 
@@ -66,19 +67,26 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
-func newRunner(docker *fakeDocker) *Runner {
+func newRunner(runtime *fakeRuntime) *Runner {
 	at := time.Unix(1700000000, 0).UTC()
 	return &Runner{
-		Docker: docker,
-		Now:    func() time.Time { return at },
-		Name:   func(projectID string, _ time.Time) string { return "lctk-" + projectID + "-run-test" },
+		Runtime: runtime,
+		Now:     func() time.Time { return at },
+		Name:    func(projectID string, _ time.Time) string { return "lctk-" + projectID + "-run-test" },
 	}
 }
 
 func request() Request {
+	// The runner accepts the authoritative native host path, so the fixture must
+	// use the syntax of the host executing the test before HostPath translates it
+	// into the path visible to LCTK's managed runtime.
+	workspace := "/work/alpha"
+	if goruntime.GOOS == "windows" {
+		workspace = `D:\work\alpha`
+	}
 	return Request{
 		ProjectID: "alpha-aaaaaaaa",
-		Workspace: `D:\work\alpha`,
+		Workspace: workspace,
 		Image:     "golang:1.25",
 		Command:   "go test ./...",
 	}
@@ -87,13 +95,19 @@ func request() Request {
 // Each of these is a line in docs/security.md. Asserting them together is
 // deliberate: they are one guarantee, and any one missing undoes it.
 func TestEveryGuardrailReachesTheRuntime(t *testing.T) {
-	docker := &fakeDocker{}
-	if _, err := newRunner(docker).Run(context.Background(), request()); err != nil {
+	runtime := &fakeRuntime{}
+	if _, err := newRunner(runtime).Run(context.Background(), request()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	args := docker.runArgs(t)
+	args := runtime.runArgs(t)
 
-	if got, _ := flagValue(args, "--volume"); got != `D:\work\alpha:/workspace` {
+	// Windows projects cross the WSL automount boundary; Unix projects already
+	// use the native absolute path exposed to the managed runtime.
+	wantVolume := `/work/alpha:/workspace`
+	if goruntime.GOOS == "windows" {
+		wantVolume = `/mnt/d/work/alpha:/workspace`
+	}
+	if got, _ := flagValue(args, "--volume"); got != wantVolume {
 		t.Errorf("--volume = %q, want the one project root", got)
 	}
 	if got, _ := flagValue(args, "--workdir"); got != "/workspace" {
@@ -120,10 +134,10 @@ func TestEveryGuardrailReachesTheRuntime(t *testing.T) {
 		t.Errorf("the container gets %d mounts, want exactly the project root", mounts)
 	}
 
-	// No Docker socket, ever.
+	// No container-runtime socket, ever.
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "/var/run/docker") {
-		t.Errorf("the Docker socket reached the container: %s", joined)
+		t.Errorf("the container-runtime socket reached the container: %s", joined)
 	}
 	if hasFlag(args, "--privileged") || hasFlag(args, "--cap-add") {
 		t.Errorf("the container was given extra capabilities: %s", joined)
@@ -131,13 +145,13 @@ func TestEveryGuardrailReachesTheRuntime(t *testing.T) {
 }
 
 func TestTheProjectResourceBudgetApplies(t *testing.T) {
-	docker := &fakeDocker{}
+	runtime := &fakeRuntime{}
 	req := request()
 	req.Limits = Limits{CPUs: 1, MemoryMB: 512, PIDs: 64}
-	if _, err := newRunner(docker).Run(context.Background(), req); err != nil {
+	if _, err := newRunner(runtime).Run(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	args := docker.runArgs(t)
+	args := runtime.runArgs(t)
 
 	for flag, want := range map[string]string{"--cpus": "1", "--memory": "512m", "--pids-limit": "64"} {
 		if got, _ := flagValue(args, flag); got != want {
@@ -149,28 +163,28 @@ func TestTheProjectResourceBudgetApplies(t *testing.T) {
 // "full" is the project's own network rather than the default bridge, so a
 // command with egress still cannot reach another project's services.
 func TestFullNetworkUsesTheProjectsOwnNetwork(t *testing.T) {
-	docker := &fakeDocker{}
+	runtime := &fakeRuntime{}
 	req := request()
 	req.Network = "full"
 	req.NetworkName = "lctk-alpha-aaaaaaaa-net"
-	if _, err := newRunner(docker).Run(context.Background(), req); err != nil {
+	if _, err := newRunner(runtime).Run(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := flagValue(docker.runArgs(t), "--network"); got != "lctk-alpha-aaaaaaaa-net" {
+	if got, _ := flagValue(runtime.runArgs(t), "--network"); got != "lctk-alpha-aaaaaaaa-net" {
 		t.Fatalf("--network = %q, want the project's own network", got)
 	}
 }
 
 // A policy value nobody recognises must not become "no restriction".
 func TestAnUnrecognisedNetworkPolicyFallsBackToNone(t *testing.T) {
-	docker := &fakeDocker{}
+	runtime := &fakeRuntime{}
 	req := request()
 	req.Network = "host"
 	req.NetworkName = "lctk-alpha-net"
-	if _, err := newRunner(docker).Run(context.Background(), req); err != nil {
+	if _, err := newRunner(runtime).Run(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := flagValue(docker.runArgs(t), "--network"); got != "none" {
+	if got, _ := flagValue(runtime.runArgs(t), "--network"); got != "none" {
 		t.Fatalf("--network = %q, want none for an unrecognised policy", got)
 	}
 }
@@ -178,8 +192,8 @@ func TestAnUnrecognisedNetworkPolicyFallsBackToNone(t *testing.T) {
 // A failing test is the ordinary case. Reporting it as an error would leave the
 // caller unable to tell it from the runtime being down.
 func TestANonZeroExitIsAResultRatherThanAnError(t *testing.T) {
-	docker := &fakeDocker{exitCode: 2, stdout: "FAIL\n", stderr: "one test failed\n"}
-	result, err := newRunner(docker).Run(context.Background(), request())
+	runtime := &fakeRuntime{exitCode: 2, stdout: "FAIL\n", stderr: "one test failed\n"}
+	result, err := newRunner(runtime).Run(context.Background(), request())
 	if err != nil {
 		t.Fatalf("a failing command produced an error: %v", err)
 	}
@@ -193,11 +207,11 @@ func TestANonZeroExitIsAResultRatherThanAnError(t *testing.T) {
 
 // A test that never finishes and a test that fails call for different things.
 func TestATimeoutIsDistinguishableFromAFailure(t *testing.T) {
-	docker := &fakeDocker{block: make(chan struct{})}
+	runtime := &fakeRuntime{block: make(chan struct{})}
 	req := request()
 	req.Limits = Limits{Timeout: 50 * time.Millisecond}
 
-	result, err := newRunner(docker).Run(context.Background(), req)
+	result, err := newRunner(runtime).Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("a timeout produced an error rather than a result: %v", err)
 	}
@@ -214,27 +228,27 @@ func TestATimeoutIsDistinguishableFromAFailure(t *testing.T) {
 func TestTheContainerIsAlwaysRemoved(t *testing.T) {
 	for _, name := range []string{"success", "failure", "timeout"} {
 		t.Run(name, func(t *testing.T) {
-			docker := &fakeDocker{}
+			runtime := &fakeRuntime{}
 			req := request()
 			switch name {
 			case "failure":
-				docker.exitCode = 1
+				runtime.exitCode = 1
 			case "timeout":
-				docker.block = make(chan struct{})
+				runtime.block = make(chan struct{})
 				req.Limits = Limits{Timeout: 50 * time.Millisecond}
 			}
-			if _, err := newRunner(docker).Run(context.Background(), req); err != nil {
+			if _, err := newRunner(runtime).Run(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
 
 			removed := false
-			for _, call := range docker.calls {
+			for _, call := range runtime.calls {
 				if len(call) > 0 && call[0] == "rm" && hasFlag(call, "--force") {
 					removed = true
 				}
 			}
 			if !removed {
-				t.Fatalf("the container was not removed: %v", docker.calls)
+				t.Fatalf("the container was not removed: %v", runtime.calls)
 			}
 		})
 	}
@@ -243,11 +257,11 @@ func TestTheContainerIsAlwaysRemoved(t *testing.T) {
 // A build that fails says why at the end, so the tail is what a truncated log
 // must keep.
 func TestOutputIsBoundedAndKeepsTheTail(t *testing.T) {
-	docker := &fakeDocker{stdout: strings.Repeat("a", 50) + "THE FAILURE"}
+	runtime := &fakeRuntime{stdout: strings.Repeat("a", 50) + "THE FAILURE"}
 	req := request()
 	req.Limits = Limits{MaxOutputBytes: 20}
 
-	result, err := newRunner(docker).Run(context.Background(), req)
+	result, err := newRunner(runtime).Run(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,13 +277,13 @@ func TestOutputIsBoundedAndKeepsTheTail(t *testing.T) {
 }
 
 func TestTheRuntimeAndImageFailuresAreDistinguishable(t *testing.T) {
-	down := &fakeDocker{exitCode: -1, err: errors.New("exec failed"),
-		stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."}
+	down := &fakeRuntime{exitCode: -1, err: errors.New("exec failed"),
+		stderr: "Unable to connect to Podman. Is the Podman machine running?"}
 	if _, err := newRunner(down).Run(context.Background(), request()); !errors.Is(err, ErrRuntimeUnavailable) {
 		t.Errorf("a stopped runtime gave %v, want %v", err, ErrRuntimeUnavailable)
 	}
 
-	missing := &fakeDocker{exitCode: -1, err: errors.New("exec failed"),
+	missing := &fakeRuntime{exitCode: -1, err: errors.New("exec failed"),
 		stderr: "Unable to find image 'golang:1.25' locally"}
 	if _, err := newRunner(missing).Run(context.Background(), request()); !errors.Is(err, ErrImageMissing) {
 		t.Errorf("a missing image gave %v, want %v", err, ErrImageMissing)
@@ -279,12 +293,12 @@ func TestTheRuntimeAndImageFailuresAreDistinguishable(t *testing.T) {
 // The result has to carry what actually ran, so it can be read later without
 // reconstructing the policy that produced it.
 func TestTheResultRecordsWhatRan(t *testing.T) {
-	docker := &fakeDocker{}
+	runtime := &fakeRuntime{}
 	req := request()
 	req.Network = "full"
 	req.NetworkName = "lctk-alpha-net"
 
-	result, err := newRunner(docker).Run(context.Background(), req)
+	result, err := newRunner(runtime).Run(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,11 +310,11 @@ func TestTheResultRecordsWhatRan(t *testing.T) {
 // The command is a shell line because that is what a developer would type, and
 // that is only safe because a human approved this exact text.
 func TestTheCommandIsPassedToAShellAfterTheImage(t *testing.T) {
-	docker := &fakeDocker{}
-	if _, err := newRunner(docker).Run(context.Background(), request()); err != nil {
+	runtime := &fakeRuntime{}
+	if _, err := newRunner(runtime).Run(context.Background(), request()); err != nil {
 		t.Fatal(err)
 	}
-	args := docker.runArgs(t)
+	args := runtime.runArgs(t)
 
 	if args[len(args)-1] != "go test ./..." || args[len(args)-2] != "-c" {
 		t.Fatalf("the command is not the shell's argument: %v", args[len(args)-3:])

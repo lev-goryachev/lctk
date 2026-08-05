@@ -33,7 +33,7 @@ The coding MCP endpoint does not receive these administrative operations automat
 
 1. accept a native host path;
 2. canonicalize and resolve the path using host OS facilities;
-3. verify that the path exists and is available through Docker Desktop file sharing;
+3. verify that the path exists on a local Windows drive addressable through the managed WSL2 mount;
 4. show the actual mount to the user;
 5. create a stable local `project_id`;
 6. read and validate the safe fields in `.mcp-project.yaml`, if it exists;
@@ -50,13 +50,12 @@ The coding MCP endpoint does not receive these administrative operations automat
 
 The repository manifest never determines the authoritative host path.
 
-## Compose resource naming
+## Managed runtime resource naming
 
 [ADR-0003](adr/0003-reusable-images-and-project-stacks.md) left resource naming to be specified. Every name is a pure function of `project_id`, so names are stable across restarts and reinstalls and are recomputed rather than stored:
 
 | Resource | Name |
 |---|---|
-| Compose project | `lctk-{project_id}` |
 | Network | `lctk-{project_id}-net` |
 | Volume | `lctk-{project_id}-state` |
 | Container | `lctk-{project_id}-code-intel` |
@@ -64,9 +63,7 @@ The repository manifest never determines the authoritative host path.
 
 The image is shared by every project and its tag follows the unified product version from [ADR-0007](adr/0007-unified-versioning.md), so an upgraded LCTK requests a matching image instead of silently reusing an older one.
 
-Generated Compose configuration lives under the per-user LCTK home at `projects/{project_id}/compose.yaml`, never inside the repository. It is derived state, rewritten from the registry on every start, and it is not a source of truth for project identity or for the host path. Rendering is byte-reproducible: nothing time-based, random, or environment-dependent enters it.
-
-Mounts use Compose long syntax. Short syntax separates fields with colons, which is ambiguous for a Windows path such as `C:\work`, so long syntax is a correctness requirement on the primary host platform rather than a style preference.
+The deterministic runtime plan lives under the per-user LCTK home at `projects/{project_id}/runtime.json`, never inside the repository. It is derived state, rewritten from the registry on every start, and is not a source of truth. LCTK translates a verified local-drive path to its WSL mount and issues explicit Podman network, volume, and container operations; Compose is not part of the installed product.
 
 The source is mounted read-only into `code-intel` at `/workspace`. Per-project state lives in the named volume at `/var/lib/lctk`. A writable source mount belongs to the future runner boundary, not to `code-intel`.
 

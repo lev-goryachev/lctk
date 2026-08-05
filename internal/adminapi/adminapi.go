@@ -20,20 +20,25 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/codeintel"
+	"github.com/lev-goryachev/lctk/internal/codexsetup"
 	"github.com/lev-goryachev/lctk/internal/diskspace"
-	"github.com/lev-goryachev/lctk/internal/dockerapi"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
+	"github.com/lev-goryachev/lctk/internal/projectregistration"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/runtimeapi"
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
 
@@ -44,15 +49,19 @@ const actionTimeout = 3 * time.Minute
 // Options wires the API to the daemon's components. Every one is injectable so
 // the surface can be tested without a container runtime.
 type Options struct {
-	Sessions *adminsession.Store
-	Registry func() (*projectregistry.Registry, error)
-	Grants   func() (*projectgrant.Set, error)
-	Stack    Lifecycle
-	Settings func() (hostsettings.Settings, error)
-	Watch    func(projectID string) (watchsupervisor.View, bool)
-	Probe    func(ctx context.Context) (dockerapi.Status, error)
-	Logs     func() []logring.Record
-	Now      func() time.Time
+	Sessions          *adminsession.Store
+	Registry          func() (*projectregistry.Registry, error)
+	Grants            func() (*projectgrant.Set, error)
+	Stack             Lifecycle
+	Settings          func() (hostsettings.Settings, error)
+	Watch             func(projectID string) (watchsupervisor.View, bool)
+	Probe             func(ctx context.Context) (runtimeapi.Status, error)
+	Logs              func() []logring.Record
+	Now               func() time.Time
+	Register          func(path string, profile projectregistry.Profile, now time.Time) (projectregistration.Result, error)
+	LaunchUninstaller func() error
+	ConfigureCodex    func(projectregistry.Project, time.Time) (codexsetup.Result, error)
+	LaunchCodex       func(projectregistry.Project) error
 }
 
 // Lifecycle is the part of the stack manager the admin surface drives.
@@ -83,13 +92,25 @@ func New(options Options) *Server {
 		options.Settings = hostsettings.Load
 	}
 	if options.Probe == nil {
-		options.Probe = dockerapi.Probe
+		options.Probe = runtimeapi.Probe
 	}
 	if options.Logs == nil {
 		options.Logs = func() []logring.Record { return nil }
 	}
 	if options.Now == nil {
 		options.Now = time.Now
+	}
+	if options.Register == nil {
+		options.Register = projectregistration.Register
+	}
+	if options.LaunchUninstaller == nil {
+		options.LaunchUninstaller = launchUninstaller
+	}
+	if options.ConfigureCodex == nil {
+		options.ConfigureCodex = codexsetup.Configure
+	}
+	if options.LaunchCodex == nil {
+		options.LaunchCodex = launchCodex
 	}
 	return &Server{options: options}
 }
@@ -102,11 +123,59 @@ func (s *Server) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /admin/api/overview", s.read(s.handleOverview))
 	mux.HandleFunc("GET /admin/api/projects", s.read(s.handleProjects))
+	mux.HandleFunc("POST /admin/api/projects", s.write(s.handleProjectAdd))
 	mux.HandleFunc("GET /admin/api/grants", s.read(s.handleGrants))
 	mux.HandleFunc("GET /admin/api/logs", s.read(s.handleLogs))
+	mux.HandleFunc("POST /admin/api/uninstall", s.write(s.handleUninstall))
 
 	mux.HandleFunc("POST /admin/api/projects/{id}/{action}", s.write(s.handleProjectAction))
 	mux.HandleFunc("DELETE /admin/api/grants/{id}", s.write(s.handleRevokeGrant))
+}
+
+func (s *Server) handleUninstall(w http.ResponseWriter, _ *http.Request) {
+	if err := s.options.LaunchUninstaller(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "The uninstall choice dialog was opened."})
+}
+
+func launchUninstaller() error {
+	home, err := lctkhome.Dir()
+	if err != nil {
+		return err
+	}
+	command := exec.Command(filepath.Join(home, "bin", "lctk-setup.exe"), "--uninstall")
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
+}
+
+type addProjectRequest struct {
+	Path    string `json:"path"`
+	Profile string `json:"profile"`
+}
+
+func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
+	var request addProjectRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "The request body is not valid JSON."})
+		return
+	}
+	profile := projectregistry.Profile(strings.ToLower(strings.TrimSpace(request.Profile)))
+	if profile != "" && profile != projectregistry.ProfileMinimal && profile != projectregistry.ProfileFull {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Profile must be minimal or full."})
+		return
+	}
+	registered, err := s.options.Register(strings.TrimSpace(request.Path), profile, s.options.Now())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id": registered.Project.ID, "name": registered.Project.Name, "path": registered.Project.Path,
+	})
 }
 
 // read wraps a handler that only reports. It still requires a session: the
@@ -195,10 +264,11 @@ type overview struct {
 }
 
 type runtimeView struct {
-	Available  bool   `json:"available"`
-	APIVersion string `json:"api_version,omitempty"`
-	OSType     string `json:"os_type,omitempty"`
-	Detail     string `json:"detail,omitempty"`
+	Available bool   `json:"available"`
+	Provider  string `json:"provider,omitempty"`
+	Version   string `json:"version,omitempty"`
+	OSType    string `json:"os_type,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +291,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if status, err := s.options.Probe(probeCtx); err != nil {
 		view.Runtime.Detail = err.Error()
 	} else {
-		view.Runtime = runtimeView{Available: true, APIVersion: status.APIVersion, OSType: status.OSType}
+		view.Runtime = runtimeView{Available: true, Provider: status.Provider, Version: status.Version, OSType: status.OSType}
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -385,9 +455,32 @@ func (s *Server) handleProjectAction(w http.ResponseWriter, r *http.Request) {
 		s.reindex(w, ctx, project)
 	case "mode":
 		s.setMode(w, r, registry, project)
+	case "codex":
+		result, err := s.options.ConfigureCodex(project, s.options.Now())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := s.options.LaunchCodex(project); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "Codex was opened with this project's scoped grant.", "result": result})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Unknown action."})
 	}
+}
+
+func launchCodex(project projectregistry.Project) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	command := exec.Command(executable, "codex", "launch", project.ID)
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
 }
 
 func (s *Server) report(w http.ResponseWriter, status projectstack.Status, err error) {

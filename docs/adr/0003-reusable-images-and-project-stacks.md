@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-07-24
 - Deciders: project maintainers
+- Amended by: [ADR-0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) for the Windows runtime and Compose replacement
 
 ## Context
 

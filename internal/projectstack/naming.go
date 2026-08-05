@@ -1,6 +1,6 @@
-// Package projectstack generates and drives the per-project container stack.
+// Package projectstack generates and drives each isolated project runtime.
 //
-// Each registered project gets its own Compose project, network, and volume, per
+// Each registered project gets its own container, network, and volume, per
 // [ADR-0003]. The source is mounted read-only into the code-intel boundary, so a
 // project cannot write to its own working tree through this path.
 //
@@ -12,6 +12,7 @@
 package projectstack
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,10 @@ import (
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 )
+
+// ErrInvalidProject reports a registry record that cannot produce a safe,
+// deterministic managed-runtime identity or mount plan.
+var ErrInvalidProject = errors.New("project cannot be used as a container runtime")
 
 const (
 	// ServiceName is the single service in a Slice 1.2 stack.
@@ -34,23 +39,21 @@ const (
 	ServicePort = 8080
 	// ImageRepository is the reusable image every project shares.
 	ImageRepository = "lctk/code-intel"
-	// resourcePrefix keeps every Docker resource LCTK creates identifiable and
-	// distinguishable from unrelated Compose projects on the same machine.
+	// resourcePrefix keeps every OCI resource LCTK creates identifiable and
+	// distinguishable from unrelated resources on the managed machine.
 	resourcePrefix = "lctk"
 )
 
-// composeNamePattern is what Compose accepts for a project name. Project
-// identifiers are generated to satisfy it, and Names verifies rather than
-// assuming.
-var composeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+// resourceNamePattern is the common subset accepted for Podman resources and
+// installation-owned directory names.
+var resourceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// Names holds every Docker resource name derived from a project identifier.
+// Names holds every managed OCI resource name derived from a project identifier.
 //
 // The names are a pure function of the identifier, so they are stable across
 // restarts and reinstalls and can be recomputed rather than stored.
 type Names struct {
 	ProjectID     string
-	ComposeName   string
 	Network       string
 	Volume        string
 	ContainerName string
@@ -76,8 +79,8 @@ func DeriveNamesForVersion(projectID, version string) (Names, error) {
 	if projectID == "" {
 		return Names{}, fmt.Errorf("%w: project id is empty", ErrInvalidProject)
 	}
-	if !composeNamePattern.MatchString(projectID) {
-		return Names{}, fmt.Errorf("%w: project id %q is not usable as a Compose project name",
+	if !resourceNamePattern.MatchString(projectID) {
+		return Names{}, fmt.Errorf("%w: project id %q is not usable as a runtime resource name",
 			ErrInvalidProject, projectID)
 	}
 	if version == "" {
@@ -87,7 +90,6 @@ func DeriveNamesForVersion(projectID, version string) (Names, error) {
 	base := resourcePrefix + "-" + projectID
 	return Names{
 		ProjectID:     projectID,
-		ComposeName:   base,
 		Network:       base + "-net",
 		Volume:        base + "-state",
 		ContainerName: base + "-" + ServiceName,
@@ -105,18 +107,9 @@ func StackDir(projectID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if projectID == "" || !composeNamePattern.MatchString(projectID) {
+	if projectID == "" || !resourceNamePattern.MatchString(projectID) {
 		return "", fmt.Errorf("%w: project id %q cannot be used as a directory name",
 			ErrInvalidProject, projectID)
 	}
 	return filepath.Join(home, "projects", projectID), nil
-}
-
-// ComposeFilePath is the generated Compose file for a project.
-func ComposeFilePath(projectID string) (string, error) {
-	dir, err := StackDir(projectID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "compose.yaml"), nil
 }

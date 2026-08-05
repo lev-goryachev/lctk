@@ -13,13 +13,15 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/adminsession"
-	"github.com/lev-goryachev/lctk/internal/dockerapi"
+	"github.com/lev-goryachev/lctk/internal/codexsetup"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/projectgrant"
+	"github.com/lev-goryachev/lctk/internal/projectregistration"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
+	"github.com/lev-goryachev/lctk/internal/runtimeapi"
 )
 
 var testNow = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
@@ -65,7 +67,11 @@ type fixture struct {
 	// trustworthy origin. The cookie is Secure on purpose, and a real browser was
 	// verified to send it back, so the jar is the wrong tool here rather than the
 	// cookie being wrong.
-	session *http.Cookie
+	session           *http.Cookie
+	registeredPath    string
+	uninstallerOpened bool
+	codexConfigured   bool
+	codexLaunched     bool
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -90,19 +96,33 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { _ = sessions.Close() })
 
 	runtimeStack := &stack{state: projectstack.StateStopped}
+	fixture := &fixture{}
 	server := New(Options{
 		Sessions: sessions,
 		Registry: func() (*projectregistry.Registry, error) { return registry, nil },
 		Grants:   func() (*projectgrant.Set, error) { return grants, nil },
 		Stack:    runtimeStack,
 		Settings: func() (hostsettings.Settings, error) { return hostsettings.Defaults, nil },
-		Probe: func(context.Context) (dockerapi.Status, error) {
-			return dockerapi.Status{APIVersion: "1.51", OSType: "linux"}, nil
+		Probe: func(context.Context) (runtimeapi.Status, error) {
+			return runtimeapi.Status{Available: true, Provider: "podman", Version: "5.8.2", OSType: "linux"}, nil
 		},
 		Logs: func() []logring.Record {
 			return []logring.Record{{At: testNow, Level: "INFO", Message: "watching project"}}
 		},
 		Now: func() time.Time { return testNow },
+		Register: func(path string, profile projectregistry.Profile, now time.Time) (projectregistration.Result, error) {
+			fixture.registeredPath = path
+			return projectregistration.Result{Project: projectregistry.Project{ID: "beta-bbbbbbbb", Name: "beta", Path: path, Profile: profile, RegisteredAt: now}}, nil
+		},
+		LaunchUninstaller: func() error { fixture.uninstallerOpened = true; return nil },
+		ConfigureCodex: func(project projectregistry.Project, _ time.Time) (codexsetup.Result, error) {
+			fixture.codexConfigured = project.ID == "alpha-aaaaaaaa"
+			return codexsetup.Result{ConfigPath: "config.toml"}, nil
+		},
+		LaunchCodex: func(project projectregistry.Project) error {
+			fixture.codexLaunched = project.ID == "alpha-aaaaaaaa"
+			return nil
+		},
 	})
 
 	mux := http.NewServeMux()
@@ -110,10 +130,12 @@ func newFixture(t *testing.T) *fixture {
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
-	return &fixture{
-		server: httpServer, sessions: sessions, stack: runtimeStack, grants: grants,
-		client: &http.Client{},
-	}
+	fixture.server = httpServer
+	fixture.sessions = sessions
+	fixture.stack = runtimeStack
+	fixture.grants = grants
+	fixture.client = &http.Client{}
+	return fixture
 }
 
 func registryWith(t *testing.T, home string, projects ...projectregistry.Project) *projectregistry.Registry {
@@ -269,6 +291,36 @@ func TestAStateChangingRequestWithoutTheCsrfHeaderIsRefused(t *testing.T) {
 	}
 }
 
+func TestProjectCanBeRegisteredWithoutACommandLine(t *testing.T) {
+	f := newFixture(t)
+	f.signIn(t)
+	response, body := f.do(t, http.MethodPost, "/admin/api/projects", `{"path":"D:\\Projects\\beta","profile":"full"}`)
+	if response.StatusCode != http.StatusCreated || body["id"] != "beta-bbbbbbbb" {
+		t.Fatalf("registration returned %d: %v", response.StatusCode, body)
+	}
+	if f.registeredPath != `D:\Projects\beta` {
+		t.Fatalf("registered path = %q", f.registeredPath)
+	}
+}
+
+func TestUninstallChoiceCanBeOpenedFromTheAdminUI(t *testing.T) {
+	f := newFixture(t)
+	f.signIn(t)
+	response, _ := f.do(t, http.MethodPost, "/admin/api/uninstall", "")
+	if response.StatusCode != http.StatusAccepted || !f.uninstallerOpened {
+		t.Fatalf("status=%d opened=%t", response.StatusCode, f.uninstallerOpened)
+	}
+}
+
+func TestCodexCanBeConfiguredFromTheAdminUI(t *testing.T) {
+	f := newFixture(t)
+	f.signIn(t)
+	response, _ := f.do(t, http.MethodPost, "/admin/api/projects/alpha-aaaaaaaa/codex", "")
+	if response.StatusCode != http.StatusOK || !f.codexConfigured || !f.codexLaunched {
+		t.Fatalf("status=%d configured=%t launched=%t", response.StatusCode, f.codexConfigured, f.codexLaunched)
+	}
+}
+
 func TestLifecycleActionsReachTheRuntime(t *testing.T) {
 	f := newFixture(t)
 	f.signIn(t)
@@ -365,7 +417,7 @@ func TestTheOverviewCarriesTheRuntimeDiagnostic(t *testing.T) {
 
 	_, body := f.do(t, http.MethodGet, "/admin/api/overview", "")
 	runtime, _ := body["runtime"].(map[string]any)
-	if runtime["available"] != true || runtime["api_version"] != "1.51" {
+	if runtime["available"] != true || runtime["provider"] != "podman" || runtime["version"] != "5.8.2" {
 		t.Fatalf("runtime = %v, want the probe's answer", runtime)
 	}
 	if body["version"] == "" {

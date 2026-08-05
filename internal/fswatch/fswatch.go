@@ -4,7 +4,7 @@
 // The watcher runs on the host rather than inside the project container because
 // the native APIs are the reliable ones: ReadDirectoryChangesW on Windows and
 // kqueue on macOS see a save immediately, while the same save observed through a
-// Docker Desktop bind mount is delayed, coalesced, or lost. fsnotify is the
+// managed WSL bind mount is delayed, coalesced, or lost. fsnotify is the
 // binding to those APIs; recursion, coalescing, and the honesty rule below are
 // LCTK's.
 //

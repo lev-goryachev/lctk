@@ -18,12 +18,10 @@ const diskEstimateTimeout = 5 * time.Second
 
 // estimateFor reports what a project costs on disk and what room is left.
 //
-// Free space is measured on the volume holding the LCTK home. That is where
-// Docker Desktop keeps its data in a default installation on both target
-// platforms, and the index lives in a Docker volume rather than in a directory
-// LCTK owns, so there is nothing more direct to measure. An operator who has
-// relocated Docker's data directory gets a proxy rather than a measurement, which
-// is why the figure warns and never refuses on its own.
+// Free space is measured on the volume holding the LCTK home. The managed WSL
+// runtime and its project volumes are installation-owned but WSL does not expose
+// their virtual-disk free space through the host API. This is therefore a safe
+// host-volume proxy that warns and never refuses on its own.
 func estimateFor(ctx context.Context, project projectregistry.Project) (diskspace.Estimate, error) {
 	home, err := lctkhome.Dir()
 	if err != nil {

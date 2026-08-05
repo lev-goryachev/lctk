@@ -554,7 +554,7 @@ func TestAnIdleProjectReleasesItsWatcher(t *testing.T) {
 	}
 }
 
-// Docker Desktop not answering is not the same as a project having stopped.
+// The managed runtime not answering is not the same as a project having stopped.
 // Releasing a watcher over it would cost a reconciliation on the next sweep for
 // a project that never went anywhere.
 func TestAnUnreachableRuntimeDoesNotReleaseAWatcher(t *testing.T) {
