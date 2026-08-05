@@ -37,5 +37,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0022](0022-transactional-bootstrap-update-and-release-evidence.md) | Transactional bootstrap, update rollback, and evidence-gated releases | accepted |
 | [0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) | Managed headless Podman on WSL2 and a one-click Windows installer | accepted |
 | [0024](0024-native-windows-setup-and-user-selected-storage.md) | Native Windows setup and user-selected installation and runtime-data locations | accepted |
+| [0025](0025-native-windows-admin-and-complete-uninstall.md) | Native Windows administrator window and complete product uninstall | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.

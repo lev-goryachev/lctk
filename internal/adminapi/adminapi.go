@@ -42,7 +42,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
 
-// actionTimeout bounds a lifecycle action started from the page, so a browser
+// actionTimeout bounds a lifecycle action started from the native window, so a
 // request cannot hang on a container runtime that has stopped answering.
 const actionTimeout = 3 * time.Minute
 
@@ -117,7 +117,6 @@ func New(options Options) *Server {
 
 // Register attaches the admin surface to a mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /admin/{$}", s.handlePage)
 	mux.HandleFunc("POST /admin/session", s.handleSignIn)
 	mux.HandleFunc("DELETE /admin/session", s.handleSignOut)
 
@@ -204,7 +203,7 @@ func (s *Server) write(next http.HandlerFunc) http.HandlerFunc {
 
 func refuse(w http.ResponseWriter, err error) {
 	status := http.StatusUnauthorized
-	message := "An admin session is required. Run lctk admin open."
+	message := "A native administrator session is required. Open LCTK again."
 	if errors.Is(err, adminsession.ErrForeignHost) {
 		// Naming this precisely matters: it is the one refusal that means
 		// something is actively wrong rather than that a session expired.
@@ -233,22 +232,18 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	token, csrf, err := s.options.Sessions.Exchange(strings.TrimSpace(request.Code))
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "That code is not valid, or has already been used. Run lctk admin open for a new one.",
+			"error": "That code is not valid, or has already been used. Open LCTK again.",
 		})
 		return
 	}
 
-	http.SetCookie(w, adminsession.Cookie(token))
-	writeJSON(w, http.StatusOK, map[string]string{"csrf": csrf})
+	writeJSON(w, http.StatusOK, map[string]string{"session": token, "csrf": csrf})
 }
 
 func (s *Server) handleSignOut(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(adminsession.CookieName); err == nil {
-		s.options.Sessions.Revoke(cookie.Value)
+	if token := adminsession.Token(r); token != "" {
+		s.options.Sessions.Revoke(token)
 	}
-	expired := adminsession.Cookie("")
-	expired.MaxAge = -1
-	http.SetCookie(w, expired)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
 }
 
@@ -557,8 +552,8 @@ func (s *Server) handleGrants(w http.ResponseWriter, _ *http.Request) {
 	views := make([]grantView, 0, len(listed))
 	for _, grant := range listed {
 		// The token is never included. This surface exists to manage grants, not
-		// to hand them out, and a page that displayed one would leave it in a
-		// screenshot and a browser cache.
+		// to hand them out, and a window that displayed one would leak it through
+		// screenshots and diagnostics.
 		view := grantView{ID: grant.ID, Client: grant.Client, Projects: grant.ProjectIDs, Revoked: grant.Revoked}
 		if !grant.IssuedAt.IsZero() {
 			view.IssuedAt = grant.IssuedAt.UTC().Format(time.RFC3339)

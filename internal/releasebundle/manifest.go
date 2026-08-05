@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"runtime"
 	"strings"
@@ -149,7 +150,7 @@ func (m Manifest) Validate() error {
 	seen := map[string]bool{}
 	for _, artifact := range m.Artifacts {
 		key := artifact.Kind + "\x00" + artifact.OS + "\x00" + artifact.Arch
-		if seen[key] || artifact.Name == "" || artifact.Kind == "" || !validHTTPS(artifact.URL) || artifact.Bytes <= 0 || !validSHA256(artifact.SHA256) {
+		if seen[key] || artifact.Name == "" || artifact.Kind == "" || !validArtifactURL(artifact.URL) || artifact.Bytes <= 0 || !validSHA256(artifact.SHA256) {
 			return fmt.Errorf("release artifact %q is invalid or duplicated", artifact.Name)
 		}
 		seen[key] = true
@@ -265,4 +266,24 @@ func versionParts(value string) ([3]int, bool) {
 func validHTTPS(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
+}
+
+// validArtifactURL permits plain HTTP only on numeric loopback for the local
+// one-file release-candidate harness. The signed manifest and the mandatory
+// size/SHA-256 check still authenticate every byte; production publication
+// continues to generate HTTPS URLs exclusively.
+func validArtifactURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }

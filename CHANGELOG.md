@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Complete 18-tool verification through Codex and an independent MCP Go SDK client, plus parameterized semantic and exact-search stress evidence through one million files or chunks.
 - Windows one-click setup with a native Win32 plan and folder selection, UAC-gated WSL2 enablement and reboot continuation, a pinned private Podman runtime, sign-in daemon, Start-menu launcher, and shell-free project registration in the Admin UI.
 - Schema-2 signed release inventory binding the Windows setup, launcher, host core, Podman client, WSL machine image, OCI images, and embedding model.
+- Native Windows administrator window with project lifecycle, Codex launch, grants, diagnostics, logs, and uninstall controls, without a browser or WebView runtime.
+- One-file locally signed Windows release-candidate builder for complete pre-publication setup testing.
 
 ### Changed
 
@@ -36,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Windows project, inference, diagnostic, and approved-command lifecycles now use the explicit `lctk-runtime-root` Podman connection and deterministic runtime plans instead of Docker Desktop, Moby, and Compose.
 - Official Windows executables are intentionally unsigned for the initial open-source release; integrity remains enforced by the tagged workflow, launcher binding, SHA-256 checksums, GitHub attestations, and Ed25519-signed component manifest.
 - The first official release inventory is Windows amd64 only; macOS remains a non-publishing development and CI compatibility target.
+- Windows Apps & Features and Start-menu uninstall now remove the managed machine, LCTK-named Podman residue, desktop integration, registry locations, and program files while preserving unrelated Podman data.
 
 ### Fixed
 

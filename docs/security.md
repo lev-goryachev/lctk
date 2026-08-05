@@ -98,11 +98,11 @@ An external browser origin requires an explicit flow:
 5. validate the origin on subsequent requests;
 6. support allow-once, persistent allow, and revocation.
 
-The Admin UI uses a separate local session, decided in [ADR-0016](adr/0016-admin-surface-and-local-session.md). The daemon issues an exchange code at startup into the owner-only LCTK home; `lctk admin open` places it in a one-time link; the page trades it for a session cookie and the code is spent.
+The native Admin UI uses a separate local session, as amended by [ADR-0025](adr/0025-native-windows-admin-and-complete-uninstall.md). The daemon issues an exchange code into the owner-only LCTK home; the installed native process reads and spends it directly, then keeps its session credential and CSRF token only in process memory. No admin credential is placed in a URL, browser history, or browser cookie store.
 
-A browser is not a well-behaved client, so three independent defences apply and all are required: the cookie is `HttpOnly` and `SameSite=Strict`, every request must carry a `Host` header naming loopback — which is what refuses DNS rebinding, since the attacker's hostname still appears there — and every state-changing request must echo a CSRF token a cross-origin page cannot read.
+Every request must still carry a `Host` header naming loopback and every state-changing request must echo the session's CSRF token. These checks keep the loopback API fail-closed if a non-native client attempts to reach it.
 
-No admin handler reads a project grant and no project route reads an admin session. A coding agent holding a project token cannot administer the machine, and the admin surface never serves a grant token to the page.
+No admin handler reads a project grant and no project route reads an admin session. A coding agent holding a project token cannot administer the machine, and the admin surface never serves a grant token to the native client.
 
 ## Manifest trust
 

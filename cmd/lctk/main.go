@@ -39,7 +39,7 @@ Usage:
   lctk project resources [--mode quiet|normal|fast|default] [--json] PROJECT
   lctk project commands [--approve NAME] [--image IMAGE] [--json] PROJECT
   lctk settings show [--json]
-  lctk admin open [--listen ADDRESS] [--print]
+  lctk admin open
   lctk image build [--context DIR] [--json]
   lctk image status [--json]
   lctk grant show [--json] [--reveal] PROJECT

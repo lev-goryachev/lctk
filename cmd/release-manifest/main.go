@@ -42,6 +42,9 @@ func main() {
 	keyID := flag.String("key-id", "", "release signing key identifier")
 	output := flag.String("output", "", "signed envelope output path")
 	printPublic := flag.Bool("print-public-key", false, "print the release public key and exit")
+	templateEnvelope := flag.String("template-envelope", "", "verified signed manifest used as a local RC component template")
+	templateKeyID := flag.String("template-key-id", "", "trusted key id for --template-envelope")
+	templatePublicKey := flag.String("template-public-key", "", "base64 Ed25519 public key for --template-envelope")
 	flag.Var(&artifacts, "artifact", "name,kind,os,arch,path; repeat for every artifact")
 	flag.Parse()
 
@@ -53,8 +56,7 @@ func main() {
 		fmt.Print(base64.StdEncoding.EncodeToString(private.Public().(ed25519.PublicKey)))
 		return
 	}
-	if *version == "" || *commit == "" || *published == "" || *baseURL == "" ||
-		*codeImage == "" || *codeBytes <= 0 || *inferenceBytes <= 0 || *keyID == "" || *output == "" {
+	if *version == "" || *commit == "" || *published == "" || *baseURL == "" || *keyID == "" || *output == "" {
 		fatal(errors.New("complete release identity, image sizes, key id, output, and artifacts are required"))
 	}
 	if _, err := time.Parse(time.RFC3339, *published); err != nil {
@@ -64,37 +66,50 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	codeDigest, err := imageDigest(*codeImage)
-	if err != nil {
-		fatal(err)
-	}
-	inferenceDigest, err := imageDigest(inference.Image)
-	if err != nil {
-		fatal(err)
-	}
-	manifest := releasebundle.Manifest{
-		SchemaVersion:      releasebundle.SchemaVersion,
-		Version:            *version,
-		Commit:             *commit,
-		PublishedAt:        *published,
-		MinimumHostVersion: "0.1.0",
-		ProjectSchemaFrom:  1,
-		ProjectSchemaTo:    2,
-		Artifacts:          parsedArtifacts,
-		CodeImage: releasebundle.Image{
-			Name: "code-intel", Reference: *codeImage, Digest: codeDigest,
-			CompressedBytes: *codeBytes, Platforms: []string{"linux/amd64", "linux/arm64"},
-		},
-		InferenceImage: releasebundle.Image{
-			Name: "embedding-inference", Reference: inference.Image, Digest: inferenceDigest,
-			CompressedBytes: *inferenceBytes, Platforms: []string{"linux/amd64", "linux/arm64"},
-		},
-		EmbeddingModel: releasebundle.Model{
-			Name: inference.ModelName, URL: inference.ModelURL, Bytes: inference.ModelBytes,
-			SHA256: inference.ModelSHA256, License: "Apache-2.0",
-		},
-		MigrationNotesURL:    strings.TrimRight(*baseURL, "/") + "/migration-notes.md",
-		RollbackInstructions: "Run `lctk update rollback`; see migration-notes.md for state and manual recovery evidence.",
+	var manifest releasebundle.Manifest
+	if *templateEnvelope != "" {
+		manifest, err = loadTemplate(*templateEnvelope, *templateKeyID, *templatePublicKey)
+		if err != nil {
+			fatal(err)
+		}
+		manifest.Version, manifest.Commit, manifest.PublishedAt = *version, *commit, *published
+		manifest.Artifacts = replaceArtifacts(manifest.Artifacts, parsedArtifacts)
+	} else {
+		if *codeImage == "" || *codeBytes <= 0 || *inferenceBytes <= 0 {
+			fatal(errors.New("code and inference image sizes are required without --template-envelope"))
+		}
+		codeDigest, digestErr := imageDigest(*codeImage)
+		if digestErr != nil {
+			fatal(digestErr)
+		}
+		inferenceDigest, digestErr := imageDigest(inference.Image)
+		if digestErr != nil {
+			fatal(digestErr)
+		}
+		manifest = releasebundle.Manifest{
+			SchemaVersion:      releasebundle.SchemaVersion,
+			Version:            *version,
+			Commit:             *commit,
+			PublishedAt:        *published,
+			MinimumHostVersion: "0.1.0",
+			ProjectSchemaFrom:  1,
+			ProjectSchemaTo:    2,
+			Artifacts:          parsedArtifacts,
+			CodeImage: releasebundle.Image{
+				Name: "code-intel", Reference: *codeImage, Digest: codeDigest,
+				CompressedBytes: *codeBytes, Platforms: []string{"linux/amd64", "linux/arm64"},
+			},
+			InferenceImage: releasebundle.Image{
+				Name: "embedding-inference", Reference: inference.Image, Digest: inferenceDigest,
+				CompressedBytes: *inferenceBytes, Platforms: []string{"linux/amd64", "linux/arm64"},
+			},
+			EmbeddingModel: releasebundle.Model{
+				Name: inference.ModelName, URL: inference.ModelURL, Bytes: inference.ModelBytes,
+				SHA256: inference.ModelSHA256, License: "Apache-2.0",
+			},
+			MigrationNotesURL:    strings.TrimRight(*baseURL, "/") + "/migration-notes.md",
+			RollbackInstructions: "Run `lctk update rollback`; see migration-notes.md for state and manual recovery evidence.",
+		}
 	}
 	if err := manifest.Validate(); err != nil {
 		fatal(err)
@@ -116,6 +131,50 @@ func main() {
 	if err := os.WriteFile(*output, encoded, 0o600); err != nil {
 		fatal(err)
 	}
+}
+
+// loadTemplate authenticates the official manifest before any remote runtime,
+// image, or model identity can enter a locally signed release candidate.
+func loadTemplate(path, keyID, encodedPublicKey string) (releasebundle.Manifest, error) {
+	if path == "" || keyID == "" || encodedPublicKey == "" {
+		return releasebundle.Manifest{}, errors.New("template envelope, key id, and public key are required together")
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(encodedPublicKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return releasebundle.Manifest{}, errors.New("template public key is invalid")
+	}
+	document, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return releasebundle.Manifest{}, fmt.Errorf("read template envelope: %w", err)
+	}
+	return (releasebundle.Verifier{KeyID: keyID, PublicKey: ed25519.PublicKey(publicKey)}).Verify(document)
+}
+
+// replaceArtifacts keeps the template's verified runtime inventory and swaps
+// only identities explicitly built for the local release candidate.
+func replaceArtifacts(template, replacements []releasebundle.Artifact) []releasebundle.Artifact {
+	byIdentity := make(map[string]releasebundle.Artifact, len(replacements))
+	for _, artifact := range replacements {
+		byIdentity[artifact.Kind+"\x00"+artifact.OS+"\x00"+artifact.Arch] = artifact
+	}
+	result := make([]releasebundle.Artifact, 0, len(template)+len(replacements))
+	for _, artifact := range template {
+		identity := artifact.Kind + "\x00" + artifact.OS + "\x00" + artifact.Arch
+		if replacement, ok := byIdentity[identity]; ok {
+			result = append(result, replacement)
+			delete(byIdentity, identity)
+		} else {
+			result = append(result, artifact)
+		}
+	}
+	for _, artifact := range replacements {
+		identity := artifact.Kind + "\x00" + artifact.OS + "\x00" + artifact.Arch
+		if _, ok := byIdentity[identity]; ok {
+			result = append(result, artifact)
+			delete(byIdentity, identity)
+		}
+	}
+	return result
 }
 
 func privateKeyFromEnvironment() (ed25519.PrivateKey, error) {

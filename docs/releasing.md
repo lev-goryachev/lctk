@@ -2,6 +2,8 @@
 
 ## Development artifacts
 
+Before publishing, `scripts/build-local-rc.ps1` creates one unsigned `.artifacts/LCTK-Setup-local-RC.exe` from the current worktree. It verifies the published template manifest, replaces only the setup/core/launcher identities, signs the candidate manifest with an ephemeral local Ed25519 key, appends those candidate files to a self-extracting native bootstrapper, and never creates a tag or GitHub Release. Numeric-loopback HTTP is allowed only for the appended artifacts; signature, length, and digest checks remain mandatory. This is the local install/uninstall acceptance path, not a publication artifact.
+
 `Dry-run release artifacts` is a manually triggered workflow. It builds the stable launcher and versioned host core for Windows amd64 and macOS arm64, packages the legal notices, extracts each archive, executes `lctk version --json`, generates checksums, and uploads workflow artifacts. Separate native Ubuntu amd64 and arm64 jobs run the production image test target, build the runtime image, verify its platform identity, start it with a read-only workspace, and require container health. Its `-dev` version, missing embedded production trust root, and incomplete publication inventory make it unsuitable for an official release.
 
 [CI run 31012552276](https://github.com/lev-goryachev/lctk/actions/runs/31012552276) and [artifact run 31012555479](https://github.com/lev-goryachev/lctk/actions/runs/31012555479) executed the final matrices at commit `7679060` on 2026-08-05. Windows, macOS, and Linux tests passed; both extracted host archives reported the intended OS and architecture; both native image jobs reported `healthy`; and the amd64 image test included the race detector. The artifact run preserves separate machine-readable host identity and image inspect/health JSON evidence.
@@ -13,7 +15,7 @@ The downloaded `0.1.0-stage7-final3` archives independently matched both entries
 An official release is created only by pushing a clean `vMAJOR.MINOR.PATCH` tag. The protected `Official release` workflow:
 
 1. derives the Ed25519 public trust root from the protected private key and embeds the public key, key id, and release-manifest URL in the Windows host core and setup;
-2. runs the complete host test suite, then builds the stable launcher, versioned host core, and browser-based setup executable for Windows amd64;
+2. runs the complete host test suite, then builds the stable launcher, versioned host core, and native setup/admin/uninstall executable for Windows amd64;
 3. binds the stable Windows launcher to the exact unsigned core size and SHA-256 digest;
 4. extracts the Windows archive and executes its packaged launcher on the hosted Windows architecture;
 5. tests, builds, and executes each code-intel architecture on its matching native Ubuntu runner, combines the two immutable manifests, verifies the index platforms, and keyless-signs that index with Sigstore;

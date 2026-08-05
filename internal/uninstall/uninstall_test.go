@@ -38,8 +38,11 @@ func TestPreservingUninstallExportsProjectStateBeforeRemovingRuntime(t *testing.
 	manager := &Manager{
 		Home: home, Registry: func() (*projectregistry.Registry, error) { return registry, nil }, Machine: machine,
 		StopDaemon: func(string) error { return nil }, Unregister: func() error { return nil },
-		Export: func(_ context.Context, volume, target string) error { exported = []string{volume, target}; return nil },
-		Remove: func(path string) error { removed = append(removed, path); return nil },
+		RuntimeData: func() (string, error) { return filepath.Join(home, "runtime-data"), nil },
+		UserHome:    func() (string, error) { return filepath.Join(home, "user"), nil },
+		Cleanup:     func(string, string) error { return nil },
+		Export:      func(_ context.Context, volume, target string) error { exported = []string{volume, target}; return nil },
+		Remove:      func(path string) error { removed = append(removed, path); return nil },
 	}
 	backup, err := manager.Run(t.Context(), true)
 	if err != nil {
@@ -62,7 +65,9 @@ func TestDestructiveUninstallRequiresTheExplicitFalseChoice(t *testing.T) {
 	var removed string
 	manager := &Manager{Home: home, Registry: func() (*projectregistry.Registry, error) { return projectregistry.New(), nil }, Machine: machine,
 		StopDaemon: func(string) error { return nil }, Unregister: func() error { return nil }, Export: func(context.Context, string, string) error { return nil },
-		Remove: func(path string) error { removed = path; return nil }}
+		RuntimeData: func() (string, error) { return filepath.Join(home, "runtime-data"), nil }, UserHome: func() (string, error) { return filepath.Join(home, "user"), nil },
+		Cleanup: func(string, string) error { return nil },
+		Remove:  func(path string) error { removed = path; return nil }}
 	if _, err := manager.Run(t.Context(), false); err != nil {
 		t.Fatal(err)
 	}

@@ -126,21 +126,29 @@ func MachineCommand(ctx context.Context, args ...string) (*exec.Cmd, error) {
 }
 
 // attachRuntimeDataHome gives every private Podman process the same explicit
-// WSL storage root selected in setup. The child environment is rebuilt without
-// a duplicate XDG_DATA_HOME so ambient shell state cannot win by ordering.
+// WSL storage root selected in setup and an installation-owned configuration
+// root. Rebuilding both values prevents ambient Podman configuration from
+// changing LCTK's machine identity and lets uninstall remove the configuration
+// together with the installation home.
 func attachRuntimeDataHome(command *exec.Cmd) error {
 	dataHome, err := lctkhome.RuntimeDataDir()
 	if err != nil {
 		return err
 	}
+	home, err := lctkhome.Dir()
+	if err != nil {
+		return err
+	}
+	configHome := filepath.Join(home, "runtime", Provider, "config")
 	environment := command.Environ()
 	filtered := environment[:0]
 	for _, entry := range environment {
-		if !strings.EqualFold(strings.SplitN(entry, "=", 2)[0], "XDG_DATA_HOME") {
+		name := strings.SplitN(entry, "=", 2)[0]
+		if !strings.EqualFold(name, "XDG_DATA_HOME") && !strings.EqualFold(name, "XDG_CONFIG_HOME") {
 			filtered = append(filtered, entry)
 		}
 	}
-	command.Env = append(filtered, "XDG_DATA_HOME="+dataHome)
+	command.Env = append(filtered, "XDG_DATA_HOME="+dataHome, "XDG_CONFIG_HOME="+configHome)
 	return nil
 }
 

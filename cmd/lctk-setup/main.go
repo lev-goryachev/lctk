@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
+	"github.com/lev-goryachev/lctk/internal/daemon"
 	"github.com/lev-goryachev/lctk/internal/diskspace"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
@@ -50,13 +51,30 @@ func run(ctx context.Context, args []string) error {
 	manifestSource := flags.String("manifest", "", "signed release manifest HTTPS URL")
 	resume := flags.Bool("resume", false, "resume after Windows restart")
 	uninstallRequested := flags.Bool("uninstall", false, "remove LCTK and its managed runtime")
+	adminRequested := flags.Bool("admin", false, "open the native LCTK administrator window")
+	adminAddress := flags.String("listen", daemon.DefaultAddress, "loopback daemon address used by --admin")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New("setup does not accept positional arguments")
 	}
+	selectedModes := 0
+	for _, selected := range []bool{*resume, *uninstallRequested, *adminRequested} {
+		if selected {
+			selectedModes++
+		}
+	}
+	if selectedModes > 1 {
+		return errors.New("setup modes --resume, --uninstall, and --admin are mutually exclusive")
+	}
+	if !*adminRequested && *adminAddress != daemon.DefaultAddress {
+		return errors.New("--listen is valid only together with --admin")
+	}
 	_ = resume
+	if *adminRequested {
+		return runAdminWindow(ctx, *adminAddress)
+	}
 	if *uninstallRequested {
 		return runUninstall(ctx)
 	}
@@ -106,14 +124,15 @@ func run(ctx context.Context, args []string) error {
 }
 
 func runUninstall(ctx context.Context) error {
-	preserve, proceed := confirmUninstall()
-	if !proceed {
-		return nil
-	}
-	home, err := lctkhome.Dir()
+	locations, err := lctkhome.CurrentLocations()
 	if err != nil {
 		return err
 	}
+	preserve, proceed := confirmUninstall(locations)
+	if !proceed {
+		return nil
+	}
+	home := locations.InstallDir
 	backup, err := uninstall.NewManager(home).Run(ctx, preserve)
 	if err != nil {
 		return err

@@ -120,14 +120,21 @@ An approval is bound to the exact command text. Edit it in the manifest and the 
 
 This repository has its own [`.mcp-project.yaml`](../.mcp-project.yaml), so `lctk project commands lctk` shows the mechanism against a real project.
 
-## The admin page
+## The native administrator
 
 ```sh
-./lctk admin open            # open the local admin page, signed in once
-./lctk admin open --print    # print the link instead
+./lctk admin open            # open the installed native Windows administrator
 ```
 
-The link carries a code that is spent the moment the page uses it, and the page clears it from the address bar. A new code is issued on every daemon start and removed when the daemon stops, so signing in again after a restart means running the command again. See [ADR-0016](adr/0016-admin-surface-and-local-session.md).
+The installed GUI process reads and spends the daemon's one-time code directly. The credential remains in process memory and is never placed in a URL or browser. See [ADR-0025](adr/0025-native-windows-admin-and-complete-uninstall.md).
+
+## Local one-file release candidate
+
+```powershell
+./scripts/build-local-rc.ps1
+```
+
+This creates `.artifacts/LCTK-Setup-local-RC.exe` without a tag, push, or GitHub Release. The executable contains the locally built setup, host core, stable launcher, and a locally signed manifest; the manifest retains the verified runtime, image, and model identities from the published template release. Running it starts only a temporary numeric-loopback file endpoint while the real native setup is open, then removes its extracted payload. The candidate is unsigned and is for local acceptance only.
 
 ## The code-intel service
 

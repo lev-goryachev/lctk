@@ -54,20 +54,13 @@ func (s *stack) Restart(_ context.Context, p projectregistry.Project, _ time.Dur
 }
 
 type fixture struct {
-	server   *httptest.Server
-	sessions *adminsession.Store
-	stack    *stack
-	grants   *projectgrant.Set
-	csrf     string
-	client   *http.Client
-	// session is the cookie the server issued, replayed by hand.
-	//
-	// Go's cookiejar implements RFC 6265 literally and will not return a Secure
-	// cookie over http, while browsers exempt loopback as a potentially
-	// trustworthy origin. The cookie is Secure on purpose, and a real browser was
-	// verified to send it back, so the jar is the wrong tool here rather than the
-	// cookie being wrong.
-	session           *http.Cookie
+	server            *httptest.Server
+	sessions          *adminsession.Store
+	stack             *stack
+	grants            *projectgrant.Set
+	csrf              string
+	client            *http.Client
+	session           string
 	registeredPath    string
 	uninstallerOpened bool
 	codexConfigured   bool
@@ -170,8 +163,8 @@ func (f *fixture) do(t *testing.T, method, path string, body string) (*http.Resp
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.session != nil {
-		request.AddCookie(f.session)
+	if f.session != "" {
+		request.Header.Set(adminsession.HeaderSession, f.session)
 	}
 	if f.csrf != "" && method != http.MethodGet {
 		request.Header.Set(adminsession.HeaderCSRF, f.csrf)
@@ -189,7 +182,7 @@ func (f *fixture) do(t *testing.T, method, path string, body string) (*http.Resp
 	return response, decoded
 }
 
-// signIn exchanges the code and keeps the cookie, the way a browser would.
+// signIn exchanges the code and keeps the native process session in memory.
 func (f *fixture) signIn(t *testing.T) {
 	t.Helper()
 	code := f.sessions.Code()
@@ -197,13 +190,9 @@ func (f *fixture) signIn(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("sign in returned %d: %v", response.StatusCode, body)
 	}
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == adminsession.CookieName {
-			f.session = cookie
-		}
-	}
-	if f.session == nil {
-		t.Fatal("sign in issued no session cookie")
+	f.session, _ = body["session"].(string)
+	if f.session == "" {
+		t.Fatal("sign in issued no native session token")
 	}
 	csrf, _ := body["csrf"].(string)
 	if csrf == "" {
@@ -422,21 +411,5 @@ func TestTheOverviewCarriesTheRuntimeDiagnostic(t *testing.T) {
 	}
 	if body["version"] == "" {
 		t.Error("the overview carries no version")
-	}
-}
-
-func TestThePageIsServedWithoutASession(t *testing.T) {
-	f := newFixture(t)
-	response, err := f.client.Get(f.server.URL + "/admin/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("the page returned %d; it has to load in order to sign in", response.StatusCode)
-	}
-	if policy := response.Header.Get("Content-Security-Policy"); !strings.Contains(policy, "default-src 'none'") {
-		t.Errorf("the page is served without a restrictive policy: %q", policy)
 	}
 }

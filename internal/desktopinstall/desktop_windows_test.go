@@ -31,7 +31,7 @@ func TestCreateShortcutHandlesSpacesWithoutACommandShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	shortcut := filepath.Join(directory, "LCTK link.lnk")
-	if err := createShortcut(target, shortcut); err != nil {
+	if err := createShortcut(target, "--admin", "Open LCTK", shortcut); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(shortcut); err != nil || info.Size() == 0 {

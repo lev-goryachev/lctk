@@ -49,8 +49,12 @@ func registerDesktop(launcher, uninstaller, version string) error {
 		return fmt.Errorf("create Start-menu group: %w", err)
 	}
 	shortcut := filepath.Join(dir, "LCTK.lnk")
-	if err := createShortcut(launcher, shortcut); err != nil {
+	if err := createShortcut(uninstaller, "--admin", "Open LCTK", shortcut); err != nil {
 		return fmt.Errorf("create Start-menu shortcut: %w", err)
+	}
+	uninstallShortcut := filepath.Join(dir, "Uninstall LCTK.lnk")
+	if err := createShortcut(uninstaller, "--uninstall", "Remove LCTK and its managed runtime", uninstallShortcut); err != nil {
+		return fmt.Errorf("create Start-menu uninstall shortcut: %w", err)
 	}
 	uninstall, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\LCTK`, registry.SET_VALUE)
 	if err != nil {
@@ -58,14 +62,23 @@ func registerDesktop(launcher, uninstaller, version string) error {
 	}
 	defer uninstall.Close()
 	for name, value := range map[string]string{
-		"DisplayName":     "LCTK",
-		"DisplayVersion":  version,
-		"Publisher":       "LCTK contributors",
-		"UninstallString": `"` + uninstaller + `" --uninstall`,
+		"DisplayName":          "LCTK",
+		"DisplayVersion":       version,
+		"Publisher":            "LCTK contributors",
+		"UninstallString":      `"` + uninstaller + `" --uninstall`,
+		"QuietUninstallString": `"` + uninstaller + `" --uninstall`,
+		"InstallLocation":      filepath.Dir(filepath.Dir(launcher)),
+		"DisplayIcon":          uninstaller,
 	} {
 		if err := uninstall.SetStringValue(name, value); err != nil {
 			return fmt.Errorf("register uninstaller: %w", err)
 		}
+	}
+	if err := uninstall.SetDWordValue("NoModify", 1); err != nil {
+		return fmt.Errorf("disable unsupported installation modification: %w", err)
+	}
+	if err := uninstall.SetDWordValue("NoRepair", 1); err != nil {
+		return fmt.Errorf("disable unsupported installation repair: %w", err)
 	}
 	return nil
 }
@@ -103,7 +116,7 @@ func startMenuPrograms() (string, error) {
 // createShortcut uses the operating system's IShellLinkW implementation
 // directly. Shelling out to PowerShell would make spaces and non-ASCII user
 // profile paths part of a second command-language parser.
-func createShortcut(target, shortcut string) error {
+func createShortcut(target, arguments, description, shortcut string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); err != nil {
@@ -129,7 +142,14 @@ func createShortcut(target, shortcut string) error {
 	if err != nil {
 		return err
 	}
-	description, _ := windows.UTF16PtrFromString("Open LCTK")
+	argumentsText, err := windows.UTF16PtrFromString(arguments)
+	if err != nil {
+		return err
+	}
+	descriptionText, err := windows.UTF16PtrFromString(description)
+	if err != nil {
+		return err
+	}
 	settings := []struct {
 		name  string
 		index int
@@ -137,7 +157,8 @@ func createShortcut(target, shortcut string) error {
 	}{
 		{"set shortcut target", 20, targetText},
 		{"set shortcut working directory", 9, workingText},
-		{"set shortcut description", 7, description},
+		{"set shortcut arguments", 11, argumentsText},
+		{"set shortcut description", 7, descriptionText},
 	}
 	for _, setting := range settings {
 		hresult, _, _ = syscall.SyscallN(shellLink.VTable[setting.index], uintptr(unsafe.Pointer(shellLink)), uintptr(unsafe.Pointer(setting.value)))

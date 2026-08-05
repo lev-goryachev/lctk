@@ -27,6 +27,22 @@ func TestVerifierRejectsTamperingAndAcceptsCompleteManifest(t *testing.T) {
 	}
 }
 
+func TestArtifactURLAllowsOnlyHTTPSOrNumericLoopbackHTTP(t *testing.T) {
+	for value, wanted := range map[string]bool{
+		"https://example.com/file":      true,
+		"http://127.0.0.1:4466/file":    true,
+		"http://[::1]:4466/file":        true,
+		"http://localhost:4466/file":    false,
+		"http://example.com/file":       false,
+		"file:///C:/package/file":       false,
+		"https://user@example.com/file": false,
+	} {
+		if got := validArtifactURL(value); got != wanted {
+			t.Errorf("validArtifactURL(%q) = %t, want %t", value, got, wanted)
+		}
+	}
+}
+
 func TestManifestRejectsMutableImageAndDuplicateHost(t *testing.T) {
 	manifest := validManifest()
 	manifest.CodeImage.Reference = "ghcr.io/example/code:latest"

@@ -21,7 +21,7 @@ The current implementation includes the Windows one-click product path:
 - the host change journal from Slice 2.1: a native filesystem watcher per running project, normalized project-relative events, a configurable debounce, a persistent per-project journal that is either complete since its checkpoint or explicitly incomplete, and freshness reported through `project_info`;
 - the constrained runner from Slice 3.2: `run_command` executing only what the machine owner approved, one container per run with the project mounted writable and everything else denied, and an append-only audit record;
 - Git awareness from Slice 3.1: `git_status` and `git_diff` on the project route, read-only and route-scoped, plus the branch, commit, and dirty state in `project_info`;
-- resource policy and the admin surface from Slice 2.3: background-load modes that change what a project costs, disk reporting with a refusal to start on a nearly full volume, and a local admin page over an API a project credential cannot reach;
+- resource policy and the admin surface from Slice 2.3 and ADR-0025: background-load modes that change what a project costs, disk reporting with a refusal to start on a nearly full volume, and a native Windows administrator over an API a project credential cannot reach;
 - incremental indexing from Slice 2.2: a settled batch applied to the index automatically, a gap reconciled instead of applied, a removed directory retracting everything beneath it, bulk changes rebuilt rather than applied, and a search that flushes pending changes before answering so an edit made a moment ago is already searchable.
 - the syntax and symbol layer from Stage 4: one Tree-sitter engine in the project service for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX; live file outlines; bounded name-matched definition and reference lookup; per-language syntax verdicts; and parse concurrency governed by the existing resource mode.
 - persistent semantic intelligence from Stage 5: AST-aware chunks, transactional per-project SQLite state, hybrid lexical/vector ranking, and one shared pinned local embedding process with explicit model, generation, freshness, and failure evidence.
@@ -87,7 +87,7 @@ A small per-user daemon is installed on Windows and starts at sign-in. It is the
 - stores the local registry and client grants;
 - serves the shared project-scoped MCP gateway;
 - watches for file changes;
-- serves the Admin UI and `lctk` CLI;
+- serves the Admin API and `lctk` CLI;
 - starts on-demand stacks and enforces the idle policy.
 
 The embedded gateway does not expose the daemon's runtime client or administrative handlers to coding MCP requests. Project services do not receive a runtime socket. Coding MCP tools do not control the daemon or Podman directly.
@@ -180,7 +180,7 @@ Codex receives a grant automatically when project-local configuration is generat
 
 ## Admin UI
 
-The minimal local web UI must support:
+The minimal native Windows administrator must support:
 
 - add/remove project;
 - start/stop/restart;
@@ -191,7 +191,7 @@ The minimal local web UI must support:
 
 The Admin API is not exposed through the regular project `code` endpoint.
 
-As implemented in Slice 2.3, it is served at `/admin` on the daemon's loopback listener: one embedded HTML page with no build step and no remote asset, over a JSON API that lists projects with their state, index, and change record; starts, stops, restarts, and reindexes them; sets a project's resource mode; lists and revokes client grants; and shows the container-runtime diagnostic and the daemon's recent log. Grant tokens are never served to it. The session is decided in [ADR-0016](adr/0016-admin-surface-and-local-session.md).
+As amended by [ADR-0025](adr/0025-native-windows-admin-and-complete-uninstall.md), `lctk-setup.exe --admin` renders native Win32 controls and calls the daemon's loopback JSON Admin API. It lists projects with their state, index, and change record; registers, starts, stops, restarts, and reindexes them; sets a project's resource mode; configures and opens Codex; lists and revokes client grants; shows runtime diagnostics and recent logs; and opens the registered uninstaller. Grant tokens are never served to it. The independent session boundary originates in [ADR-0016](adr/0016-admin-surface-and-local-session.md), but no credential travels in a URL and no browser receives an admin session.
 
 ## Runtime modes
 
