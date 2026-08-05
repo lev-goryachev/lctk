@@ -104,6 +104,40 @@ func TestInstallRejectsWrongArtifactIdentity(t *testing.T) {
 	}
 }
 
+func TestInstallClientRejectsUnsafeArchivePaths(t *testing.T) {
+	// These names cover both portable ZIP traversal syntax and the Windows path
+	// separator ambiguity that has historically enabled archive extraction to
+	// escape its intended destination.
+	for _, name := range []string{
+		"podman-5.8.2/usr/bin/../../../../podman.exe",
+		`podman-5.8.2\usr\bin\podman.exe`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			writer := zip.NewWriter(&buffer)
+			entry, err := writer.Create(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := entry.Write([]byte("untrusted")); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			archivePath := filepath.Join(t.TempDir(), "podman.zip")
+			if err := os.WriteFile(archivePath, buffer.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manager := NewManager(t.TempDir())
+			if err := manager.installClient(archivePath); err == nil || !strings.Contains(err.Error(), "unsafe path") {
+				t.Fatalf("unsafe archive path produced %v", err)
+			}
+		})
+	}
+}
+
 func podmanArchive(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

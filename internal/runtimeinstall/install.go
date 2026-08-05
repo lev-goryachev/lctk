@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -162,18 +164,40 @@ func (m *Manager) installClient(archivePath string) error {
 	defer archive.Close()
 	wanted := map[string]bool{"podman.exe": false, "gvproxy.exe": false, "win-sshproxy.exe": false}
 	for _, entry := range archive.File {
-		clean := filepath.ToSlash(filepath.Clean(entry.Name))
-		base := filepath.Base(clean)
-		if !strings.Contains(clean, "/usr/bin/") || !hasKey(wanted, base) {
+		// ZIP paths use forward slashes. Reject every non-canonical entry before
+		// inspecting or extracting it so traversal syntax and Windows separators
+		// cannot cross the installation-owned runtime directory.
+		archiveName := strings.TrimSuffix(entry.Name, "/")
+		if archiveName == "" || strings.Contains(entry.Name, `\`) || !fs.ValidPath(archiveName) {
+			return fmt.Errorf("Podman client archive has an unsafe path %q", entry.Name)
+		}
+		if entry.FileInfo().IsDir() {
 			continue
 		}
-		if wanted[base] || entry.FileInfo().IsDir() || entry.UncompressedSize64 > 256<<20 {
-			return fmt.Errorf("Podman client archive has an invalid %s entry", base)
+
+		// Map the untrusted archive basename to one of three constant filenames.
+		// The archive path itself is never joined to a host filesystem path.
+		executable := ""
+		switch path.Base(archiveName) {
+		case "podman.exe":
+			executable = "podman.exe"
+		case "gvproxy.exe":
+			executable = "gvproxy.exe"
+		case "win-sshproxy.exe":
+			executable = "win-sshproxy.exe"
+		default:
+			continue
 		}
-		if err := extractEntry(entry, filepath.Join(targetDir, base)); err != nil {
+		if !strings.HasSuffix(archiveName, "/usr/bin/"+executable) {
+			continue
+		}
+		if wanted[executable] || entry.UncompressedSize64 > 256<<20 {
+			return fmt.Errorf("Podman client archive has an invalid %s entry", executable)
+		}
+		if err := extractEntry(entry, filepath.Join(targetDir, executable)); err != nil {
 			return err
 		}
-		wanted[base] = true
+		wanted[executable] = true
 	}
 	for name, found := range wanted {
 		if !found {
@@ -223,11 +247,6 @@ func (m *Manager) ensureMachine(ctx context.Context, image string) error {
 		return fmt.Errorf("start managed Podman machine: %s: %w", firstLine(stderr), err)
 	}
 	return nil
-}
-
-func hasKey(values map[string]bool, key string) bool {
-	_, ok := values[key]
-	return ok
 }
 
 func firstLine(value string) string {
