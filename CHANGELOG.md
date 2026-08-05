@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Windows setup now accepts a working WSL2 runtime as authoritative virtualization evidence when an active Hyper-V hypervisor hides the firmware capability flag.
 - Verified Windows setup repairs replace rejected existing downloads and private runtime executables with the fully staged immutable artifact.
 - Exact-only code-intel containers no longer treat a typed nil semantic store as enabled during startup reconciliation.
 - Semantic ranking retains bounded top-K candidates while preserving exact total counts and deterministic tie-breaking.

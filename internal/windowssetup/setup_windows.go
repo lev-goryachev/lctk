@@ -25,14 +25,12 @@ func Probe(ctx context.Context) (Status, error) {
 		VirtualizationFirmware: windows.IsProcessorFeaturePresent(windows.PF_VIRT_FIRMWARE_ENABLED),
 		Elevated:               windows.Token(0).IsElevated(),
 	}
-	status.Supported = status.Build >= MinimumBuild && status.Architecture == "amd64" && status.VirtualizationFirmware
-	if !status.Supported {
+	if status.Build < MinimumBuild || status.Architecture != "amd64" {
 		return status, ErrUnsupportedHost
 	}
 	command := exec.CommandContext(ctx, "wsl.exe", "--status")
 	status.WSLReady = command.Run() == nil
-	status.RequiresEnablement = !status.WSLReady
-	return status, nil
+	return evaluateHost(status)
 }
 
 // EnableWSL enables the two Windows optional features required by WSL2. A true
