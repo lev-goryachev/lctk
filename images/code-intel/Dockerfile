@@ -29,6 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY main.go ./
 COPY internal ./internal
+COPY cmd ./cmd
 # Statically linked, so the runtime stage needs no libc shim and no compiler. The
 # build cache matters more than it used to: a grammar is generated C and dominates
 # a rebuild.
@@ -41,9 +42,29 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # toolchain in the runtime image.
 FROM build AS test
 
+ARG TARGETARCH
+
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=1 go test ./...
+    CGO_ENABLED=1 go test ./... && \
+    if [ "$TARGETARCH" = "amd64" ]; then CGO_ENABLED=1 go test -race ./internal/...; fi
+
+# The release stress target exercises the production semantic schema and exact
+# vector scan without adding measurement code to the runtime image.
+FROM build AS stress-build
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" \
+    -o /out/semantic-stress ./cmd/semantic-stress && \
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" \
+    -o /out/exact-stress ./cmd/exact-stress
+
+FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS stress
+
+COPY --from=stress-build /out/semantic-stress /usr/local/bin/semantic-stress
+COPY --from=stress-build /out/exact-stress /usr/local/bin/exact-stress
+ENTRYPOINT ["/usr/local/bin/semantic-stress"]
 
 FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 

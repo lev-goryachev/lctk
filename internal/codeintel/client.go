@@ -50,6 +50,11 @@ const GraphBackend = "lctk_sqlite_name_match"
 // owns the deadline.
 const DefaultSearchTimeout = 30 * time.Second
 
+// DefaultSemanticTimeout includes the measured full exact-vector scan at the
+// one-million-file stress target plus headroom for local inference and host
+// contention. A caller-supplied deadline remains authoritative.
+const DefaultSemanticTimeout = 2 * time.Minute
+
 // DefaultWatchSetTimeout bounds the directory enumeration a watcher needs before
 // it can start. It is longer than a search because it is a whole-tree walk, and
 // shorter than an index build because nothing is being written.
@@ -506,12 +511,12 @@ func (c *Client) Search(ctx context.Context, request Request) (Response, error) 
 }
 
 // SemanticSearch asks the project-local store for hybrid conceptual retrieval.
-// It uses the search timeout because both paths may wait briefly for the shared
-// local inference service, but neither is an unbounded indexing operation.
+// It uses its measured semantic bound because the upper stress target performs
+// a full exact vector scan in addition to waiting for local inference.
 func (c *Client) SemanticSearch(ctx context.Context, request SemanticRequest) (SemanticResponse, error) {
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultSearchTimeout)
+		ctx, cancel = context.WithTimeout(ctx, DefaultSemanticTimeout)
 		defer cancel()
 	}
 	var response SemanticResponse

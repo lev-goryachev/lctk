@@ -190,3 +190,18 @@ func TestNormalizeRejectsInvalidVectors(t *testing.T) {
 		t.Fatalf("normalized vector norm = %f, want 1", math.Sqrt(norm))
 	}
 }
+
+func TestBoundedSemanticRankingKeepsExactTotal(t *testing.T) {
+	source := &sourceStub{files: map[string][]byte{}}
+	store := openTestStore(t, source, &deterministicEmbedder{dimension: 16})
+	if err := store.PopulateStressCorpus(t.Context(), 200); err != nil {
+		t.Fatalf("PopulateStressCorpus: %v", err)
+	}
+	response, err := store.Search(t.Context(), Request{Query: "synthetic stress symbol", Limit: 20})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if response.Total != 200 || len(response.Matches) != 20 || !response.Truncated {
+		t.Fatalf("response = %+v, want exact total 200 and bounded page 20", response)
+	}
+}

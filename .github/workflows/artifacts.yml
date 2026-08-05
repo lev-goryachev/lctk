@@ -13,6 +13,53 @@ permissions:
   contents: read
 
 jobs:
+  code-intel:
+    name: Code image proof (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Execute the production-image test target natively
+        run: docker build --platform "linux/${{ matrix.arch }}" --target test --tag "lctk-code-intel-test:${{ matrix.arch }}" images/code-intel
+      - name: Build, inspect, and execute the native runtime image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="lctk-code-intel:${{ matrix.arch }}"
+          docker build --platform "linux/${{ matrix.arch }}" --tag "$image" images/code-intel
+          test "$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')" = "linux/${{ matrix.arch }}"
+          mkdir -p ".artifacts/image-smoke/${{ matrix.arch }}/workspace" ".artifacts/image-smoke/${{ matrix.arch }}/state" dist
+          container="lctk-code-intel-${{ matrix.arch }}-smoke"
+          docker run --detach --name "$container" --network none \
+            --env LCTK_PROJECT_ID=dry-run-smoke \
+            --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/workspace,target=/workspace,readonly" \
+            --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/state,target=/var/lib/lctk" \
+            "$image"
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
+            test "$health" != unhealthy
+            if test "$health" = healthy; then break; fi
+            sleep 1
+          done
+          test "$(docker inspect "$container" --format '{{.State.Health.Status}}')" = healthy
+          docker exec "$container" test -f /var/lib/lctk/ready
+          docker image inspect "$image" > "dist/code-intel-${{ matrix.arch }}-evidence.json"
+      - name: Upload native image evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: code-intel-${{ matrix.arch }}-evidence
+          path: dist/code-intel-${{ matrix.arch }}-evidence.json
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.artifact }}
     strategy:
@@ -23,13 +70,15 @@ jobs:
             goos: windows
             goarch: amd64
             artifact: windows-x86_64
-            executable: lctk.exe
+            launcher: lctk.exe
+            core: lctk-core.exe
             archive: zip
           - os: macos-15
             goos: darwin
             goarch: arm64
             artifact: darwin-arm64
-            executable: lctk
+            launcher: lctk
+            core: lctk-core
             archive: tar.gz
     runs-on: ${{ matrix.os }}
     env:
@@ -46,13 +95,18 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-      - name: Build executable
+      - name: Build launcher and versioned host core
         shell: bash
         run: |
           mkdir -p dist/package
           go build -trimpath \
             -ldflags "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=${VERSION} -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=${COMMIT} -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o "dist/package/${{ matrix.executable }}" ./cmd/lctk
+            -o "dist/package/${{ matrix.core }}" ./cmd/lctk
+          core_sha="$(sha256sum "dist/package/${{ matrix.core }}" | cut -d' ' -f1)"
+          core_bytes="$(wc -c < "dist/package/${{ matrix.core }}" | tr -d ' ')"
+          go build -trimpath \
+            -ldflags "-s -w -X main.PackagedCoreSHA256=${core_sha} -X main.PackagedCoreBytes=${core_bytes}" \
+            -o "dist/package/${{ matrix.launcher }}" ./cmd/lctk-launcher
           cp LICENSE NOTICE README.md THIRD_PARTY_NOTICES.md dist/package/
       - name: Create Windows archive
         if: matrix.archive == 'zip'
@@ -62,6 +116,19 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: tar -C dist/package -czf "dist/lctk-${VERSION}-darwin-arm64.tar.gz" .
+      - name: Extract and execute packaged launcher
+        shell: bash
+        run: |
+          mkdir -p dist/extracted
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            pwsh -NoProfile -Command "Expand-Archive 'dist/lctk-${VERSION}-windows-x86_64.zip' -DestinationPath 'dist/extracted'"
+          else
+            tar -C dist/extracted -xzf "dist/lctk-${VERSION}-darwin-arm64.tar.gz"
+          fi
+          "dist/extracted/${{ matrix.launcher }}" version --json > dist/version.json
+          test "$(jq -r .version dist/version.json)" = "$VERSION"
+          test "$(jq -r .os dist/version.json)" = "${{ matrix.goos }}"
+          test "$(jq -r .arch dist/version.json)" = "${{ matrix.goarch }}"
       - name: Upload platform archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

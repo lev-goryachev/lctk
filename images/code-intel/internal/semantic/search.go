@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -56,11 +57,48 @@ type rankedChunk struct {
 	lexicalRaw float64
 }
 
-// Search performs exact sqlite-vec KNN and a deterministic lexical ranking,
-// then fuses independent ranks with reciprocal-rank fusion. The lexical pass is
-// intentionally LCTK-owned instead of depending on SQLite build tags; it keeps
-// identifiers competitive with prose without making FTS availability part of
-// the container contract.
+type candidateHeap struct {
+	items  []rankedChunk
+	better func(rankedChunk, rankedChunk) bool
+}
+
+func (values candidateHeap) Len() int { return len(values.items) }
+func (values candidateHeap) Less(left, right int) bool {
+	// The worst retained candidate is the root, so a better new candidate can
+	// replace it in O(log K) while every corpus row is still scored exactly.
+	return values.better(values.items[right], values.items[left])
+}
+func (values candidateHeap) Swap(left, right int) {
+	values.items[left], values.items[right] = values.items[right], values.items[left]
+}
+func (values *candidateHeap) Push(value any) {
+	values.items = append(values.items, value.(rankedChunk))
+}
+func (values *candidateHeap) Pop() any {
+	last := len(values.items) - 1
+	value := values.items[last]
+	values.items = values.items[:last]
+	return value
+}
+
+func retainCandidate(values *candidateHeap, candidate rankedChunk, limit int) {
+	if values.Len() < limit {
+		heap.Push(values, candidate)
+		return
+	}
+	if values.better(candidate, values.items[0]) {
+		values.items[0] = candidate
+		heap.Fix(values, 0)
+	}
+}
+
+// Search performs an exact owned cosine scan and a deterministic lexical
+// ranking, then fuses independent ranks with reciprocal-rank fusion. Both scans
+// retain only their bounded best candidates while counting the full lexical
+// result union, so corpus size does not become response-memory size. The
+// lexical pass is intentionally LCTK-owned instead of depending on SQLite
+// build tags; it keeps identifiers competitive with prose without making FTS
+// availability part of the container contract.
 func (s *Store) Search(ctx context.Context, request Request) (Response, error) {
 	query := strings.TrimSpace(request.Query)
 	if query == "" {
@@ -97,7 +135,8 @@ FROM semantic_vectors v JOIN semantic_chunks c ON c.id = v.rowid`)
 	if err != nil {
 		return Response{}, fail(CodeCorrupt, "The semantic vector index could not be searched.", false, err)
 	}
-	var vectorCandidates []rankedChunk
+	vectorCandidates := &candidateHeap{better: vectorBetter}
+	heap.Init(vectorCandidates)
 	for vectorRows.Next() {
 		var row rankedChunk
 		var encoded []byte
@@ -107,40 +146,33 @@ FROM semantic_vectors v JOIN semantic_chunks c ON c.id = v.rowid`)
 			vectorRows.Close()
 			return Response{}, fail(CodeCorrupt, "A semantic vector result is invalid.", false, err)
 		}
-		stored, err := deserializeVector(encoded, s.config.Dimensions)
+		score, err := cosineEncoded(vectors[0], encoded, s.config.Dimensions)
 		if err != nil {
 			vectorRows.Close()
 			return Response{}, err
 		}
-		row.match.VectorScore = cosine(vectors[0], stored)
-		vectorCandidates = append(vectorCandidates, row)
+		row.match.VectorScore = score
+		retainCandidate(vectorCandidates, row, vectorLimit)
 	}
 	if err := vectorRows.Close(); err != nil {
 		return Response{}, fail(CodeCorrupt, "The semantic vector search did not complete.", false, err)
 	}
-	sort.Slice(vectorCandidates, func(i, j int) bool {
-		if vectorCandidates[i].match.VectorScore != vectorCandidates[j].match.VectorScore {
-			return vectorCandidates[i].match.VectorScore > vectorCandidates[j].match.VectorScore
-		}
-		if vectorCandidates[i].match.Path != vectorCandidates[j].match.Path {
-			return vectorCandidates[i].match.Path < vectorCandidates[j].match.Path
-		}
-		return vectorCandidates[i].match.StartLine < vectorCandidates[j].match.StartLine
+	sort.Slice(vectorCandidates.items, func(i, j int) bool {
+		return vectorBetter(vectorCandidates.items[i], vectorCandidates.items[j])
 	})
-	if len(vectorCandidates) > vectorLimit {
-		vectorCandidates = vectorCandidates[:vectorLimit]
-	}
 	combined := make(map[int64]*rankedChunk)
-	for rank := range vectorCandidates {
-		row := vectorCandidates[rank]
+	vectorIDs := make(map[int64]bool, len(vectorCandidates.items))
+	for rank := range vectorCandidates.items {
+		row := vectorCandidates.items[rank]
 		row.match.VectorRank = rank + 1
 		row.match.HybridScore = 1 / (rrfConstant + float64(rank+1))
 		row.match.Preview = boundedPreview(row.match.Preview)
 		combined[row.id] = &row
+		vectorIDs[row.id] = true
 	}
 
 	terms := queryTerms(query)
-	lexical, err := s.lexicalCandidates(ctx, terms)
+	lexical, lexicalTotal, vectorLexicalMatches, err := s.lexicalCandidates(ctx, terms, vectorLimit, vectorIDs)
 	if err != nil {
 		return Response{}, err
 	}
@@ -169,9 +201,17 @@ FROM semantic_vectors v JOIN semantic_chunks c ON c.id = v.rowid`)
 		if all[i].Path != all[j].Path {
 			return all[i].Path < all[j].Path
 		}
-		return all[i].StartLine < all[j].StartLine
+		if all[i].StartLine != all[j].StartLine {
+			return all[i].StartLine < all[j].StartLine
+		}
+		if all[i].EndLine != all[j].EndLine {
+			return all[i].EndLine < all[j].EndLine
+		}
+		return all[i].Anchor < all[j].Anchor
 	})
-	total := len(all)
+	// The ranked working set is bounded, but Total remains the exact union of all
+	// lexical matches and the vector candidates that did not match lexically.
+	total := lexicalTotal + len(vectorCandidates.items) - vectorLexicalMatches
 	if len(all) > limit {
 		all = all[:limit]
 	}
@@ -201,23 +241,59 @@ func cosine(left, right []float32) float64 {
 	return value
 }
 
-func (s *Store) lexicalCandidates(ctx context.Context, terms []string) ([]rankedChunk, error) {
+func cosineEncoded(query []float32, encoded []byte, dimensions int) (float64, error) {
+	if len(query) != dimensions || len(encoded) != dimensions*4 {
+		return 0, fail(CodeCorrupt,
+			fmt.Sprintf("A stored vector has %d bytes; %d are required.", len(encoded), dimensions*4), false, nil)
+	}
+	var value float64
+	for index, queryValue := range query {
+		stored := math.Float32frombits(binary.LittleEndian.Uint32(encoded[index*4:]))
+		value += float64(queryValue) * float64(stored)
+	}
+	return value, nil
+}
+
+func vectorBetter(left, right rankedChunk) bool {
+	if left.match.VectorScore != right.match.VectorScore {
+		return left.match.VectorScore > right.match.VectorScore
+	}
+	if left.match.Path != right.match.Path {
+		return left.match.Path < right.match.Path
+	}
+	if left.match.StartLine != right.match.StartLine {
+		return left.match.StartLine < right.match.StartLine
+	}
+	if left.match.EndLine != right.match.EndLine {
+		return left.match.EndLine < right.match.EndLine
+	}
+	if left.match.Anchor != right.match.Anchor {
+		return left.match.Anchor < right.match.Anchor
+	}
+	return left.id < right.id
+}
+
+func (s *Store) lexicalCandidates(ctx context.Context, terms []string, limit int,
+	vectorIDs map[int64]bool) ([]rankedChunk, int, int, error) {
 	if len(terms) == 0 {
-		return nil, nil
+		return nil, 0, 0, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, path, language, precision, anchor,
 start_line, end_line, content FROM semantic_chunks`)
 	if err != nil {
-		return nil, fail(CodeCorrupt, "Semantic chunks could not be read for lexical ranking.", false, err)
+		return nil, 0, 0, fail(CodeCorrupt, "Semantic chunks could not be read for lexical ranking.", false, err)
 	}
 	defer rows.Close()
-	var results []rankedChunk
+	results := &candidateHeap{better: lexicalBetter}
+	heap.Init(results)
+	lexicalTotal := 0
+	vectorLexicalMatches := 0
 	for rows.Next() {
 		var row rankedChunk
 		if err := rows.Scan(&row.id, &row.match.Path, &row.match.Language,
 			&row.match.ChunkPrecision, &row.match.Anchor, &row.match.StartLine,
 			&row.match.EndLine, &row.match.Preview); err != nil {
-			return nil, fail(CodeCorrupt, "A semantic chunk is invalid.", false, err)
+			return nil, 0, 0, fail(CodeCorrupt, "A semantic chunk is invalid.", false, err)
 		}
 		haystack := strings.ToLower(row.match.Path + "\n" + row.match.Anchor + "\n" + row.match.Preview)
 		for _, term := range terms {
@@ -227,22 +303,39 @@ start_line, end_line, content FROM semantic_chunks`)
 			}
 		}
 		if row.lexicalRaw > 0 {
-			results = append(results, row)
+			lexicalTotal++
+			if vectorIDs[row.id] {
+				vectorLexicalMatches++
+			}
+			retainCandidate(results, row, limit)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fail(CodeCorrupt, "Lexical semantic ranking did not complete.", false, err)
+		return nil, 0, 0, fail(CodeCorrupt, "Lexical semantic ranking did not complete.", false, err)
 	}
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].lexicalRaw != results[j].lexicalRaw {
-			return results[i].lexicalRaw > results[j].lexicalRaw
-		}
-		if results[i].match.Path != results[j].match.Path {
-			return results[i].match.Path < results[j].match.Path
-		}
-		return results[i].match.StartLine < results[j].match.StartLine
+	sort.Slice(results.items, func(i, j int) bool {
+		return lexicalBetter(results.items[i], results.items[j])
 	})
-	return results, nil
+	return results.items, lexicalTotal, vectorLexicalMatches, nil
+}
+
+func lexicalBetter(left, right rankedChunk) bool {
+	if left.lexicalRaw != right.lexicalRaw {
+		return left.lexicalRaw > right.lexicalRaw
+	}
+	if left.match.Path != right.match.Path {
+		return left.match.Path < right.match.Path
+	}
+	if left.match.StartLine != right.match.StartLine {
+		return left.match.StartLine < right.match.StartLine
+	}
+	if left.match.EndLine != right.match.EndLine {
+		return left.match.EndLine < right.match.EndLine
+	}
+	if left.match.Anchor != right.match.Anchor {
+		return left.match.Anchor < right.match.Anchor
+	}
+	return left.id < right.id
 }
 
 func queryTerms(query string) []string {
