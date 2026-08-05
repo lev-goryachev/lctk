@@ -126,13 +126,19 @@ func New(indexer Indexer, outliner Outliner, logger *slog.Logger) *Server {
 	return NewWithSemantic(indexer, outliner, nil, logger)
 }
 
-// NewWithSemantic builds a server with persistent semantic retrieval enabled.
-// New remains available for exact-only tests and old development stacks.
-func NewWithSemantic(indexer Indexer, outliner Outliner, semanticStore Semantic, logger *slog.Logger) *Server {
+// NewWithSemantic builds a server with the production persistent semantic
+// store. Its concrete pointer parameter is deliberate: a nil *semantic.Store
+// converted directly to the Semantic interface is non-nil and would dispatch a
+// startup Sync call through a nil receiver in exact-only containers.
+func NewWithSemantic(indexer Indexer, outliner Outliner, semanticStore *semantic.Store, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{indexer: indexer, outliner: outliner, semantic: semanticStore, logger: logger}
+	var backend Semantic
+	if semanticStore != nil {
+		backend = semanticStore
+	}
+	return &Server{indexer: indexer, outliner: outliner, semantic: backend, logger: logger}
 }
 
 // Handler returns the routed HTTP surface.
