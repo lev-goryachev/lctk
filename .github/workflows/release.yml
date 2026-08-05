@@ -84,7 +84,7 @@ jobs:
         run: |
           foreach ($file in @('dist/package/lctk-core.exe', 'dist/package/lctk.exe', "dist/lctk-setup-$env:VERSION-windows-amd64.exe")) {
             $status = (Get-AuthenticodeSignature $file).Status.ToString()
-            if ($status -ne 'NotSigned') { throw "Unsigned Windows release policy violated for $file: $status" }
+            if ($status -ne 'NotSigned') { throw "Unsigned Windows release policy violated for ${file}: $status" }
           }
       - name: Package, extract, and execute the real client entry point
         shell: pwsh
