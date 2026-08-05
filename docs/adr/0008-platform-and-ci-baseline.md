@@ -1,6 +1,6 @@
 # ADR-0008: Platform targets and hosted CI baseline
 
-> Amended by [ADR-0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) for the Windows managed Podman/WSL target and clean-host setup acceptance.
+> Amended by [ADR-0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) for the Windows managed Podman/WSL target, unsigned Windows-only official publication, and clean-host setup acceptance. macOS remains a development compatibility target.
 
 - Status: accepted
 - Date: 2026-07-25

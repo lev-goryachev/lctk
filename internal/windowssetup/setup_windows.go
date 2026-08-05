@@ -62,7 +62,9 @@ func EnableWSL(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// RelaunchElevated starts the current signed setup through the UAC consent UI.
+// RelaunchElevated starts the current setup through the UAC consent UI. The
+// accepted unsigned release policy means Windows identifies its publisher as
+// unknown; component integrity is enforced separately by the release manifest.
 func RelaunchElevated(args []string) error {
 	executable, err := os.Executable()
 	if err != nil {

@@ -21,9 +21,11 @@ The official Codex extension for VS Code is the first target client. The public 
 
 Compatibility targets are not certified configurations yet. Hosted CI provides build and test evidence, while final installation certification still requires a clean Windows 10 22H2 host with virtualization enabled.
 
+The initial official release is Windows amd64 only. macOS remains covered by source-build CI but has no published package.
+
 ## Install and open
 
-Download the Authenticode-signed `lctk-setup-<version>-windows-amd64.exe` from the release, run it, review the plan, and select **Install LCTK**. Setup verifies every signed component, enables WSL2 when required, installs the private runtime, registers the sign-in daemon and Start-menu shortcut, and opens the local Admin UI. A WSL2 prerequisite change can require one reboot; setup registers an exact one-time continuation.
+Download `lctk-setup-<version>-windows-amd64.exe` from the GitHub Release, run it, review the plan, and select **Install LCTK**. The initial open-source installer is intentionally unsigned: Windows can show **Windows protected your PC**, in which case select **More info** and **Run anyway**; an elevation dialog can identify the publisher as unknown. Setup independently verifies the Ed25519-signed component manifest plus every artifact size and SHA-256 digest, enables WSL2 when required, installs the private runtime, registers the sign-in daemon and Start-menu shortcut, and opens the local Admin UI. A WSL2 prerequisite change can require one reboot; setup registers an exact one-time continuation.
 
 No Go toolchain, Git, Docker Desktop, Podman Desktop, image build, or shell command is required. In the Admin UI, enter the project folder, add it, select **Start**, and select **Configure & Open Codex**. LCTK starts that editor process with only the selected project's scoped grant. Opening **LCTK** from the Start menu later reconnects to the daemon and opens a fresh authenticated UI session. The same UI opens the explicit uninstall choice: preserve project state archives or remove all LCTK data.
 
@@ -60,7 +62,7 @@ Around that:
 - `lctk admin open` for a local page with the same operations, over an API a project credential cannot reach;
 - the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
 
-Automated tests cover setup planning, immutable downloads, runtime isolation, the CLI, gateway scope guarantees, search, watcher, and change journal. CI builds and tests on hosted Windows and macOS runners, builds OCI images on Linux, and constructs the signed Windows installer. Managed-runtime integration tests skip explicitly when the private LCTK machine is absent rather than being simulated.
+Automated tests cover setup planning, immutable downloads, runtime isolation, the CLI, gateway scope guarantees, search, watcher, and change journal. CI builds and tests on hosted Windows and macOS runners, builds OCI images on Linux, and constructs the unsigned Windows installer with a signed release manifest, checksums, and provenance attestations. Managed-runtime integration tests skip explicitly when the private LCTK machine is absent rather than being simulated.
 
 ## Documentation
 

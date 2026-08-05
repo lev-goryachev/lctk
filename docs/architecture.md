@@ -8,7 +8,7 @@ Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP ga
 
 The current implementation includes the Windows one-click product path:
 
-- one signed setup executable, a stable launcher, a versioned Go host core, and a sign-in daemon;
+- one manifest-verifying unsigned Windows setup executable, a stable launcher, a versioned Go host core, and a sign-in daemon;
 - a standard-library HTTP daemon with `GET /health`;
 - the official MCP Go SDK Streamable HTTP handler at `/mcp` with temporary tool `foundation_info`;
 - an `fsnotify` basic event-delivery proof;
@@ -26,7 +26,7 @@ The current implementation includes the Windows one-click product path:
 - the syntax and symbol layer from Stage 4: one Tree-sitter engine in the project service for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX; live file outlines; bounded name-matched definition and reference lookup; per-language syntax verdicts; and parse concurrency governed by the existing resource mode.
 - persistent semantic intelligence from Stage 5: AST-aware chunks, transactional per-project SQLite state, hybrid lexical/vector ranking, and one shared pinned local embedding process with explicit model, generation, freshness, and failure evidence.
 - the Stage 6 graph, repository map, and explicit memory layer: derived name-match calls and imports committed with semantic generations, deterministic bounded graph tools and maps, and revision-checked reviewed knowledge with provenance and Git awareness.
-- Stage 7 installation and release hardening plus ADR-0023: a digest-verifying stable launcher, schema-2 signed manifests, plan-first browser setup, pinned Podman/WSL artifacts, WSL prerequisite and reboot continuation, sign-in/Start-menu registration, transactional update and rollback, and fail-closed official signing gates.
+- Stage 7 installation and release hardening plus ADR-0023: a digest-verifying stable launcher, schema-2 signed manifests, plan-first browser setup, pinned Podman/WSL artifacts, WSL prerequisite and reboot continuation, sign-in/Start-menu registration, transactional update and rollback, and fail-closed Windows-only publication gates.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
 
