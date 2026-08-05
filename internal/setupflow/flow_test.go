@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
@@ -66,7 +67,14 @@ func TestInstallAppliesTheAcceptedDependencyOrder(t *testing.T) {
 		},
 		Run: func(_ context.Context, executable string, args ...string) ([]byte, error) {
 			calls = append(calls, "bootstrap")
-			if filepath.Base(executable) != "lctk-core.exe" || !contains(args, "--yes") {
+			// ActiveExecutable returns the native release filename because setup is
+			// exercised on every supported CI host, even though the desktop setup
+			// itself is released only for Windows.
+			coreName := "lctk-core"
+			if runtime.GOOS == "windows" {
+				coreName += ".exe"
+			}
+			if filepath.Base(executable) != coreName || !contains(args, "--yes") {
 				t.Fatalf("bootstrap=%s %v", executable, args)
 			}
 			return []byte(`{"ready":true}`), nil

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -76,9 +77,16 @@ func newRunner(runtime *fakeRuntime) *Runner {
 }
 
 func request() Request {
+	// The runner accepts the authoritative native host path, so the fixture must
+	// use the syntax of the host executing the test before HostPath translates it
+	// into the path visible to LCTK's managed runtime.
+	workspace := "/work/alpha"
+	if goruntime.GOOS == "windows" {
+		workspace = `D:\work\alpha`
+	}
 	return Request{
 		ProjectID: "alpha-aaaaaaaa",
-		Workspace: `D:\work\alpha`,
+		Workspace: workspace,
 		Image:     "golang:1.25",
 		Command:   "go test ./...",
 	}
@@ -93,7 +101,13 @@ func TestEveryGuardrailReachesTheRuntime(t *testing.T) {
 	}
 	args := runtime.runArgs(t)
 
-	if got, _ := flagValue(args, "--volume"); got != `/mnt/d/work/alpha:/workspace` {
+	// Windows projects cross the WSL automount boundary; Unix projects already
+	// use the native absolute path exposed to the managed runtime.
+	wantVolume := `/work/alpha:/workspace`
+	if goruntime.GOOS == "windows" {
+		wantVolume = `/mnt/d/work/alpha:/workspace`
+	}
+	if got, _ := flagValue(args, "--volume"); got != wantVolume {
 		t.Errorf("--volume = %q, want the one project root", got)
 	}
 	if got, _ := flagValue(args, "--workdir"); got != "/workspace" {
