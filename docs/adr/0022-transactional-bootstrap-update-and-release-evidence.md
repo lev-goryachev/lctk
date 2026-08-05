@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-08-04
 - Deciders: project maintainers
+- Amended by: [ADR-0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) for runtime components and the Windows setup transaction
 
 ## Context
 
@@ -45,4 +46,3 @@ Compatibility and stress evidence is generated separately from publication. Pack
 
 - Keep external pull requests closed until the contribution policy is deliberately opened; completing the old Slice 1.5 implementation is not by itself that policy decision.
 - Record exact signing identities and target-hardware certification outside public source where credentials or private device records are involved.
-

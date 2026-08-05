@@ -15,8 +15,11 @@ import (
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/auditlog"
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/gateway"
 	"github.com/lev-goryachev/lctk/internal/gitinfo"
+	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/localapi"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/mcpserver"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -24,7 +27,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
 )
 
-const DefaultAddress = "127.0.0.1:4444"
+const DefaultAddress = localapi.DefaultAddress
 
 type Health struct {
 	Status  string `json:"status"`
@@ -89,6 +92,17 @@ func Run(ctx context.Context, address string) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
+	home, err := lctkhome.EnsureDir()
+	if err != nil {
+		listener.Close()
+		return err
+	}
+	removeDaemonState, err := daemonstate.Register(home)
+	if err != nil {
+		listener.Close()
+		return fmt.Errorf("record daemon identity: %w", err)
+	}
+	defer removeDaemonState()
 
 	// Recent log records are kept in memory so the admin surface can show what
 	// just happened without an operator having to find a file.

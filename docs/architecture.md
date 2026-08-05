@@ -6,15 +6,15 @@ Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP ga
 
 ## Current implementation
 
-The current implementation is deliberately narrower than the target architecture:
+The current implementation includes the Windows one-click product path:
 
-- one Go `lctk` executable with CLI and foreground daemon command families;
+- one signed setup executable, a stable launcher, a versioned Go host core, and a sign-in daemon;
 - a standard-library HTTP daemon with `GET /health`;
 - the official MCP Go SDK Streamable HTTP handler at `/mcp` with temporary tool `foundation_info`;
 - an `fsnotify` basic event-delivery proof;
-- a read-only Moby API diagnostic for Docker Desktop availability;
+- a read-only identity probe for LCTK's private Podman client and explicit `lctk-runtime-root` connection;
 - the local project registry from Slice 1.1: canonical host paths, stable project identities, `lctk project add/status/remove`, and manifest parsing, none of which start a service;
-- the per-project container stack from Slice 1.2: deterministic Compose generation, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, `lctk project start/stop/restart`, and typed lifecycle state with health;
+- the per-project runtime from Slice 1.2 and ADR-0023: a deterministic JSON plan, explicit Podman operations, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, lifecycle commands, and typed health;
 - the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs;
 - the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
 - persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter;
@@ -26,7 +26,7 @@ The current implementation is deliberately narrower than the target architecture
 - the syntax and symbol layer from Stage 4: one Tree-sitter engine in the project service for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX; live file outlines; bounded name-matched definition and reference lookup; per-language syntax verdicts; and parse concurrency governed by the existing resource mode.
 - persistent semantic intelligence from Stage 5: AST-aware chunks, transactional per-project SQLite state, hybrid lexical/vector ranking, and one shared pinned local embedding process with explicit model, generation, freshness, and failure evidence.
 - the Stage 6 graph, repository map, and explicit memory layer: derived name-match calls and imports committed with semantic generations, deterministic bounded graph tools and maps, and revision-checked reviewed knowledge with provenance and Git awareness.
-- Stage 7 installation and release hardening: a digest-verifying stable launcher, signed release manifests, plan-first bootstrap and update, crash-complete database migration and rollback, native multi-architecture release evidence, and fail-closed official signing/notarization gates.
+- Stage 7 installation and release hardening plus ADR-0023: a digest-verifying stable launcher, schema-2 signed manifests, plan-first browser setup, pinned Podman/WSL artifacts, WSL prerequisite and reboot continuation, sign-in/Start-menu registration, transactional update and rollback, and fail-closed official signing gates.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
 
@@ -70,7 +70,7 @@ Host-side LCTK daemon
 ├── local registry and secrets
 ├── shared MCP gateway and grant enforcement
 ├── host path canonicalization
-├── Docker Desktop lifecycle
+├── managed Podman/WSL lifecycle
 ├── filesystem watcher and change journal
 ├── resource planning
 ├── local Admin UI
@@ -79,18 +79,18 @@ Host-side LCTK daemon
 
 ## Host-side daemon
 
-A small daemon is installed on Windows and macOS and can optionally start when the user signs in. It is the only LCTK component that:
+A small per-user daemon is installed on Windows and starts at sign-in. It is the only LCTK component that:
 
 - registers arbitrary host paths;
 - canonicalizes paths using host OS facilities;
-- manages the Docker Desktop/Compose lifecycle;
+- manages its private Podman client and the `lctk-runtime` WSL machine;
 - stores the local registry and client grants;
 - serves the shared project-scoped MCP gateway;
 - watches for file changes;
 - serves the Admin UI and `lctk` CLI;
 - starts on-demand stacks and enforces the idle policy.
 
-The embedded gateway does not expose the daemon's Docker client or administrative handlers to coding MCP requests. Project services do not receive the Docker socket. Coding MCP tools do not control the daemon or Docker directly.
+The embedded gateway does not expose the daemon's runtime client or administrative handlers to coding MCP requests. Project services do not receive a runtime socket. Coding MCP tools do not control the daemon or Podman directly.
 
 ## Shared control plane
 
@@ -116,7 +116,7 @@ The gateway uses the official MCP Go SDK and LCTK-owned registry, grant-validati
 
 ## Project runtime
 
-The target model is a separate Docker Compose project or equivalent namespace for each registered folder. Two runtime boundaries are sufficient for the first working version:
+The runtime model is a deterministic container, network, and volume namespace for each registered folder inside one installation-owned Podman WSL machine. Two runtime boundaries are sufficient:
 
 - **code-intel** — read-only source mount, adapters, and persistent indexes;
 - **runner** — writable source mount and project-command execution.

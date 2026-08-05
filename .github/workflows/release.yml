@@ -70,6 +70,7 @@ jobs:
           $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           $trust = "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$env:VERSION -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$env:GITHUB_SHA -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$date -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=$env:KEY_ID -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$env:PUBLIC_KEY -X github.com/lev-goryachev/lctk/internal/releasebundle.DefaultManifestURL=$env:MANIFEST_URL"
           go build -trimpath -ldflags $trust -o dist/package/lctk-core.exe ./cmd/lctk
+          go build -trimpath -ldflags "$trust -H=windowsgui" -o "dist/lctk-setup-$env:VERSION-windows-amd64.exe" ./cmd/lctk-setup
           Copy-Item LICENSE,NOTICE,README.md,THIRD_PARTY_NOTICES.md dist/package/
       - name: Authenticode sign core, bind launcher identity, and verify both
         env:
@@ -92,7 +93,10 @@ jobs:
             $launcher = 'dist/package/lctk.exe'
             $signed = Set-AuthenticodeSignature -FilePath $launcher -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
             if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $launcher: $($signed.StatusMessage)" }
-            foreach ($file in @($launcher, $core)) {
+            $setup = "dist/lctk-setup-$env:VERSION-windows-amd64.exe"
+            $signed = Set-AuthenticodeSignature -FilePath $setup -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
+            if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $setup: $($signed.StatusMessage)" }
+            foreach ($file in @($launcher, $core, $setup)) {
               if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "Authenticode verification failed for $file" }
             }
           } finally {
@@ -102,14 +106,24 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item dist/package/lctk-core.exe dist/lctk-core-windows-amd64.exe
+          Copy-Item dist/package/lctk.exe dist/lctk-launcher-windows-amd64.exe
           Compress-Archive -Path dist/package/* -DestinationPath "dist/lctk-$env:VERSION-windows-amd64.zip"
           Expand-Archive "dist/lctk-$env:VERSION-windows-amd64.zip" -DestinationPath dist/extracted
           $info = & dist/extracted/lctk.exe version --json | ConvertFrom-Json
           if ($info.version -ne $env:VERSION -or $info.os -ne 'windows' -or $info.arch -ne 'amd64') { throw 'Extracted Windows package identity is invalid.' }
+      - name: Mirror and verify the pinned Podman runtime
+        shell: pwsh
+        run: |
+          $client = "dist/lctk-podman-client-5.8.2-windows-amd64.zip"
+          $machine = "dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/containers/podman/releases/download/v5.8.2/podman-remote-release-windows_amd64.zip" -OutFile $client
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/containers/podman-machine-os/releases/download/v5.8.2/podman-machine.x86_64.wsl.tar.zst" -OutFile $machine
+          if ((Get-Item $client).Length -ne 30780191 -or (Get-FileHash -Algorithm SHA256 $client).Hash.ToLowerInvariant() -ne '1b60aae4bd4879c3932c283d2070bb87116ec1f0ab3a4a98eff7e65f318f9e4e') { throw 'Pinned Podman client identity differs.' }
+          if ((Get-Item $machine).Length -ne 257374129 -or (Get-FileHash -Algorithm SHA256 $machine).Hash.ToLowerInvariant() -ne 'e2b6cbcadd8b41b708fecb58a246a20d737dee0ef26872a3f75b575f77eba968') { throw 'Pinned Podman machine identity differs.' }
       - name: Generate Windows SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: ./dist/package
+          path: ./dist
           format: spdx-json
           output-file: ./dist/lctk-windows-amd64.spdx.json
           upload-artifact: false
@@ -119,7 +133,11 @@ jobs:
           name: release-windows
           path: |
             dist/lctk-core-windows-amd64.exe
+            dist/lctk-launcher-windows-amd64.exe
+            dist/lctk-setup-${{ needs.validate.outputs.version }}-windows-amd64.exe
             dist/lctk-${{ needs.validate.outputs.version }}-windows-amd64.zip
+            dist/lctk-podman-client-5.8.2-windows-amd64.zip
+            dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst
             dist/lctk-windows-amd64.spdx.json
           if-no-files-found: error
 
@@ -477,6 +495,10 @@ jobs:
             --base-url "$base" --code-image "$CODE_IMAGE" --code-image-bytes "$CODE_IMAGE_BYTES" \
             --inference-image-bytes "$INFERENCE_IMAGE_BYTES" --key-id lctk-release-v1 \
             --artifact "lctk-core-windows-amd64.exe,host-core,windows,amd64,dist/lctk-core-windows-amd64.exe" \
+            --artifact "lctk-launcher-windows-amd64.exe,host-launcher,windows,amd64,dist/lctk-launcher-windows-amd64.exe" \
+            --artifact "lctk-setup-$VERSION-windows-amd64.exe,installer,windows,amd64,dist/lctk-setup-$VERSION-windows-amd64.exe" \
+            --artifact "lctk-podman-client-5.8.2-windows-amd64.zip,podman-client,windows,amd64,dist/lctk-podman-client-5.8.2-windows-amd64.zip" \
+            --artifact "lctk-podman-machine-5.8.2-linux-amd64.tar.zst,podman-machine,linux,amd64,dist/lctk-podman-machine-5.8.2-linux-amd64.tar.zst" \
             --artifact "lctk-core-darwin-arm64,host-core,darwin,arm64,dist/lctk-core-darwin-arm64" \
             --artifact "lctk-$VERSION-windows-amd64.zip,archive,windows,amd64,dist/lctk-$VERSION-windows-amd64.zip" \
             --artifact "lctk-$VERSION-darwin-arm64.tar.gz,archive,darwin,arm64,dist/lctk-$VERSION-darwin-arm64.tar.gz" \

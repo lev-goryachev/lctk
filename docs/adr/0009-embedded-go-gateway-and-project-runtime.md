@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-07-25
 - Deciders: project maintainers
+- Amended by: [ADR-0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) for the managed Windows runtime and installer lifecycle
 - Supersedes: [ADR-0002](0002-host-daemon-and-container-runtime.md)
 
 ## Context

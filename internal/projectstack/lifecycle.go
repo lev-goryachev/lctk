@@ -1,17 +1,17 @@
 package projectstack
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
@@ -45,11 +45,10 @@ func (s State) Retryable() bool { return s == StateStarting }
 var (
 	// ErrRuntimeUnavailable reports that the container runtime cannot be reached.
 	// It is separate from a project failure so a caller does not blame the
-	// project for Docker Desktop being closed.
+	// project for the managed WSL runtime being unavailable.
 	ErrRuntimeUnavailable = errors.New("container runtime is unavailable")
-	// ErrLinuxContainersRequired reports a reachable runtime that cannot run
-	// Linux containers, which Docker Desktop on Windows does when switched to
-	// Windows container mode.
+	// ErrLinuxContainersRequired reports a reachable runtime that does not expose
+	// the Linux machine required by the selected backends.
 	//
 	// LCTK project stacks are Linux containers by design: ADR-0011 requires a
 	// Linux boundary for the search backend. Without this check the failure
@@ -95,28 +94,10 @@ func parseInspect(stdout string) []string {
 	return strings.Fields(trimmed)
 }
 
-// Runner executes container-runtime commands. It is an interface so the lifecycle
-// logic can be tested without Docker, and so the transport can change without
-// touching callers.
+// Runner executes container-runtime commands. It is an interface so lifecycle
+// logic is verified without mutating a real managed machine.
 type Runner interface {
 	Run(ctx context.Context, args ...string) (stdout string, stderr string, err error)
-}
-
-// dockerRunner shells out to the Docker CLI.
-//
-// Compose orchestration goes through the CLI rather than the Moby API because the
-// Compose specification is implemented there, and ADR-0003 commits LCTK to
-// Compose projects. Inspection also goes through the CLI so that a single
-// mechanism explains any failure.
-type dockerRunner struct{}
-
-func (dockerRunner) Run(ctx context.Context, args ...string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
 }
 
 type inferenceLifecycle interface {
@@ -128,7 +109,7 @@ type Manager struct {
 	runner Runner
 	// inference is shared stateless compute and is ensured before any project
 	// receives its endpoint. It is nil only in narrow lifecycle unit tests that
-	// intentionally exercise Compose behavior in isolation.
+	// intentionally exercise container lifecycle behavior in isolation.
 	sharedInference inferenceLifecycle
 	inferenceErr    error
 	// settings resolves the machine's background-load policy. It is a function so
@@ -140,9 +121,9 @@ type Manager struct {
 	version string
 }
 
-// NewManager returns a manager backed by the local Docker CLI.
+// NewManager returns a manager backed by LCTK's private Podman connection.
 func NewManager() *Manager {
-	runner := dockerRunner{}
+	runner := containerruntime.Runner{}
 	shared, err := inference.NewManager(runner)
 	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, settings: hostsettings.Load, version: buildinfo.Version}
 }
@@ -189,30 +170,23 @@ func (m *Manager) Budget(project projectregistry.Project) hostsettings.Budget {
 	return load.Resources.WithProjectMode(hostsettings.Mode(project.ResourceMode)).Budget()
 }
 
-// RuntimeAvailable reports whether the container runtime answers and can run the
-// Linux containers LCTK needs.
-//
-// Reachability alone is not enough. A Windows host can have a running daemon in
-// Windows container mode, which answers every query and then rejects a Linux
-// image with an opaque manifest error. Reporting that here turns a confusing
-// late failure into an actionable one, and lets callers skip rather than fail
-// where no suitable runtime exists.
+// RuntimeAvailable reports whether LCTK's explicit Podman connection answers
+// and is backed by the Linux machine required by code intelligence.
 func (m *Manager) RuntimeAvailable(ctx context.Context) error {
-	stdout, stderr, err := m.runner.Run(ctx, "version", "--format", "{{.Server.Version}} {{.Server.Os}}")
+	stdout, stderr, err := m.runner.Run(ctx, "info", "--format", "json")
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, firstLine(stderr, err))
 	}
-
-	fields := strings.Fields(strings.TrimSpace(stdout))
-	if len(fields) < 2 {
-		// An older or unusual runtime that does not report its OS is accepted:
-		// refusing on a parse failure would be worse than letting the image pull
-		// report the real problem.
-		return nil
+	var identity struct {
+		Host struct {
+			OS string `json:"os"`
+		} `json:"host"`
 	}
-	if serverOS := strings.ToLower(fields[1]); serverOS != "linux" {
-		return fmt.Errorf("%w: the runtime reports %q; switch Docker Desktop to Linux containers",
-			ErrLinuxContainersRequired, serverOS)
+	if err := json.Unmarshal([]byte(stdout), &identity); err != nil || identity.Host.OS == "" {
+		return fmt.Errorf("%w: Podman returned invalid host identity", ErrRuntimeUnavailable)
+	}
+	if serverOS := strings.ToLower(identity.Host.OS); serverOS != "linux" {
+		return fmt.Errorf("%w: the managed runtime reports %q", ErrLinuxContainersRequired, serverOS)
 	}
 	return nil
 }
@@ -229,7 +203,7 @@ func (m *Manager) ImageAvailable(ctx context.Context, image string) error {
 	return nil
 }
 
-// ImageMatches proves that the Compose version tag resolves to the exact
+// ImageMatches proves that the product version tag resolves to the exact
 // signed digest selected by a release manifest. Existence of the tag alone is
 // insufficient because local tags are mutable Docker state.
 func (m *Manager) ImageMatches(ctx context.Context, tag, immutableReference string) (bool, error) {
@@ -260,7 +234,7 @@ func (m *Manager) inspectImageID(ctx context.Context, image string) (string, boo
 }
 
 // InstallImage pulls an immutable OCI reference, then assigns the local unified
-// version tag consumed by Compose. The tag is derived state; the signed digest
+// version tag consumed by the project plan. The tag is derived state; the signed digest
 // remains the authority checked by the pull.
 func (m *Manager) InstallImage(ctx context.Context, immutableReference, version string) error {
 	if immutableReference == "" || version == "" {
@@ -321,11 +295,8 @@ func (m *Manager) BuildImage(ctx context.Context, image, contextDir string) erro
 	return nil
 }
 
-// Start writes the Compose file and brings the stack up, then waits for health.
-//
-// The Compose file is rewritten on every start so that a change in the registry
-// or in the product version takes effect, and so a hand-edited file cannot
-// persist.
+// Start writes the deterministic runtime plan, creates isolated resources, and
+// starts the one project service before waiting for health.
 func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wait time.Duration) (Status, error) {
 	names, err := m.names(project.ID)
 	if err != nil {
@@ -346,12 +317,20 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 		}
 	}
 
-	composePath, err := WriteForVersion(project, m.Budget(project), m.version)
+	plan, err := BuildRuntimePlanForVersion(project, m.Budget(project), m.version)
 	if err != nil {
 		return Status{}, err
 	}
-
-	if _, stderr, err := m.runner.Run(ctx, m.composeArgs(composePath, names, "up", "--detach")...); err != nil {
+	if _, err := WriteRuntimePlan(plan); err != nil {
+		return Status{}, err
+	}
+	if err := m.ensureNetwork(ctx, plan); err != nil {
+		return Status{}, err
+	}
+	if err := m.ensureVolume(ctx, plan); err != nil {
+		return Status{}, err
+	}
+	if _, stderr, err := m.runner.Run(ctx, plan.Arguments()...); err != nil {
 		return Status{}, fmt.Errorf("start %s: %s", project.ID, firstLine(stderr, err))
 	}
 
@@ -371,15 +350,13 @@ func (m *Manager) Stop(ctx context.Context, project projectregistry.Project) (St
 		return Status{}, err
 	}
 
-	composePath, err := ComposeFilePath(project.ID)
-	if err != nil {
-		return Status{}, err
+	// Removing the service and its private network deliberately leaves the named
+	// state volume intact. Purge remains a separate destructive operation.
+	if _, stderr, err := m.runner.Run(ctx, "rm", "--force", names.ContainerName); err != nil && !isNoSuchContainer("", stderr) {
+		return Status{}, fmt.Errorf("stop %s container: %s", project.ID, firstLine(stderr, err))
 	}
-
-	// "down" without --volumes deliberately keeps the named volume, so indexes
-	// and memory survive. Removing them is a separate, explicit purge.
-	if _, stderr, err := m.runner.Run(ctx, m.composeArgs(composePath, names, "down", "--remove-orphans")...); err != nil {
-		return Status{}, fmt.Errorf("stop %s: %s", project.ID, firstLine(stderr, err))
+	if _, stderr, err := m.runner.Run(ctx, "network", "rm", names.Network); err != nil && !isNoSuchNetwork("", stderr) {
+		return Status{}, fmt.Errorf("stop %s network: %s", project.ID, firstLine(stderr, err))
 	}
 
 	return Status{
@@ -530,11 +507,40 @@ func (m *Manager) waitForHealth(ctx context.Context, names Names, budget time.Du
 	}
 }
 
-// composeArgs builds a docker compose invocation pinned to the generated file and
-// the project's Compose name, so it can never act on a different stack.
-func (m *Manager) composeArgs(composePath string, names Names, action ...string) []string {
-	args := []string{"compose", "--file", composePath, "--project-name", names.ComposeName}
-	return append(args, action...)
+// ensureNetwork creates only the deterministically named project network and
+// treats every unexpected inspection failure as fatal.
+func (m *Manager) ensureNetwork(ctx context.Context, plan RuntimePlan) error {
+	if _, stderr, err := m.runner.Run(ctx, "network", "inspect", plan.Network, "--format", "{{.Name}}"); err == nil {
+		return nil
+	} else if !isNoSuchNetwork("", stderr) {
+		return fmt.Errorf("inspect project network %s: %s", plan.Network, firstLine(stderr, err))
+	}
+	args := []string{"network", "create", "--driver", "bridge",
+		"--label", "tech.lctk.managed=true",
+		"--label", "tech.lctk.project-id=" + plan.ProjectID,
+		plan.Network}
+	if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
+		return fmt.Errorf("create project network %s: %s", plan.Network, firstLine(stderr, err))
+	}
+	return nil
+}
+
+// ensureVolume creates durable project state once and never replaces it during
+// ordinary start, restart, update, or runtime recovery.
+func (m *Manager) ensureVolume(ctx context.Context, plan RuntimePlan) error {
+	if _, stderr, err := m.runner.Run(ctx, "volume", "inspect", plan.Volume, "--format", "{{.Name}}"); err == nil {
+		return nil
+	} else if !isNoSuchVolume("", stderr) {
+		return fmt.Errorf("inspect project volume %s: %s", plan.Volume, firstLine(stderr, err))
+	}
+	args := []string{"volume", "create",
+		"--label", "tech.lctk.managed=true",
+		"--label", "tech.lctk.project-id=" + plan.ProjectID,
+		plan.Volume}
+	if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
+		return fmt.Errorf("create project volume %s: %s", plan.Volume, firstLine(stderr, err))
+	}
+	return nil
 }
 
 func isNoSuchContainer(stdout, stderr string) bool {
@@ -547,6 +553,18 @@ func isNoSuchImage(stdout, stderr string) bool {
 	combined := strings.ToLower(stdout + " " + stderr)
 	return strings.Contains(combined, "no such image") ||
 		strings.Contains(combined, "no such object")
+}
+
+func isNoSuchNetwork(stdout, stderr string) bool {
+	combined := strings.ToLower(stdout + " " + stderr)
+	return strings.Contains(combined, "network not found") ||
+		strings.Contains(combined, "no such network")
+}
+
+func isNoSuchVolume(stdout, stderr string) bool {
+	combined := strings.ToLower(stdout + " " + stderr)
+	return strings.Contains(combined, "no such volume") ||
+		strings.Contains(combined, "volume not found")
 }
 
 func firstLine(stderr string, err error) string {

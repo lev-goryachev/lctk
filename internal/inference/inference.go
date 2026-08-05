@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
+
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 )
 
@@ -35,9 +37,9 @@ const (
 	// immutable image and model remain the same.
 	ConfigRevision = "4"
 
-	// ProjectEndpoint is reached from a Linux project container through Docker's
+	// ProjectEndpoint is reached from a Linux project container through Podman's
 	// host gateway. It is not published on a non-loopback host interface.
-	ProjectEndpoint = "http://host.docker.internal:4445/v1/embeddings"
+	ProjectEndpoint = "http://host.containers.internal:4445/v1/embeddings"
 )
 
 var (
@@ -47,7 +49,7 @@ var (
 	ErrNotReady     = errors.New("embedding inference service is not ready")
 )
 
-// Runner executes Docker CLI operations and makes lifecycle behavior testable.
+// Runner executes OCI runtime operations and makes lifecycle behavior testable.
 type Runner interface {
 	Run(ctx context.Context, args ...string) (stdout string, stderr string, err error)
 }
@@ -164,7 +166,11 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 				return status, fmt.Errorf("replace embedding inference container: %s", firstLine(stderr, err))
 			}
 		}
-		mount := "type=bind,source=" + m.modelPath + ",target=/models/" + ModelName + ",readonly"
+		runtimeModelPath, err := containerruntime.HostPath(m.modelPath)
+		if err != nil {
+			return status, fmt.Errorf("prepare embedding model mount: %w", err)
+		}
+		mount := "type=bind,source=" + runtimeModelPath + ",target=/models/" + ModelName + ",readonly"
 		args := []string{
 			"run", "--detach", "--name", ContainerName, "--restart", "unless-stopped",
 			"--label", "tech.lctk.managed=true", "--label", "tech.lctk.component=inference",

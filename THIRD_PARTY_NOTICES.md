@@ -4,7 +4,6 @@ LCTK's host executable currently has these direct Go dependencies:
 
 - `github.com/modelcontextprotocol/go-sdk v1.7.0`;
 - `github.com/fsnotify/fsnotify v1.10.1`;
-- `github.com/moby/moby/client v0.5.1`;
 - `github.com/pelletier/go-toml/v2 v2.4.3`;
 - `golang.org/x/sys v0.47.0`;
 - `gopkg.in/yaml.v3 v3.0.1`.
@@ -35,5 +34,12 @@ Semantic bootstrap installs, after immutable digest verification:
 
 - `ggml-org/llama.cpp` server image (MIT), pinned by OCI index digest;
 - `nomic-ai/nomic-embed-text-v1.5-GGUF`, Q4_K_M (Apache-2.0), pinned by repository commit and SHA-256.
+
+The Windows installer downloads and verifies these separately versioned Apache-2.0 runtime components from the signed release manifest:
+
+- Podman remote client `v5.8.2`, including `podman.exe`, `gvproxy.exe`, and `win-sshproxy.exe`;
+- Podman Machine OS `v5.8.2` for WSL2.
+
+LCTK invokes these components privately and does not install or redistribute Podman Desktop.
 
 Each dependency remains subject to its own license. This file will contain the generated complete attribution inventory before the first distributed release. Current workflow archives are non-publishing dry runs; the pre-alpha repository does not yet publish a GitHub Release, production binary, or container image.

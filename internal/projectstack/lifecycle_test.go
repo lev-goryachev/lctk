@@ -3,13 +3,14 @@ package projectstack
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 // fakeRunner answers container-runtime commands from a script, so lifecycle logic
-// is testable without Docker.
+// is testable without a managed WSL machine.
 type fakeRunner struct {
 	// responses maps a matched substring of the joined arguments to a reply.
 	responses []fakeResponse
@@ -54,7 +55,7 @@ func (f *fakeRunner) callWith(fragments ...string) []string {
 
 func healthyRunner() *fakeRunner {
 	return &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3 linux\n"},
+		{match: "info", stdout: `{"host":{"os":"linux"}}`},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		{match: "inspect", stdout: "running healthy\n"},
 	}}
@@ -73,7 +74,7 @@ func TestStateRetryableOnlyWhileStarting(t *testing.T) {
 
 func TestRuntimeUnavailableIsDistinguishable(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stderr: "cannot connect to the Docker daemon", err: errors.New("exit status 1")},
+		{match: "info", stderr: "the lctk-runtime machine is not running", err: errors.New("exit status 1")},
 	}}
 	manager := NewManagerWithRunner(runner)
 
@@ -81,7 +82,7 @@ func TestRuntimeUnavailableIsDistinguishable(t *testing.T) {
 	if !errors.Is(err, ErrRuntimeUnavailable) {
 		t.Fatalf("got %v, want ErrRuntimeUnavailable", err)
 	}
-	// A caller must be able to tell "Docker is closed" from "this project broke".
+	// A caller must be able to tell "managed runtime is stopped" from "this project broke".
 	if errors.Is(err, ErrImageMissing) || errors.Is(err, ErrInvalidProject) {
 		t.Error("runtime failure was conflated with a project failure")
 	}
@@ -91,12 +92,11 @@ func TestRuntimeUnavailableIsDistinguishable(t *testing.T) {
 	}
 }
 
-// TestWindowsContainerModeIsRejectedEarly covers a reachable runtime that cannot
-// run Linux containers. Without this check the failure appears much later as an
-// opaque image-manifest error, which is what a Windows CI runner produced.
-func TestWindowsContainerModeIsRejectedEarly(t *testing.T) {
+// TestNonLinuxRuntimeIsRejectedEarly covers a connection accidentally pointed
+// at a provider that cannot satisfy ADR-0011's Linux boundary.
+func TestNonLinuxRuntimeIsRejectedEarly(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3 windows\n"},
+		{match: "info", stdout: `{"host":{"os":"windows"}}`},
 	}}
 	manager := NewManagerWithRunner(runner)
 
@@ -104,13 +104,13 @@ func TestWindowsContainerModeIsRejectedEarly(t *testing.T) {
 	if !errors.Is(err, ErrLinuxContainersRequired) {
 		t.Fatalf("got %v, want ErrLinuxContainersRequired", err)
 	}
-	// The two conditions must stay distinguishable: one means Docker is closed,
-	// the other means it is running in the wrong mode.
+	// The two conditions must stay distinguishable: one means the machine is
+	// unavailable, the other means the selected connection is wrong.
 	if errors.Is(err, ErrRuntimeUnavailable) {
 		t.Error("Windows container mode was conflated with an unreachable runtime")
 	}
-	if !strings.Contains(err.Error(), "Linux containers") {
-		t.Errorf("error should say how to fix it: %v", err)
+	if !strings.Contains(err.Error(), "windows") {
+		t.Errorf("error should identify the incompatible host: %v", err)
 	}
 
 	// The check must run before anything tries to pull or build an image.
@@ -119,26 +119,24 @@ func TestWindowsContainerModeIsRejectedEarly(t *testing.T) {
 	}
 	for _, call := range runner.calls {
 		joined := strings.Join(call, " ")
-		if strings.Contains(joined, "build") || strings.Contains(joined, "compose") {
+		if strings.Contains(joined, "build") || strings.Contains(joined, "run") {
 			t.Errorf("work was attempted despite an unusable runtime: %v", call)
 		}
 	}
 }
 
-func TestRuntimeWithoutAnOSFieldIsAccepted(t *testing.T) {
-	// An older runtime that does not report its OS must not be refused: letting
-	// the image step report the real problem is better than a false negative.
+func TestRuntimeWithoutAnOSFieldIsRejected(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "20.10.0\n"},
+		{match: "info", stdout: `{"host":{}}`},
 	}}
-	if err := NewManagerWithRunner(runner).RuntimeAvailable(context.Background()); err != nil {
-		t.Errorf("got %v, want the runtime to be accepted", err)
+	if err := NewManagerWithRunner(runner).RuntimeAvailable(context.Background()); !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Errorf("got %v, want ErrRuntimeUnavailable", err)
 	}
 }
 
 func TestMissingImageIsDistinguishable(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3 linux\n"},
+		{match: "info", stdout: `{"host":{"os":"linux"}}`},
 		{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	}}
 	manager := NewManagerWithRunner(runner)
@@ -189,7 +187,7 @@ func TestInspectMapsRuntimeStateToLifecycleState(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			runner := &fakeRunner{responses: []fakeResponse{
-				{match: "version", stdout: "29.5.3 linux\n"},
+				{match: "info", stdout: `{"host":{"os":"linux"}}`},
 				{match: "inspect", stdout: testCase.stdout, stderr: testCase.stderr, err: testCase.err},
 			}}
 			manager := NewManagerWithRunner(runner)
@@ -216,7 +214,7 @@ func TestInspectMapsRuntimeStateToLifecycleState(t *testing.T) {
 	}
 }
 
-func TestStartWritesComposeAndPinsTheStack(t *testing.T) {
+func TestStartWritesRuntimePlanAndPinsEveryResource(t *testing.T) {
 	isolate(t)
 	runner := healthyRunner()
 	manager := NewManagerWithRunner(runner)
@@ -230,23 +228,22 @@ func TestStartWritesComposeAndPinsTheStack(t *testing.T) {
 		t.Errorf("state = %q, want running", status.State)
 	}
 
-	// The compose file must have been generated.
-	composePath, err := ComposeFilePath(project.ID)
+	planPath, err := RuntimePlanPath(project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	up := runner.callWith("compose", "up", "--detach")
-	if up == nil {
-		t.Fatalf("no compose up call was made; calls: %v", runner.calls)
+	if _, err := os.Stat(planPath); err != nil {
+		t.Fatalf("runtime plan was not persisted: %v", err)
 	}
-	joined := strings.Join(up, " ")
-	// Pinning both the file and the project name means the command can never act
-	// on an unrelated Compose stack.
-	if !strings.Contains(joined, composePath) {
-		t.Errorf("compose up is not pinned to the generated file: %v", up)
+	run := runner.callWith("run", "--name", "lctk-alpha-abcd1234-code-intel")
+	if run == nil {
+		t.Fatalf("no pinned project run was made; calls: %v", runner.calls)
 	}
-	if !strings.Contains(joined, "--project-name lctk-alpha-abcd1234") {
-		t.Errorf("compose up is not pinned to the project name: %v", up)
+	joined := strings.Join(run, " ")
+	for _, identity := range []string{"lctk-alpha-abcd1234-net", "lctk-alpha-abcd1234-state", project.ID} {
+		if !strings.Contains(joined, identity) {
+			t.Errorf("project run omits %q: %v", identity, run)
+		}
 	}
 }
 
@@ -266,17 +263,15 @@ func TestStopPreservesTheProjectVolume(t *testing.T) {
 		t.Errorf("state = %q, want stopped", status.State)
 	}
 
-	down := runner.callWith("compose", "down")
-	if down == nil {
-		t.Fatalf("no compose down call was made; calls: %v", runner.calls)
+	remove := runner.callWith("rm", "--force", "lctk-alpha-abcd1234-code-intel")
+	if remove == nil {
+		t.Fatalf("no container removal was made; calls: %v", runner.calls)
 	}
-	for _, arg := range down {
-		if arg == "--volumes" || arg == "-v" {
-			t.Fatalf("stop asked Compose to delete volumes: %v", down)
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "volume rm") || strings.Contains(joined, "--volumes") {
+			t.Fatalf("stop asked Podman to delete project state: %v", call)
 		}
-	}
-	if !strings.Contains(strings.Join(down, " "), "--remove-orphans") {
-		t.Errorf("stop should remove orphaned containers: %v", down)
 	}
 }
 
@@ -294,9 +289,9 @@ func TestRestartStopsThenStarts(t *testing.T) {
 	for _, call := range runner.calls {
 		joined := strings.Join(call, " ")
 		switch {
-		case strings.Contains(joined, "compose") && strings.Contains(joined, "down"):
+		case strings.Contains(joined, "rm --force"):
 			order = append(order, "down")
-		case strings.Contains(joined, "compose") && strings.Contains(joined, "up"):
+		case strings.Contains(joined, "run --detach"):
 			order = append(order, "up")
 		}
 	}
@@ -308,7 +303,7 @@ func TestRestartStopsThenStarts(t *testing.T) {
 func TestWaitForHealthTimesOutWithTheLastObservedState(t *testing.T) {
 	isolate(t)
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3 linux\n"},
+		{match: "info", stdout: `{"host":{"os":"linux"}}`},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		// Never becomes healthy.
 		{match: "inspect", stdout: "running starting\n"},
@@ -335,7 +330,7 @@ func TestWaitForHealthTimesOutWithTheLastObservedState(t *testing.T) {
 func TestWaitForHealthFailsFastOnUnhealthy(t *testing.T) {
 	isolate(t)
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "version", stdout: "29.5.3 linux\n"},
+		{match: "info", stdout: `{"host":{"os":"linux"}}`},
 		{match: "image inspect", stdout: "sha256:abc\n"},
 		{match: "inspect", stdout: "running unhealthy\n"},
 	}}
@@ -401,7 +396,7 @@ func TestImageMatchesTreatsOnlyARealMissingImageAsAbsent(t *testing.T) {
 
 	runner.responses[0].stderr = "permission denied"
 	if _, err := manager.ImageMatches(t.Context(), "forbidden", "unused"); err == nil {
-		t.Fatal("ImageMatches hid a non-missing Docker inspection failure")
+		t.Fatal("ImageMatches hid a non-missing runtime inspection failure")
 	}
 }
 

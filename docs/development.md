@@ -4,9 +4,9 @@
 
 - Go 1.25.x;
 - Git;
-- Docker Desktop only for Docker integration work.
+- the pinned private Podman client and `lctk-runtime` machine only for managed-runtime integration work.
 
-Docker Desktop is not required for the current unit tests. `lctk doctor` reports an actionable error when its daemon is unavailable.
+No container runtime is required for unit tests. Runtime integration tests use `LCTK_PODMAN_PATH` to select a private client and still require the explicit `lctk-runtime-root` connection. `lctk doctor` reports an actionable error when that managed runtime is unavailable.
 
 ## Checks
 
@@ -37,7 +37,7 @@ The foreground daemon listens on `127.0.0.1:4444` by default. Slice 0.1 provides
 - `GET /health`;
 - Streamable HTTP MCP at `/mcp` with temporary compatibility tool `foundation_info`;
 - `lctk watch-once <directory>` for a raw single-event probe on any directory, registered or not; the project watcher is `lctk project watch --follow`;
-- `lctk doctor` for a read-only Docker API probe.
+- `lctk doctor` for a read-only managed Podman identity probe.
 
 These commands are foundation evidence, not the complete project lifecycle described elsewhere.
 

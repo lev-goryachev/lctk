@@ -35,5 +35,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0020](0020-shared-embedding-and-project-semantic-store.md) | Shared local embedding inference and an isolated SQLite semantic store per project | accepted |
 | [0021](0021-derived-code-graph-and-explicit-project-memory.md) | A derived name-matched code graph and explicit reviewed project memory | accepted |
 | [0022](0022-transactional-bootstrap-update-and-release-evidence.md) | Transactional bootstrap, update rollback, and evidence-gated releases | accepted |
+| [0023](0023-managed-podman-wsl-runtime-and-windows-installer.md) | Managed headless Podman on WSL2 and a one-click Windows installer | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.

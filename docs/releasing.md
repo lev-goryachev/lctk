@@ -13,14 +13,15 @@ The downloaded `0.1.0-stage7-final3` archives independently matched both entries
 An official release is created only by pushing a clean `vMAJOR.MINOR.PATCH` tag. The protected `Official release` workflow:
 
 1. derives the Ed25519 public trust root from the protected private key and embeds the public key, key id, and release-manifest URL in both host cores;
-2. runs the complete host test suite, then builds the stable launcher plus versioned host core for Windows amd64 and macOS arm64;
-3. Authenticode-signs and verifies both Windows executables;
+2. runs the complete host test suite, then builds the stable launcher, versioned host core, and browser-based setup executable for Windows amd64 plus the existing macOS payload;
+3. Authenticode-signs and verifies all three Windows executables;
 4. Developer ID-signs both macOS executables, builds a signed installer package, submits it to Apple notarization, and staples and validates its ticket;
 5. extracts each archive and executes the packaged launcher on its hosted target architecture;
 6. tests, builds, and executes each code-intel architecture on its matching native Ubuntu runner, combines the two immutable manifests, verifies the index platforms, and keyless-signs that index with Sigstore;
-7. generates SPDX JSON SBOMs, module attribution, checksums, migration and rollback notes, and a signed component manifest;
-8. creates GitHub artifact attestations for the publication set; and
-9. publishes the GitHub Release only after every preceding job succeeds.
+7. mirrors the pinned Podman `5.8.2` Windows client and WSL machine image only after exact upstream size and SHA-256 verification;
+8. generates SPDX JSON SBOMs, module attribution, checksums, migration and rollback notes, and a schema-2 signed component manifest binding the setup, launcher, core, runtime, images, and model;
+9. creates GitHub artifact attestations for the publication set; and
+10. publishes the GitHub Release only after every preceding job succeeds.
 
 Publication fails closed when any Ed25519, Authenticode, Developer ID, notarization, GHCR, signature, package-execution, SBOM, checksum, or attestation gate is unavailable or invalid.
 
@@ -41,7 +42,7 @@ No signing credential, private key, temporary certificate, or keychain is commit
 
 An extracted package starts through the stable `lctk` launcher. Before initial activation it may execute only its sibling packaged `lctk-core`; a successful `lctk bootstrap --yes` copies that exact core into the versioned installation store and writes the first activation document.
 
-Official bootstrap and update resolve the signed `release-manifest.json`, validate the embedded trust root, immutable image digests, artifact sizes and SHA-256 digests, model identity, host minimum, and project-schema range. Both commands are read-only unless `--yes` is present:
+Official setup, bootstrap, and update resolve the signed `release-manifest.json`, validate the embedded trust root, immutable image digests, artifact sizes and SHA-256 digests, model identity, host minimum, and project-schema range. Setup additionally requires the complete Windows launcher, installer, Podman client, and WSL machine set. CLI bootstrap and update remain read-only unless `--yes` is present:
 
 ```text
 lctk bootstrap --plan

@@ -73,9 +73,9 @@ The initial compatibility targets are:
 
 - Windows 10 22H2 on x86-64;
 - macOS 13 on arm64;
-- Docker Desktop as the initial container-runtime target.
+- an LCTK-managed headless Podman machine on WSL2 as the Windows container-runtime target; Docker Desktop is not an end-user dependency;
 
-These are target contracts, not certified configurations. Hosted CI runs on available GitHub Windows and macOS runner images and cannot certify the exact operating-system versions or Docker Desktop integration.
+These are target contracts, not certified configurations. Hosted CI runs on available GitHub Windows and macOS runner images and cannot certify the exact operating-system versions, WSL2 virtualization, or a fresh-machine installer transaction.
 
 Linux is planned for later. The architecture must not deliberately block Linux or alternative OCI runtimes, but they are not required integration targets for the first release.
 

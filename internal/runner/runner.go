@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 )
 
 // DefaultLimits are the shipped guardrails.
@@ -79,7 +81,7 @@ type Request struct {
 	Command string
 	// Network is "none" or "full". Anything else is treated as none.
 	Network string
-	// NetworkName is the project's own Docker network, used when Network is
+	// NetworkName is the project's own runtime network, used when Network is
 	// "full". A project network rather than the default bridge, so a command with
 	// egress still cannot see another project's services.
 	NetworkName string
@@ -115,24 +117,24 @@ var (
 	ErrImageMissing = errors.New("the runner image is not available")
 )
 
-// Docker executes docker commands. It is an interface so the runner can be
+// Runtime executes container-runtime commands. It is an interface so the runner can be
 // exercised without a container runtime.
-type Docker interface {
+type Runtime interface {
 	Run(ctx context.Context, stdin string, args ...string) (stdout, stderr string, exitCode int, err error)
 }
 
 // Runner executes approved commands.
 type Runner struct {
-	Docker Docker
-	Now    func() time.Time
+	Runtime Runtime
+	Now     func() time.Time
 	// Name builds the container name for a run. It is injectable so a test can
 	// make names deterministic.
 	Name func(projectID string, at time.Time) string
 }
 
-// New returns a runner backed by the docker CLI.
+// New returns a runner backed by LCTK's private Podman client and connection.
 func New() *Runner {
-	return &Runner{Docker: cli{}, Now: time.Now, Name: containerName}
+	return &Runner{Runtime: cli{}, Now: time.Now, Name: containerName}
 }
 
 // Run executes one command and returns what happened.
@@ -144,6 +146,11 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 	limits := request.Limits.withDefaults()
 	started := r.now()
 	name := r.name(request.ProjectID, started)
+	runtimeWorkspace, err := containerruntime.HostPath(request.Workspace)
+	if err != nil {
+		return Result{}, fmt.Errorf("prepare runner workspace: %w", err)
+	}
+	request.Workspace = runtimeWorkspace
 
 	runCtx, cancel := context.WithTimeout(ctx, limits.Timeout)
 	defer cancel()
@@ -153,11 +160,11 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 	defer func() {
 		removeCtx, removeCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer removeCancel()
-		_, _, _, _ = r.Docker.Run(removeCtx, "", "rm", "--force", "--volumes", name)
+		_, _, _, _ = r.Runtime.Run(removeCtx, "", "rm", "--force", "--volumes", name)
 	}()
 
 	args := r.arguments(name, request, limits)
-	stdout, stderr, exitCode, err := r.Docker.Run(runCtx, "", args...)
+	stdout, stderr, exitCode, err := r.Runtime.Run(runCtx, "", args...)
 
 	elapsed := r.now().Sub(started)
 	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
@@ -191,7 +198,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 	return result, nil
 }
 
-// arguments builds the docker invocation.
+// arguments builds the Podman invocation.
 //
 // Every flag here is a guardrail from docs/security.md, and the list is meant to
 // be read as one: one mount and no others, a fixed working directory, an
@@ -256,8 +263,9 @@ func bound(text string, limit int) (string, bool) {
 func classify(err error, stderr string) error {
 	message := strings.ToLower(stderr + " " + err.Error())
 	switch {
-	case strings.Contains(message, "cannot connect to the docker daemon"),
-		strings.Contains(message, "docker daemon is not running"),
+	case strings.Contains(message, "cannot connect to podman"),
+		strings.Contains(message, "unable to connect to podman"),
+		strings.Contains(message, "podman machine") && strings.Contains(message, "not running"),
 		strings.Contains(message, "executable file not found"):
 		return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, firstLine(stderr))
 	case strings.Contains(message, "unable to find image"),
@@ -296,11 +304,15 @@ func containerName(projectID string, at time.Time) string {
 	return "lctk-" + projectID + "-run-" + strconv.FormatInt(at.UnixNano(), 36)
 }
 
-// cli runs the docker executable.
+// cli runs the installation-owned Podman executable against the explicit
+// LCTK connection; no ambient PATH or default connection is trusted.
 type cli struct{}
 
 func (cli) Run(ctx context.Context, stdin string, args ...string) (string, string, int, error) {
-	command := exec.CommandContext(ctx, "docker", args...)
+	command, err := containerruntime.Command(ctx, args...)
+	if err != nil {
+		return "", "", -1, err
+	}
 	if stdin != "" {
 		command.Stdin = strings.NewReader(stdin)
 	}
@@ -308,7 +320,7 @@ func (cli) Run(ctx context.Context, stdin string, args ...string) (string, strin
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 
-	err := command.Run()
+	err = command.Run()
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError

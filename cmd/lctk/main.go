@@ -14,7 +14,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/daemon"
-	"github.com/lev-goryachev/lctk/internal/dockerapi"
+	"github.com/lev-goryachev/lctk/internal/runtimeapi"
 	"github.com/lev-goryachev/lctk/internal/watcher"
 )
 
@@ -53,8 +53,7 @@ Usage:
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
-		return errors.New("a command is required")
+		return runDesktop(ctx, stdout)
 	}
 
 	switch args[0] {
@@ -137,14 +136,14 @@ func runDoctor(ctx context.Context, args []string, output io.Writer) error {
 
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	status, err := dockerapi.Probe(probeCtx)
+	status, err := runtimeapi.Probe(probeCtx)
 	if err != nil {
 		return err
 	}
 	if *asJSON {
 		return json.NewEncoder(output).Encode(status)
 	}
-	fmt.Fprintf(output, "Docker Desktop available (API %s, %s)\n", status.APIVersion, status.OSType)
+	fmt.Fprintf(output, "Managed %s runtime available (%s, %s)\n", status.Provider, status.Version, status.OSType)
 	return nil
 }
 

@@ -468,11 +468,11 @@ func (g *Gateway) resolve(r *http.Request, projectID, requestID string) (*serveC
 		case errors.Is(statusErr, projectstack.ErrLinuxContainersRequired):
 			return nil, fail(http.StatusServiceUnavailable, CodeRuntimeUnsuitable,
 				"The container runtime cannot run Linux containers.",
-				"Switch Docker Desktop to Linux containers.", false)
+				"Repair or reinstall the LCTK managed runtime.", false)
 		case errors.Is(statusErr, projectstack.ErrRuntimeUnavailable):
 			return nil, fail(http.StatusServiceUnavailable, CodeRuntimeUnavailable,
 				"The container runtime is unavailable.",
-				"Start Docker Desktop.", true)
+				"Start or repair the LCTK managed runtime from the Admin UI.", true)
 		}
 	}
 

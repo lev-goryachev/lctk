@@ -40,6 +40,11 @@
 
 <div id="app" hidden>
   <h2>Projects</h2>
+  <form id="add-project" class="row" style="margin-bottom:.75rem">
+    <input id="project-path" required placeholder="C:\Projects\my-project" aria-label="Project folder path" style="font:inherit;flex:1;min-width:20rem;padding:.3rem .55rem">
+    <select id="project-profile" aria-label="Project profile"><option value="minimal">minimal</option><option value="full">full</option></select>
+    <button type="submit">Add project</button>
+  </form>
   <table id="projects"><thead><tr>
     <th>Project</th><th>State</th><th>Index</th><th>Changes</th><th>Mode</th><th></th>
   </tr></thead><tbody></tbody></table>
@@ -54,6 +59,7 @@
   <div class="row" style="margin-top:.75rem">
     <button id="refresh">Refresh</button>
     <button id="signout">Sign out</button>
+    <button id="uninstall">Uninstall LCTK</button>
   </div>
 </div>
 
@@ -198,13 +204,14 @@ function renderProjects(projects) {
     } else {
       controls.append(action("Start", call("start")));
     }
+    controls.append(action("Configure & Open Codex", call("codex")));
     cell(row, controls);
 
     body.appendChild(row);
   }
   if (projects.length === 0) {
     const row = document.createElement("tr");
-    const empty = cell(row, "No projects registered. Add one with lctk project add PATH.");
+    const empty = cell(row, "No projects registered. Enter a folder path above to add one.");
     empty.colSpan = 6;
     empty.className = "muted";
     body.appendChild(row);
@@ -234,7 +241,7 @@ async function load() {
 
   $("subtitle").textContent = "lctk " + text(overview.version) + " · " +
     (overview.runtime.available
-      ? "Docker " + text(overview.runtime.api_version) + " (" + text(overview.runtime.os_type) + ")"
+      ? text(overview.runtime.provider) + " " + text(overview.runtime.version) + " (" + text(overview.runtime.os_type) + ")"
       : "container runtime unavailable: " + text(overview.runtime.detail)) +
     " · " + text(overview.home);
 
@@ -264,9 +271,25 @@ async function start() {
 }
 
 $("refresh").addEventListener("click", () => load().catch((err) => say(err.message, true)));
+$("add-project").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const path = $("project-path").value.trim();
+  if (!path) { return; }
+  try {
+    const project = await api("/admin/api/projects", { method: "POST", body: JSON.stringify({ path, profile: $("project-profile").value }) });
+    $("project-path").value = "";
+    say("Registered " + project.name + ". Select Start to launch indexing.");
+    await load();
+  } catch (err) { say(err.message, true); }
+});
 $("signout").addEventListener("click", async () => {
   await api("/admin/session", { method: "DELETE" }).catch(() => {});
   location.href = "/admin/";
+});
+$("uninstall").addEventListener("click", async () => {
+  if (!confirm("Open the uninstall dialog? You will choose whether project indexes and memory are preserved.")) { return; }
+  try { const result = await api("/admin/api/uninstall", { method: "POST" }); say(result.status); }
+  catch (err) { say(err.message, true); }
 });
 
 start();

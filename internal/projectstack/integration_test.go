@@ -9,27 +9,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/projectpath"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
-// These tests drive a real container runtime. They are skipped, never simulated,
-// when Docker is unavailable — which is the case on hosted CI runners, where no
-// usable Linux Docker daemon exists. Everything they assert is therefore verified
-// locally on a developer machine and reported as such.
+// These tests drive the real private runtime and are skipped, never simulated,
+// because hosted CI does not provision LCTK's installation-owned WSL machine; no
+// managed WSL machine exists. Everything they assert is therefore verified on
+// the target acceptance host and reported as such.
 
 const imageContextRelative = "../../images/code-intel"
 
-func requireDocker(t *testing.T) (*Manager, string) {
+func requireManagedRuntime(t *testing.T) (*Manager, string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping container integration test in short mode")
 	}
 
-	// These legacy integration cases isolate the per-project Compose lifecycle.
+	// These integration cases isolate the explicit per-project Podman lifecycle.
 	// The shared inference lifecycle has its own real-container acceptance test
 	// after bootstrap installs the pinned model and image.
-	manager := NewManagerWithRunner(dockerRunner{})
+	manager := NewManagerWithRunner(containerruntime.Runner{})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// This covers both an absent daemon and a reachable one that cannot run Linux
@@ -89,8 +90,8 @@ func registerProject(t *testing.T, manager *Manager, name string) projectregistr
 		names, err := DeriveNames(project.ID)
 		if err == nil {
 			// The volume survives a stop by design, so the test removes it
-			// explicitly rather than relying on Compose.
-			if _, _, err := (dockerRunner{}).Run(ctx, "volume", "rm", "--force", names.Volume); err != nil {
+			// explicitly because ordinary stop intentionally preserves it.
+			if _, _, err := (containerruntime.Runner{}).Run(ctx, "volume", "rm", "--force", names.Volume); err != nil {
 				t.Logf("cleanup volume removal failed for %s: %v", names.Volume, err)
 			}
 		}
@@ -107,7 +108,7 @@ func readState(t *testing.T, project projectregistry.Project, name string) strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	stdout, stderr, err := (dockerRunner{}).Run(ctx, "exec", names.ContainerName, "cat", StateMount+"/"+name)
+	stdout, stderr, err := (containerruntime.Runner{}).Run(ctx, "exec", names.ContainerName, "cat", StateMount+"/"+name)
 	if err != nil {
 		t.Fatalf("reading %s from %s failed: %v: %s", name, names.ContainerName, err, stderr)
 	}
@@ -116,7 +117,7 @@ func readState(t *testing.T, project projectregistry.Project, name string) strin
 
 func TestIntegrationStartStopPreservesProjectState(t *testing.T) {
 	isolate(t)
-	manager, _ := requireDocker(t)
+	manager, _ := requireManagedRuntime(t)
 	project := registerProject(t, manager, "persist")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -180,7 +181,7 @@ func TestIntegrationStartStopPreservesProjectState(t *testing.T) {
 
 func TestIntegrationTwoProjectsAreIsolated(t *testing.T) {
 	isolate(t)
-	manager, _ := requireDocker(t)
+	manager, _ := requireManagedRuntime(t)
 	alpha := registerProject(t, manager, "alpha")
 	beta := registerProject(t, manager, "beta")
 
@@ -210,7 +211,7 @@ func TestIntegrationTwoProjectsAreIsolated(t *testing.T) {
 		{"volume", alphaNames.Volume},
 		{"volume", betaNames.Volume},
 	} {
-		if _, stderr, err := (dockerRunner{}).Run(ctx, resource.kind, "inspect", resource.name); err != nil {
+		if _, stderr, err := (containerruntime.Runner{}).Run(ctx, resource.kind, "inspect", resource.name); err != nil {
 			t.Errorf("%s %s does not exist: %v: %s", resource.kind, resource.name, err, stderr)
 		}
 	}
@@ -252,7 +253,7 @@ func listWorkspace(t *testing.T, project projectregistry.Project) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	stdout, stderr, err := (dockerRunner{}).Run(ctx, "exec", names.ContainerName, "ls", "-1", WorkspaceMount)
+	stdout, stderr, err := (containerruntime.Runner{}).Run(ctx, "exec", names.ContainerName, "ls", "-1", WorkspaceMount)
 	if err != nil {
 		t.Fatalf("listing the workspace of %s failed: %v: %s", project.ID, err, stderr)
 	}
@@ -267,7 +268,7 @@ func readWorkspaceFile(t *testing.T, project projectregistry.Project, name strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	stdout, _, err := (dockerRunner{}).Run(ctx, "exec", names.ContainerName, "cat", WorkspaceMount+"/"+name)
+	stdout, _, err := (containerruntime.Runner{}).Run(ctx, "exec", names.ContainerName, "cat", WorkspaceMount+"/"+name)
 	if err != nil {
 		// A missing file is a legitimate outcome for the isolation assertion, so
 		// this is not fatal.
@@ -278,7 +279,7 @@ func readWorkspaceFile(t *testing.T, project projectregistry.Project, name strin
 
 func TestIntegrationGeneratedConfigurationIsReproducible(t *testing.T) {
 	isolate(t)
-	manager, _ := requireDocker(t)
+	manager, _ := requireManagedRuntime(t)
 	project := registerProject(t, manager, "reproducible")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -287,11 +288,11 @@ func TestIntegrationGeneratedConfigurationIsReproducible(t *testing.T) {
 	if _, err := manager.Start(ctx, project, 90*time.Second); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	composePath, err := ComposeFilePath(project.ID)
+	planPath, err := RuntimePlanPath(project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := os.ReadFile(composePath)
+	first, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +301,7 @@ func TestIntegrationGeneratedConfigurationIsReproducible(t *testing.T) {
 	if _, err := manager.Restart(ctx, project, 90*time.Second); err != nil {
 		t.Fatalf("restart failed: %v", err)
 	}
-	second, err := os.ReadFile(composePath)
+	second, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)
 	}

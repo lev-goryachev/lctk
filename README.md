@@ -16,12 +16,18 @@ The official Codex extension for VS Code is the first target client. The public 
 - a separate project-scoped runner;
 - local operation without mandatory cloud APIs after components are installed;
 - a minimal local Admin UI and one `lctk` command family;
-- Windows 10 22H2 x86-64 and macOS 13 arm64 as initial compatibility targets;
-- Docker Desktop as the first container-runtime target.
+- Windows 10 22H2 x86-64 as the first one-click product target;
+- an LCTK-managed headless Podman machine on WSL2, with no Docker Desktop or Podman Desktop dependency.
 
-Compatibility targets are not certified configurations yet. Hosted Windows and macOS CI provides build and test evidence on GitHub runner environments; it does not certify the exact target operating systems or Docker Desktop integration.
+Compatibility targets are not certified configurations yet. Hosted CI provides build and test evidence, while final installation certification still requires a clean Windows 10 22H2 host with virtualization enabled.
 
-## What works today
+## Install and open
+
+Download the Authenticode-signed `lctk-setup-<version>-windows-amd64.exe` from the release, run it, review the plan, and select **Install LCTK**. Setup verifies every signed component, enables WSL2 when required, installs the private runtime, registers the sign-in daemon and Start-menu shortcut, and opens the local Admin UI. A WSL2 prerequisite change can require one reboot; setup registers an exact one-time continuation.
+
+No Go toolchain, Git, Docker Desktop, Podman Desktop, image build, or shell command is required. In the Admin UI, enter the project folder, add it, select **Start**, and select **Configure & Open Codex**. LCTK starts that editor process with only the selected project's scoped grant. Opening **LCTK** from the Start menu later reconnects to the daemon and opens a fresh authenticated UI session. The same UI opens the explicit uninstall choice: preserve project state archives or remove all LCTK data.
+
+## Automation and source workflow
 
 ```sh
 lctk project add PATH          # register a folder; nothing is started
@@ -54,7 +60,7 @@ Around that:
 - `lctk admin open` for a local page with the same operations, over an API a project credential cannot reach;
 - the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
 
-Automated tests cover the CLI, the gateway and its scope guarantees, the search adapter, the watcher, and the change journal. CI builds and tests on hosted Windows and macOS runners, and the containerized search service on Linux. Container-dependent tests run against real Docker on a developer machine and skip explicitly on hosted runners rather than being simulated.
+Automated tests cover setup planning, immutable downloads, runtime isolation, the CLI, gateway scope guarantees, search, watcher, and change journal. CI builds and tests on hosted Windows and macOS runners, builds OCI images on Linux, and constructs the signed Windows installer. Managed-runtime integration tests skip explicitly when the private LCTK machine is absent rather than being simulated.
 
 ## Documentation
 

@@ -261,7 +261,7 @@ func asRunToolError(err error) error {
 			code:      CodeRunnerUnavailable,
 			message:   "The container runtime is not available.",
 			retryable: true,
-			action:    "Start Docker Desktop.",
+			action:    "Start or repair the LCTK managed runtime from the Admin UI.",
 		}
 	case errors.Is(err, runner.ErrImageMissing):
 		return &searchToolError{

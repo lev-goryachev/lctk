@@ -6,9 +6,9 @@
 
 | Component | Target contract | Current evidence | Not yet proven |
 |---|---|---|---|
-| Windows host | Windows 10 22H2, x86-64 | Go build and tests on `windows-latest`; the Stage 7 dry-run built, extracted, and executed the launcher/core archive and preserved its Windows/amd64 identity JSON. After download and checksum verification, that same archive executed through its packaged launcher on Windows 10 build 19045. A separate local package completed signed-manifest bootstrap, functional inference self-test, activation, and launcher execution. | Service installation, broader NTFS edge cases, and target-minimum hardware breadth beyond the maintainer machine |
+| Windows host | Windows 10 22H2 build 19045 or newer, amd64, virtualization firmware enabled | Go build and tests on `windows-latest`; setup planning, immutable runtime extraction, WSL feature transaction, launcher/core activation, Start-menu/sign-in registration boundaries, and signed bootstrap are automated. Earlier host-core and live service evidence was collected on build 19045. | A clean-host execution of the final signed setup through reboot, managed-machine creation, first project, and uninstall |
 | macOS host | macOS 13, arm64 | Go build and tests on the native arm64 `macos-15` runner; the Stage 7 dry-run built, extracted, and executed the launcher/core archive and preserved its Darwin/arm64 identity JSON | Execution on macOS 13, launch service, APFS edge cases, Docker Desktop lifecycle and file sharing, and a real signed/notarized package |
-| Docker Desktop | Current supported line at release time, in **Linux container mode** | Moby API diagnostic reports daemon availability; real lifecycle, isolation, read-only source, persistence, semantic inference, MCP, and production-volume stress evidence was collected against Docker Desktop 29.5.3 with Compose v5.1.4 on Windows 10. The release dry-run also executed healthy code images natively on Linux amd64 and arm64 hosted runners. | macOS Docker Desktop, other Docker Desktop versions, concurrent multi-project load, and engine-upgrade behavior |
+| Managed runtime | LCTK-private Podman `5.8.2`, explicit `lctk-runtime-root` connection, WSL2 machine `lctk-runtime` | Unit and transaction tests cover absolute client selection, host-path translation, immutable downloads, safe extraction, explicit network/volume/container lifecycle, runner isolation, and machine initialization arguments. Previous OCI behavior was measured against Docker Desktop; that is historical backend evidence, not Podman certification. | Final clean-host Podman/WSL acceptance, concurrent multi-project load, and runtime replacement/rollback |
 
 ### Client and capability
 
@@ -24,7 +24,7 @@
 | Git awareness | Branch, commit, dirty state, changed files, and a bounded diff, read-only and route-scoped | Slice 3.1 drove the tools live against this repository through the endpoint: all four tools listed, `project_info` carrying branch and commit, six changed paths reported with a deliberately wrong `project_id` argument, a 58-line single-file diff, a diff bounded to 80 bytes and reported truncated, and absolute, escaping, and dash-leading paths refused. The parser is tested against real repositories the tests create, on Git 2.54 | Older Git versions, worktrees and submodules, repositories on network or case-insensitive volumes, and very large working trees where status is slow |
 | Filesystem watching | Native events on Windows and macOS, normalized to project-relative changes, with every lapse in observation recorded as a gap | Slice 2.1 watched this repository live through a real daemon on Windows 10: 42 directories of 56,077 on disk, a save settled in 3.0 s against a 3 s window, 62 observations of one path collapsed to one pending change, deletion recorded, the pending list survived a hard kill, the reload recorded a fresh gap, and a reduced watch budget produced one capacity gap rather than a silent partial watch. Automated tests cover both platforms in CI | macOS behaviour under a real editing session, kqueue descriptor limits on a large repository, event storms from a branch checkout or a package install, and network or virtualized filesystems |
 
-LCTK project stacks are Linux containers, because [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires a Linux boundary for the search backend. A Windows host running Docker in Windows container mode answers every query and then rejects a Linux image with an opaque manifest error, so LCTK checks the runtime's reported OS up front and returns a typed error naming the fix.
+LCTK project stacks are Linux containers because [ADR-0011](adr/0011-zoekt-exact-search-backend.md) requires that boundary. LCTK probes the explicit managed Podman connection, requires a Linux server identity, and does not inspect or use an ambient Docker or Podman installation.
 
 The initial resource goal is a 16 GB RAM, CPU-only machine. The measured million-file curves characterize one machine and synthetic corpora; they are not a latency guarantee or a supported project-count claim.
 
@@ -34,7 +34,7 @@ The initial resource goal is a 16 GB RAM, CPU-only machine. The measured million
 - **Hosted test evidence** means automated behavior ran on the named GitHub runner image.
 - **Artifact construction evidence** means an archive was created; it does not prove extraction or execution.
 - **Local measured evidence** means a tracked harness drove a real third-party artifact on one maintainer machine and recorded the result. It is stronger than documentation and weaker than hosted test evidence, because it is not repeated automatically.
-- **Certified** requires repeatable tests on the exact target contract, including Docker Desktop where relevant.
+- **Certified** requires repeatable tests on the exact target contract, including the managed Podman/WSL runtime where relevant.
 
 Current configurations are targets, not certified support claims. See [ADR-0008](adr/0008-platform-and-ci-baseline.md).
 
@@ -44,7 +44,7 @@ Current configurations are targets, not certified support claims. See [ADR-0008]
 |---|---|
 | Extracted-archive smoke on both target architectures | Complete on hosted Windows amd64 and macOS arm64; downloadable identity JSON and checksums were preserved by Stage 7. |
 | Target-minimum operating-system execution | Windows 10 build 19045 executed the downloaded hosted archive and the local bootstrap/activation path on one maintainer machine; macOS 13 remains open. |
-| Docker Desktop project mount, isolation, stop/start, and persistence | Complete on the measured Windows 10/Docker Desktop installation; macOS and version breadth remain open. |
+| Managed Podman/WSL mount, isolation, stop/start, and persistence | Unit and prior OCI evidence complete; final clean Windows 10 managed-runtime execution remains open. |
 | Filesystem rename, coalescing, overflow, downtime, and reconciliation | Automated cross-platform tests and a real Windows editing session exist; a real macOS editing session remains open. |
-| Installer/service, upgrade, rollback, signing, and notarization | Transactional bootstrap/update/rollback tests and local packaged bootstrap are complete. OS service integration and a credentialed official Authenticode/Developer ID/notarization run remain open. |
+| Installer/service, upgrade, rollback, and signing | Windows setup, sign-in registration, signed manifest, and transactional bootstrap/update/rollback paths are implemented and tested below the OS boundary. A credentialed Authenticode release and clean-host execution remain open. |
 | Baseline resource and stress measurements | Complete for the Stage 7 semantic and exact-search harness on one Windows/Docker Desktop machine; hardware breadth and concurrent-project stress remain open. |

@@ -14,7 +14,7 @@ import (
 )
 
 // scriptedRuntime answers container-runtime commands from a script so that the
-// command tests behave identically whether or not Docker is installed.
+// command tests behave identically whether or not the managed runtime exists.
 type scriptedRuntime struct {
 	replies []scriptedReply
 	calls   [][]string
@@ -70,7 +70,7 @@ func useRuntime(t *testing.T, replies ...scriptedReply) *scriptedRuntime {
 func healthyRuntime(t *testing.T) *scriptedRuntime {
 	t.Helper()
 	return useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 		scriptedReply{match: "inspect", stdout: "running healthy\n"},
 	)
@@ -79,8 +79,8 @@ func healthyRuntime(t *testing.T) *scriptedRuntime {
 func unavailableRuntime(t *testing.T) *scriptedRuntime {
 	t.Helper()
 	return useRuntime(t, scriptedReply{
-		match:  "version",
-		stderr: "cannot connect to the Docker daemon",
+		match:  "info --format json",
+		stderr: "cannot connect to the managed Podman machine",
 		err:    errors.New("exit status 1"),
 	})
 }
@@ -125,8 +125,8 @@ func TestProjectStartReportsRunningState(t *testing.T) {
 	if view.Volume == "" || view.Network == "" {
 		t.Errorf("resource names missing: %+v", view)
 	}
-	if !runtime.sawCall("compose", "up", "--detach") {
-		t.Errorf("compose up was not invoked; calls: %v", runtime.calls)
+	if !runtime.sawCall("run", "--detach", "--name") {
+		t.Errorf("Podman run was not invoked; calls: %v", runtime.calls)
 	}
 }
 
@@ -146,12 +146,12 @@ func TestProjectStopKeepsTheVolume(t *testing.T) {
 	if view.State != string(projectstack.StateStopped) {
 		t.Errorf("state = %q, want stopped", view.State)
 	}
-	if !runtime.sawCall("compose", "down") {
-		t.Errorf("compose down was not invoked; calls: %v", runtime.calls)
+	if !runtime.sawCall("rm", "--force") || !runtime.sawCall("network", "rm") {
+		t.Errorf("managed resources were not released; calls: %v", runtime.calls)
 	}
 	// Deleting volumes on stop would destroy indexes and memory.
-	if runtime.sawCall("compose", "down", "--volumes") {
-		t.Error("stop asked Compose to delete volumes")
+	if runtime.sawCall("volume", "rm") {
+		t.Error("stop asked Podman to delete volumes")
 	}
 }
 
@@ -163,13 +163,13 @@ func TestProjectRestartGoesDownThenUp(t *testing.T) {
 	if _, _, err := project(t, "restart", "--json", "--wait", "5s", id); err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.sawCall("compose", "down") || !runtime.sawCall("compose", "up") {
+	if !runtime.sawCall("rm", "--force") || !runtime.sawCall("run", "--detach") {
 		t.Errorf("restart did not go down then up; calls: %v", runtime.calls)
 	}
 }
 
 // TestProjectStartWithoutRuntimeIsDistinguishable matters for a calling agent: a
-// closed Docker Desktop must not look like a broken project.
+// stopped managed runtime must not look like a broken project.
 func TestProjectStartWithoutRuntimeIsDistinguishable(t *testing.T) {
 	isolateHome(t)
 	unavailableRuntime(t)
@@ -192,7 +192,7 @@ func TestProjectStartWithoutRuntimeIsDistinguishable(t *testing.T) {
 func TestProjectStartWithoutTheImageSaysSo(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	)
 	id := addProject(t, "alpha")
@@ -232,7 +232,7 @@ func TestProjectStatusIncludesRuntimeState(t *testing.T) {
 }
 
 // TestProjectStatusSurvivesAnUnavailableRuntime keeps registry information usable
-// while Docker Desktop is closed.
+// while the managed runtime is stopped.
 func TestProjectStatusSurvivesAnUnavailableRuntime(t *testing.T) {
 	isolateHome(t)
 	unavailableRuntime(t)
@@ -261,7 +261,7 @@ func TestProjectStatusSurvivesAnUnavailableRuntime(t *testing.T) {
 func TestProjectStatusMarksAStartingProjectRetryable(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "inspect", stdout: "running starting\n"},
 	)
 	id := addProject(t, "alpha")
@@ -294,10 +294,10 @@ func TestProjectRemoveStopsTheStackAndKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.sawCall("compose", "down") {
+	if !runtime.sawCall("rm", "--force") || !runtime.sawCall("network", "rm") {
 		t.Errorf("remove did not release runtime resources; calls: %v", runtime.calls)
 	}
-	if runtime.sawCall("compose", "down", "--volumes") {
+	if runtime.sawCall("volume", "rm") {
 		t.Error("remove deleted the project volume implicitly")
 	}
 	if !strings.Contains(stdout, "separate purge") {
@@ -309,7 +309,7 @@ func TestProjectRemoveStopsTheStackAndKeepsData(t *testing.T) {
 }
 
 // TestProjectRemoveSucceedsWithoutARuntime keeps deregistration possible while
-// Docker Desktop is closed.
+// the managed runtime is stopped.
 func TestProjectRemoveSucceedsWithoutARuntime(t *testing.T) {
 	isolateHome(t)
 	unavailableRuntime(t)
@@ -354,7 +354,7 @@ func imageCommand(t *testing.T, args ...string) (string, string, error) {
 func TestImageStatusReportsAvailability(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 	)
 
@@ -377,7 +377,7 @@ func TestImageStatusReportsAvailability(t *testing.T) {
 func TestImageStatusExplainsAMissingImage(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "image inspect", stderr: "No such image", err: errors.New("exit status 1")},
 	)
 
@@ -399,7 +399,7 @@ func TestImageStatusExplainsAMissingImage(t *testing.T) {
 
 func TestImageBuildPassesTheContextDirectory(t *testing.T) {
 	isolateHome(t)
-	runtime := useRuntime(t, scriptedReply{match: "version", stdout: "29.5.3 linux\n"})
+	runtime := useRuntime(t, scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`})
 
 	contextDir := t.TempDir()
 	if _, _, err := imageCommand(t, "build", "--context", contextDir, "--json"); err != nil {
@@ -436,7 +436,7 @@ func TestImageUsageErrors(t *testing.T) {
 func TestImageCommandIsReachableFromRun(t *testing.T) {
 	isolateHome(t)
 	useRuntime(t,
-		scriptedReply{match: "version", stdout: "29.5.3 linux\n"},
+		scriptedReply{match: "info --format json", stdout: `{"host":{"os":"linux"}}`},
 		scriptedReply{match: "image inspect", stdout: "sha256:abc\n"},
 	)
 

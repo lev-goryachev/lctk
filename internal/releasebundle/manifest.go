@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // TrustedKeyID and TrustedPublicKey are injected into official binaries at
 // build time. Development binaries intentionally have no release trust root and
@@ -154,6 +154,18 @@ func (m Manifest) Validate() error {
 		}
 		seen[key] = true
 	}
+	if _, hasWindowsCore := seen["host-core\x00windows\x00amd64"]; hasWindowsCore {
+		for _, identity := range []string{
+			"host-launcher\x00windows\x00amd64",
+			"installer\x00windows\x00amd64",
+			"podman-client\x00windows\x00amd64",
+			"podman-machine\x00linux\x00amd64",
+		} {
+			if !seen[identity] {
+				return errors.New("Windows release omits a one-click installer component")
+			}
+		}
+	}
 	if err := validateImage(m.CodeImage); err != nil {
 		return fmt.Errorf("code image: %w", err)
 	}
@@ -168,12 +180,18 @@ func (m Manifest) Validate() error {
 
 // HostCore returns the one executable matching the binary doing the update.
 func (m Manifest) HostCore() (Artifact, error) {
+	return m.ArtifactFor("host-core", runtime.GOOS, runtime.GOARCH)
+}
+
+// ArtifactFor selects one immutable component for a target identity. Manifest
+// validation rejects duplicate identities, so selection is unambiguous.
+func (m Manifest) ArtifactFor(kind, targetOS, arch string) (Artifact, error) {
 	for _, artifact := range m.Artifacts {
-		if artifact.Kind == "host-core" && artifact.OS == runtime.GOOS && artifact.Arch == runtime.GOARCH {
+		if artifact.Kind == kind && artifact.OS == targetOS && artifact.Arch == arch {
 			return artifact, nil
 		}
 	}
-	return Artifact{}, fmt.Errorf("release %s has no host core for %s/%s", m.Version, runtime.GOOS, runtime.GOARCH)
+	return Artifact{}, fmt.Errorf("release %s has no %s artifact for %s/%s", m.Version, kind, targetOS, arch)
 }
 
 func validateImage(image Image) error {

@@ -31,7 +31,7 @@ type bootstrapInference interface {
 }
 
 var newBootstrapInference = func() (bootstrapInference, error) {
-	return inference.NewDockerManager()
+	return inference.NewRuntimeManager()
 }
 
 var (

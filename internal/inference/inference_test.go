@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 )
 
 type runnerCall struct {
@@ -30,12 +32,12 @@ func (r *scriptedRunner) Run(_ context.Context, args ...string) (string, string,
 	r.t.Helper()
 	r.seen = append(r.seen, append([]string(nil), args...))
 	if len(r.calls) == 0 {
-		r.t.Fatalf("unexpected Docker call: %v", args)
+		r.t.Fatalf("unexpected runtime call: %v", args)
 	}
 	call := r.calls[0]
 	r.calls = r.calls[1:]
 	if call.args != nil && !reflect.DeepEqual(args, call.args) {
-		r.t.Fatalf("Docker args = %v, want %v", args, call.args)
+		r.t.Fatalf("runtime args = %v, want %v", args, call.args)
 	}
 	return call.stdout, call.stderr, call.err
 }
@@ -66,6 +68,10 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 		{stdout: "container-id\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
+	runtimeModel, err := containerruntime.HostPath(model)
+	if err != nil {
+		t.Fatal(err)
+	}
 	status, err := manager.Ensure(context.Background(), time.Second)
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -77,7 +83,7 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 	for _, required := range []string{
 		"run --detach --name " + ContainerName,
 		"--publish 127.0.0.1:4445:8080",
-		"source=" + model,
+		"source=" + runtimeModel,
 		"target=/models/" + ModelName + ",readonly",
 		"--embedding --pooling mean",
 		"--parallel 8",
@@ -97,7 +103,7 @@ func TestVerifyModelRejectsAnUnpinnedFile(t *testing.T) {
 	}
 }
 
-func TestCancelledInstallStartsNoDownloadOrDockerOperation(t *testing.T) {
+func TestCancelledInstallStartsNoDownloadOrRuntimeOperation(t *testing.T) {
 	runner := &scriptedRunner{t: t}
 	manager := NewManagerForTest(runner, "image@sha256:test", filepath.Join(t.TempDir(), "missing.gguf"), "http://127.0.0.1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,7 +115,7 @@ func TestCancelledInstallStartsNoDownloadOrDockerOperation(t *testing.T) {
 		t.Fatalf("InstallModel error = %v, want context cancellation", err)
 	}
 	if len(runner.seen) != 0 {
-		t.Fatalf("cancelled install executed Docker calls: %v", runner.seen)
+		t.Fatalf("cancelled install executed runtime calls: %v", runner.seen)
 	}
 }
 
