@@ -165,6 +165,9 @@ type grammar struct {
 	// identifiers captures every node the grammar calls an identifier, which is what
 	// separates an occurrence from the same letters in a comment or a string.
 	identifiers *ts.Query
+	// graph captures whole call targets and import statements. Normalization is
+	// performed after syntax has excluded comments and unrelated strings.
+	graph *ts.Query
 	// reportsSyntax says whether this grammar's opinion about a file being whole is
 	// worth publishing. Slice 4.1 measured why this is per language rather than
 	// global: the C and C++ grammars have no preprocessor, so most real files in
@@ -292,10 +295,17 @@ func New() (*Engine, error) {
 			query.Close()
 			return nil, fmt.Errorf("compile the %s identifier query: %w", configured.name, err)
 		}
+		graph, err := ts.NewQuery(language, configured.graph)
+		if err != nil {
+			query.Close()
+			identifiers.Close()
+			return nil, fmt.Errorf("compile the %s graph query: %w", configured.name, err)
+		}
 		engine.grammars[configured.name] = &grammar{
 			language:      language,
 			query:         query,
 			identifiers:   identifiers,
+			graph:         graph,
 			reportsSyntax: configured.reportsSyntax,
 			syntaxNote:    configured.syntaxNote,
 		}
@@ -308,6 +318,7 @@ func (e *Engine) Close() {
 	for _, g := range e.grammars {
 		g.query.Close()
 		g.identifiers.Close()
+		g.graph.Close()
 	}
 }
 
@@ -644,6 +655,7 @@ var configuredLanguages = []struct {
 	grammar          func() *ts.Language
 	query            string
 	identifiers      string
+	graph            string
 	optionalPatterns []string
 	reportsSyntax    bool
 	syntaxNote       string
@@ -653,6 +665,7 @@ var configuredLanguages = []struct {
 		grammar:          func() *ts.Language { return ts.NewLanguage(tsgo.Language()) },
 		query:            goQuery,
 		identifiers:      goIdentifiers,
+		graph:            goGraph,
 		optionalPatterns: goInterfaceMethodPatterns,
 		reportsSyntax:    true,
 	},
@@ -661,6 +674,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tspython.Language()) },
 		query:         pythonQuery,
 		identifiers:   pythonIdentifiers,
+		graph:         pythonGraph,
 		reportsSyntax: true,
 	},
 	{
@@ -668,6 +682,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tsrust.Language()) },
 		query:         rustQuery,
 		identifiers:   rustIdentifiers,
+		graph:         rustGraph,
 		reportsSyntax: true,
 	},
 	{
@@ -675,6 +690,7 @@ var configuredLanguages = []struct {
 		grammar:     func() *ts.Language { return ts.NewLanguage(tsc.Language()) },
 		query:       cQuery,
 		identifiers: cIdentifiers,
+		graph:       cGraph,
 		// No syntax verdict: see noPreprocessorNote.
 		reportsSyntax: false,
 		syntaxNote:    noPreprocessorNote,
@@ -684,6 +700,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tscpp.Language()) },
 		query:         cppQuery,
 		identifiers:   cppIdentifiers,
+		graph:         cppGraph,
 		reportsSyntax: false,
 		syntaxNote:    noPreprocessorNote,
 	},
@@ -692,6 +709,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tsjs.Language()) },
 		query:         javascriptQuery,
 		identifiers:   ecmaIdentifiers,
+		graph:         ecmaGraph,
 		reportsSyntax: true,
 	},
 	{
@@ -699,6 +717,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tsts.LanguageTypescript()) },
 		query:         typescriptQuery,
 		identifiers:   typescriptIdentifiers,
+		graph:         ecmaGraph,
 		reportsSyntax: true,
 	},
 	{
@@ -708,6 +727,7 @@ var configuredLanguages = []struct {
 		grammar:       func() *ts.Language { return ts.NewLanguage(tsts.LanguageTSX()) },
 		query:         typescriptQuery,
 		identifiers:   typescriptIdentifiers,
+		graph:         ecmaGraph,
 		reportsSyntax: true,
 	},
 }

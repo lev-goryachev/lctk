@@ -8,7 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // excludedDirectories are skipped whatever the project's ignore rules say.
@@ -66,6 +69,11 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 	defer root.Close()
 
 	result := inventoryResult{files: map[string]string{}}
+	type fileCandidate struct {
+		name string
+		size int64
+	}
+	var candidates []fileCandidate
 	sources := &sourceSet{}
 
 	// Ignore rules are collected per directory as the walk descends, because a
@@ -125,12 +133,7 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 			return nil
 		}
 
-		content, err := readWithin(root, name)
-		if err != nil {
-			return err
-		}
-		result.files[name] = digestOf(content)
-		result.sourceBytes += info.Size()
+		candidates = append(candidates, fileCandidate{name: name, size: info.Size()})
 		return nil
 	})
 	if err != nil {
@@ -138,6 +141,53 @@ func (s *Store) inventory(ctx context.Context) (inventoryResult, error) {
 			return inventoryResult{}, ctxErr
 		}
 		return inventoryResult{}, internal("enumerate the workspace", err)
+	}
+
+	// Directory descent and ignore inheritance are serial. Once that decision is
+	// complete, file reads are independent and bounded parallelism avoids paying
+	// one storage round trip at a time on a million-file repository.
+	workers := s.Limits.Parallelism
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	workers = min(workers, len(candidates))
+	digests := make([]string, len(candidates))
+	var next atomic.Int64
+	var firstErr error
+	var errorOnce sync.Once
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for {
+				index := int(next.Add(1) - 1)
+				if index >= len(candidates) {
+					return
+				}
+				if err := ctx.Err(); err != nil {
+					errorOnce.Do(func() { firstErr = err })
+					return
+				}
+				content, err := readWithin(root, candidates[index].name)
+				if err != nil {
+					errorOnce.Do(func() { firstErr = err })
+					return
+				}
+				digests[index] = digestOf(content)
+			}
+		}()
+	}
+	wait.Wait()
+	if firstErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return inventoryResult{}, ctxErr
+		}
+		return inventoryResult{}, internal("read the workspace inventory", firstErr)
+	}
+	for index, candidate := range candidates {
+		result.files[candidate.name] = digests[index]
+		result.sourceBytes += candidate.size
 	}
 	result.ignoreSources = sources.list()
 	return result, nil

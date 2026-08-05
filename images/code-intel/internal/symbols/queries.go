@@ -63,6 +63,11 @@ const goIdentifiers = `
 (label_name) @id
 `
 
+const goGraph = `
+(call_expression function: (_) @call)
+(import_spec) @import
+`
+
 // --- Python ---
 
 // pythonQuery covers functions, classes, and the bindings that behave like
@@ -83,6 +88,12 @@ const pythonQuery = `
 
 const pythonIdentifiers = `
 (identifier) @id
+`
+
+const pythonGraph = `
+(call function: (_) @call)
+(import_statement) @import
+(import_from_statement) @import
 `
 
 // --- Rust ---
@@ -111,6 +122,11 @@ const rustIdentifiers = `
 (type_identifier) @id
 (field_identifier) @id
 (primitive_type) @id
+`
+
+const rustGraph = `
+(call_expression function: (_) @call)
+(use_declaration) @import
 `
 
 // --- C ---
@@ -145,6 +161,13 @@ const cIdentifiers = `
 (type_identifier) @id
 (field_identifier) @id
 `
+
+const cGraph = `
+(call_expression function: (_) @call)
+(preproc_include) @import
+`
+
+const cppGraph = cGraph
 
 // --- C++ ---
 
@@ -211,6 +234,13 @@ const ecmaIdentifiers = `
 
 const typescriptIdentifiers = ecmaIdentifiers + `
 (type_identifier) @id
+`
+
+const ecmaGraph = `
+(call_expression function: (_) @call)
+(new_expression constructor: (_) @call)
+(import_statement) @import
+(export_statement source: (string) @import)
 `
 
 // kindByNode maps a grammar node type onto the normalized vocabulary.

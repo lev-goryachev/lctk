@@ -87,10 +87,10 @@ jobs:
       - name: Test
         run: go test -cover ./...
       - name: Test under the race detector
-        # The symbol engine pools parsers because a Tree-sitter parser is not safe
-        # for concurrent use, and the HTTP surface serves concurrent requests. That
-        # pool is only actually checked here.
-        run: go test -race ./internal/symbols/...
+        # The symbol engine pools parsers and the exact index hashes a bounded
+        # worker set concurrently. Both are correctness boundaries, so every
+        # internal package runs under the race detector on the native Linux job.
+        run: go test -race ./internal/...
       - name: Build for both target architectures
         run: |
           GOARCH=amd64 go build -trimpath -o /dev/null ./

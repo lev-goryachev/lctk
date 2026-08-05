@@ -25,7 +25,9 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | [`compatibility.md`](compatibility.md) | Platform targets, current evidence, and certification gaps |
 | [`development.md`](development.md) | Go prerequisites, local checks, and foundation commands |
 | [`versioning.md`](versioning.md) | Product, schema, image, and compatibility version rules |
-| [`releasing.md`](releasing.md) | Dry-run artifacts and future release gates |
+| [`releasing.md`](releasing.md) | Signed release workflow, installation, update, and rollback |
+| [`stage7-client-verification.md`](stage7-client-verification.md) | Complete MCP catalog evidence through Codex and an independent SDK client |
+| [`stress.md`](stress.md) | Parameterized semantic and exact-search measurements through one million files |
 | [`roadmap.md`](roadmap.md) | Small, verifiable vertical slices |
 | [`spikes/gateway-evaluation.md`](spikes/gateway-evaluation.md) | Slice 0.2 gateway test and scoring contract |
 | [`spikes/gateway-evaluation-results.md`](spikes/gateway-evaluation-results.md) | Slice 0.2 measurements and accepted gateway recommendation |

@@ -26,7 +26,10 @@ func requireDocker(t *testing.T) (*Manager, string) {
 		t.Skip("skipping container integration test in short mode")
 	}
 
-	manager := NewManager()
+	// These legacy integration cases isolate the per-project Compose lifecycle.
+	// The shared inference lifecycle has its own real-container acceptance test
+	// after bootstrap installs the pinned model and image.
+	manager := NewManagerWithRunner(dockerRunner{})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// This covers both an absent daemon and a reachable one that cannot run Linux

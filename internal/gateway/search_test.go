@@ -35,6 +35,11 @@ type fakeService struct {
 	locateRequests []map[string]any
 	locateResponse string
 	locateStatus   int
+	// semanticRequests records conceptual queries independently from exact search.
+	semanticRequests []map[string]any
+	semanticResponse string
+	semanticStatus   int
+	semanticReady    bool
 }
 
 func newFakeService(t *testing.T) *fakeService {
@@ -43,6 +48,7 @@ func newFakeService(t *testing.T) *fakeService {
 		status:           http.StatusOK,
 		outlineStatus:    http.StatusOK,
 		locateStatus:     http.StatusOK,
+		semanticStatus:   http.StatusOK,
 		outlineLanguages: []string{"go"},
 	}
 
@@ -103,12 +109,34 @@ func newFakeService(t *testing.T) *fakeService {
 			`"total":1,"truncated":false,"generation":4,`+
 			`"indexed_at":"2026-08-01T11:00:00Z","file_count":42}`)
 	})
+	mux.HandleFunc("POST /semantic/search", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		service.semanticRequests = append(service.semanticRequests, body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(service.semanticStatus)
+		if service.semanticResponse != "" {
+			_, _ = io.WriteString(w, service.semanticResponse)
+			return
+		}
+		_, _ = io.WriteString(w, `{"matches":[{"path":"internal/retry.go","language":"go",`+
+			`"chunk_precision":"syntax","anchor":"function:Retry","start_line":7,"end_line":12,`+
+			`"preview":"func Retry() { backoff() }","vector_score":0.91,"lexical_score":2,`+
+			`"hybrid_score":0.032,"vector_rank":1,"lexical_rank":1}],"total":1,"truncated":false,`+
+			`"generation":4,"exact_generation":4,"freshness":"fresh",`+
+			`"model":"nomic-test","dimensions":768}`)
+	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		languages, _ := json.Marshal(service.outlineLanguages)
+		semantic := ""
+		if service.semanticReady {
+			semantic = `,"semantic":{"ready":true,"indexing":false,"generation":4,` +
+				`"file_count":42,"chunk_count":80,"model":"nomic-test","dimensions":768,"freshness":"fresh"}`
+		}
 		_, _ = io.WriteString(w, `{"ready":true,"indexing":false,"generation":4,`+
 			`"file_count":42,"indexed_at":"2026-08-01T11:00:00Z",`+
-			`"outline_languages":`+string(languages)+`}`)
+			`"outline_languages":`+string(languages)+semantic+`}`)
 	})
 
 	service.server = httptest.NewServer(mux)

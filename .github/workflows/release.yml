@@ -1,0 +1,510 @@
+name: Official release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      public_key: ${{ steps.trust.outputs.public_key }}
+      manifest_url: ${{ steps.identity.outputs.manifest_url }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Validate tag and clean source identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test -z "$(git status --porcelain)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "manifest_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/release-manifest.json" >> "$GITHUB_OUTPUT"
+      - name: Validate signing key and derive public trust root
+        id: trust
+        env:
+          LCTK_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.LCTK_RELEASE_ED25519_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LCTK_RELEASE_ED25519_PRIVATE_KEY"
+          public_key="$(go run ./cmd/release-manifest --print-public-key)"
+          echo "public_key=$public_key" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: validate
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PUBLIC_KEY: ${{ needs.validate.outputs.public_key }}
+      MANIFEST_URL: ${{ needs.validate.outputs.manifest_url }}
+      KEY_ID: lctk-release-v1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Verify the host before packaging
+        shell: pwsh
+        run: ./scripts/check.ps1
+      - name: Build host core
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $trust = "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$env:VERSION -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$env:GITHUB_SHA -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$date -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=$env:KEY_ID -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$env:PUBLIC_KEY -X github.com/lev-goryachev/lctk/internal/releasebundle.DefaultManifestURL=$env:MANIFEST_URL"
+          go build -trimpath -ldflags $trust -o dist/package/lctk-core.exe ./cmd/lctk
+          Copy-Item LICENSE,NOTICE,README.md,THIRD_PARTY_NOTICES.md dist/package/
+      - name: Authenticode sign core, bind launcher identity, and verify both
+        env:
+          LCTK_WINDOWS_PFX_BASE64: ${{ secrets.LCTK_WINDOWS_PFX_BASE64 }}
+          LCTK_WINDOWS_PFX_PASSWORD: ${{ secrets.LCTK_WINDOWS_PFX_PASSWORD }}
+        shell: pwsh
+        run: |
+          if (-not $env:LCTK_WINDOWS_PFX_BASE64 -or -not $env:LCTK_WINDOWS_PFX_PASSWORD) { throw 'Protected Authenticode credentials are required.' }
+          New-Item -ItemType Directory -Force .artifacts | Out-Null
+          $path = Join-Path $PWD '.artifacts/authenticode.pfx'
+          try {
+            [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:LCTK_WINDOWS_PFX_BASE64))
+            $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($path, $env:LCTK_WINDOWS_PFX_PASSWORD, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+            $core = 'dist/package/lctk-core.exe'
+            $signed = Set-AuthenticodeSignature -FilePath $core -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
+            if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $core: $($signed.StatusMessage)" }
+            $hash = (Get-FileHash -Algorithm SHA256 $core).Hash.ToLowerInvariant()
+            $bytes = (Get-Item $core).Length
+            go build -trimpath -ldflags "-s -w -X main.PackagedCoreSHA256=$hash -X main.PackagedCoreBytes=$bytes" -o dist/package/lctk.exe ./cmd/lctk-launcher
+            $launcher = 'dist/package/lctk.exe'
+            $signed = Set-AuthenticodeSignature -FilePath $launcher -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
+            if ($signed.Status -ne 'Valid') { throw "Authenticode signing failed for $launcher: $($signed.StatusMessage)" }
+            foreach ($file in @($launcher, $core)) {
+              if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "Authenticode verification failed for $file" }
+            }
+          } finally {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+          }
+      - name: Package, extract, and execute the real client entry point
+        shell: pwsh
+        run: |
+          Copy-Item dist/package/lctk-core.exe dist/lctk-core-windows-amd64.exe
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/lctk-$env:VERSION-windows-amd64.zip"
+          Expand-Archive "dist/lctk-$env:VERSION-windows-amd64.zip" -DestinationPath dist/extracted
+          $info = & dist/extracted/lctk.exe version --json | ConvertFrom-Json
+          if ($info.version -ne $env:VERSION -or $info.os -ne 'windows' -or $info.arch -ne 'amd64') { throw 'Extracted Windows package identity is invalid.' }
+      - name: Generate Windows SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: ./dist/package
+          format: spdx-json
+          output-file: ./dist/lctk-windows-amd64.spdx.json
+          upload-artifact: false
+      - name: Upload signed Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-windows
+          path: |
+            dist/lctk-core-windows-amd64.exe
+            dist/lctk-${{ needs.validate.outputs.version }}-windows-amd64.zip
+            dist/lctk-windows-amd64.spdx.json
+          if-no-files-found: error
+
+  macos:
+    needs: validate
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PUBLIC_KEY: ${{ needs.validate.outputs.public_key }}
+      MANIFEST_URL: ${{ needs.validate.outputs.manifest_url }}
+      KEY_ID: lctk-release-v1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Verify the host before packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          test -z "$unformatted"
+          go vet ./...
+          go test ./...
+      - name: Build and sign host core, then bind and sign launcher
+        env:
+          LCTK_APPLE_CERTIFICATE_BASE64: ${{ secrets.LCTK_APPLE_CERTIFICATE_BASE64 }}
+          LCTK_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.LCTK_APPLE_CERTIFICATE_PASSWORD }}
+          LCTK_APPLE_APPLICATION_IDENTITY: ${{ secrets.LCTK_APPLE_APPLICATION_IDENTITY }}
+          LCTK_APPLE_INSTALLER_IDENTITY: ${{ secrets.LCTK_APPLE_INSTALLER_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in LCTK_APPLE_CERTIFICATE_BASE64 LCTK_APPLE_CERTIFICATE_PASSWORD LCTK_APPLE_APPLICATION_IDENTITY LCTK_APPLE_INSTALLER_IDENTITY; do
+            test -n "${!name}"
+          done
+          mkdir -p dist/package .artifacts
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          trust="-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$VERSION -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$GITHUB_SHA -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$date -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=$KEY_ID -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$PUBLIC_KEY -X github.com/lev-goryachev/lctk/internal/releasebundle.DefaultManifestURL=$MANIFEST_URL"
+          go build -trimpath -ldflags "$trust" -o dist/package/lctk-core ./cmd/lctk
+          echo "$LCTK_APPLE_CERTIFICATE_BASE64" | base64 --decode > .artifacts/apple.p12
+          security create-keychain -p "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
+          security set-keychain-settings -lut 21600 .artifacts/release.keychain-db
+          security unlock-keychain -p "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
+          security import .artifacts/apple.p12 -k .artifacts/release.keychain-db -P "$LCTK_APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP-keychain-password" .artifacts/release.keychain-db
+          security list-keychains -d user -s .artifacts/release.keychain-db
+          codesign --force --options runtime --timestamp --sign "$LCTK_APPLE_APPLICATION_IDENTITY" dist/package/lctk-core
+          core_sha="$(shasum -a 256 dist/package/lctk-core | cut -d' ' -f1)"
+          core_bytes="$(stat -f%z dist/package/lctk-core)"
+          go build -trimpath -ldflags "-s -w -X main.PackagedCoreSHA256=$core_sha -X main.PackagedCoreBytes=$core_bytes" -o dist/package/lctk ./cmd/lctk-launcher
+          codesign --force --options runtime --timestamp --sign "$LCTK_APPLE_APPLICATION_IDENTITY" dist/package/lctk
+          codesign --verify --strict --verbose=2 dist/package/lctk dist/package/lctk-core
+          cp LICENSE NOTICE README.md THIRD_PARTY_NOTICES.md dist/package/
+          mkdir -p dist/pkgroot/usr/local/bin
+          cp dist/package/lctk dist/package/lctk-core dist/pkgroot/usr/local/bin/
+          pkgbuild --root dist/pkgroot --identifier tech.lctk.cli --version "$VERSION" --install-location / "dist/lctk-$VERSION-darwin-arm64.pkg"
+          productsign --sign "$LCTK_APPLE_INSTALLER_IDENTITY" "dist/lctk-$VERSION-darwin-arm64.pkg" "dist/lctk-$VERSION-darwin-arm64-signed.pkg"
+          mv "dist/lctk-$VERSION-darwin-arm64-signed.pkg" "dist/lctk-$VERSION-darwin-arm64.pkg"
+          rm -f .artifacts/apple.p12
+          security delete-keychain .artifacts/release.keychain-db
+      - name: Notarize, staple, package, extract, and execute
+        env:
+          LCTK_APPLE_ID: ${{ secrets.LCTK_APPLE_ID }}
+          LCTK_APPLE_TEAM_ID: ${{ secrets.LCTK_APPLE_TEAM_ID }}
+          LCTK_APPLE_APP_PASSWORD: ${{ secrets.LCTK_APPLE_APP_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in LCTK_APPLE_ID LCTK_APPLE_TEAM_ID LCTK_APPLE_APP_PASSWORD; do
+            test -n "${!name}"
+          done
+          xcrun notarytool submit "dist/lctk-$VERSION-darwin-arm64.pkg" --apple-id "$LCTK_APPLE_ID" --team-id "$LCTK_APPLE_TEAM_ID" --password "$LCTK_APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "dist/lctk-$VERSION-darwin-arm64.pkg"
+          xcrun stapler validate "dist/lctk-$VERSION-darwin-arm64.pkg"
+          cp dist/package/lctk-core dist/lctk-core-darwin-arm64
+          cp "dist/lctk-$VERSION-darwin-arm64.pkg" dist/package/
+          tar -C dist/package -czf "dist/lctk-$VERSION-darwin-arm64.tar.gz" .
+          mkdir dist/extracted
+          tar -C dist/extracted -xzf "dist/lctk-$VERSION-darwin-arm64.tar.gz"
+          dist/extracted/lctk version --json | tee dist/version.json
+          test "$(jq -r .version dist/version.json)" = "$VERSION"
+          test "$(jq -r .os dist/version.json)" = darwin
+          test "$(jq -r .arch dist/version.json)" = arm64
+      - name: Generate macOS SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: ./dist/package
+          format: spdx-json
+          output-file: ./dist/lctk-darwin-arm64.spdx.json
+          upload-artifact: false
+      - name: Upload signed and notarized macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-macos
+          path: |
+            dist/lctk-core-darwin-arm64
+            dist/lctk-${{ needs.validate.outputs.version }}-darwin-arm64.tar.gz
+            dist/lctk-${{ needs.validate.outputs.version }}-darwin-arm64.pkg
+            dist/lctk-darwin-arm64.spdx.json
+          if-no-files-found: error
+
+  image-architecture:
+    needs: validate
+    name: Code image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Normalize the image repository
+        id: image
+        shell: bash
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lctk-code-intel"
+          echo "IMAGE=$repository" >> "$GITHUB_ENV"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Execute code-intel tests on the native architecture
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./images/code-intel
+          platforms: linux/${{ matrix.arch }}
+          target: test
+          outputs: type=cacheonly
+          cache-to: type=gha,mode=max,scope=code-intel-release-${{ matrix.arch }}
+      - name: Build and push the native image architecture
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./images/code-intel
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.image.outputs.repository }}:${{ env.VERSION }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=code-intel-release-${{ matrix.arch }}
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Execute the native runtime image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference="$IMAGE@$DIGEST"
+          mkdir -p ".artifacts/image-smoke/${{ matrix.arch }}/workspace" ".artifacts/image-smoke/${{ matrix.arch }}/state"
+          container="lctk-code-intel-${{ matrix.arch }}-smoke"
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if test "$result" -ne 0; then
+              docker inspect "$container" || true
+              docker logs "$container" || true
+            fi
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            exit "$result"
+          }
+          docker pull "$reference"
+          test "$(docker image inspect "$reference" --format '{{.Os}}/{{.Architecture}}')" = "linux/${{ matrix.arch }}"
+          docker run --detach --name "$container" --network none \
+            --env LCTK_PROJECT_ID=release-smoke \
+            --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/workspace,target=/workspace,readonly" \
+            --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/state,target=/var/lib/lctk" \
+            "$reference"
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
+            test "$health" != unhealthy
+            if test "$health" = healthy; then break; fi
+            sleep 1
+          done
+          test "$(docker inspect "$container" --format '{{.State.Health.Status}}')" = healthy
+          docker exec "$container" test -f /var/lib/lctk/ready
+      - name: Preserve the immutable architecture digest
+        shell: bash
+        run: printf '%s\n' '${{ steps.build.outputs.digest }}' > "image-digest-${{ matrix.arch }}.txt"
+      - name: Upload the architecture digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-digest-${{ matrix.arch }}
+          path: image-digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  image:
+    needs: [validate, image-architecture]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Normalize the image repository
+        id: image
+        shell: bash
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lctk-code-intel"
+          echo "IMAGE=$repository" >> "$GITHUB_ENV"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Download architecture digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-image-digest-*
+          path: digests
+          merge-multiple: true
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Publish and inspect the immutable multi-architecture index
+        shell: bash
+        run: |
+          set -euo pipefail
+          amd64="$(cat digests/image-digest-amd64.txt)"
+          arm64="$(cat digests/image-digest-arm64.txt)"
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$amd64" "$IMAGE@$arm64"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '$1 == "Digest:" { print $2; exit }')"
+          test "${digest#sha256:}" != "$digest"
+          reference="$IMAGE@$digest"
+          raw="$(docker buildx imagetools inspect --raw "$reference")"
+          jq -e '[.manifests[].platform | select(.os == "linux") | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' <<<"$raw"
+          jq -e '[.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")] | length == 2' <<<"$raw"
+          printf 'CODE_IMAGE=%s\n' "$reference" > image.env
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Keyless-sign the immutable image
+        shell: bash
+        run: |
+          source image.env
+          cosign sign --yes "$CODE_IMAGE"
+      - name: Generate image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.image.outputs.repository }}:${{ env.VERSION }}
+          format: spdx-json
+          output-file: ./lctk-code-intel.spdx.json
+          upload-artifact: false
+      - name: Measure immutable image downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          compressed_size() {
+            local reference="$1" raw digest size maximum=0
+            raw="$(docker buildx imagetools inspect --raw "$reference")"
+            if jq -e '.manifests' >/dev/null <<<"$raw"; then
+              while read -r digest; do
+                size="$(docker buildx imagetools inspect --raw "${reference%@*}@$digest" | jq '[.config.size, (.layers[].size)] | add')"
+                (( size > maximum )) && maximum="$size"
+              done < <(jq -r '.manifests[].digest' <<<"$raw")
+            else
+              maximum="$(jq '[.config.size, (.layers[].size)] | add' <<<"$raw")"
+            fi
+            echo "$maximum"
+          }
+          source image.env
+          inference_reference='ghcr.io/ggml-org/llama.cpp:server@sha256:14ab06c571008509adcedf635301edfa98071b1b8345269921d31ea4d519ae47'
+          {
+            echo "CODE_IMAGE_BYTES=$(compressed_size "$CODE_IMAGE")"
+            echo "INFERENCE_IMAGE_BYTES=$(compressed_size "$inference_reference")"
+          } >> image.env
+      - name: Upload image evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image
+          path: |
+            image.env
+            lctk-code-intel.spdx.json
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, windows, macos, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Download the complete release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Create release and migration notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/migration-notes.md <<EOF
+          # LCTK $VERSION migration and rollback
+
+          Project intelligence schema 1 is migrated to schema 2 on a copy. The original remains as \`semantic.db.rollback-v1\` until the rollback window is deliberately retired. A failed candidate health gate restores it automatically. Run \`lctk update rollback\` to select the previous verified host core and project image.
+          EOF
+          {
+            echo "# LCTK $VERSION"
+            echo
+            echo "Signed Windows amd64 and notarized macOS arm64 packages, a keyless-signed multi-architecture code image, SPDX SBOMs, checksums, provenance attestations, and a signed component manifest are attached."
+            echo
+            sed -n '1,120p' CHANGELOG.md
+          } > dist/RELEASE_NOTES.md
+          {
+            go list -m -json all
+            (cd images/code-intel && go list -m -json all)
+          } > dist/dependency-inventory.json
+      - name: Generate checksums and signed release manifest
+        env:
+          LCTK_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.LCTK_RELEASE_ED25519_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source dist/image.env
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          (cd dist && sha256sum lctk-* migration-notes.md RELEASE_NOTES.md dependency-inventory.json > SHA256SUMS)
+          go run ./cmd/release-manifest \
+            --version "$VERSION" --commit "$GITHUB_SHA" --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --base-url "$base" --code-image "$CODE_IMAGE" --code-image-bytes "$CODE_IMAGE_BYTES" \
+            --inference-image-bytes "$INFERENCE_IMAGE_BYTES" --key-id lctk-release-v1 \
+            --artifact "lctk-core-windows-amd64.exe,host-core,windows,amd64,dist/lctk-core-windows-amd64.exe" \
+            --artifact "lctk-core-darwin-arm64,host-core,darwin,arm64,dist/lctk-core-darwin-arm64" \
+            --artifact "lctk-$VERSION-windows-amd64.zip,archive,windows,amd64,dist/lctk-$VERSION-windows-amd64.zip" \
+            --artifact "lctk-$VERSION-darwin-arm64.tar.gz,archive,darwin,arm64,dist/lctk-$VERSION-darwin-arm64.tar.gz" \
+            --artifact "lctk-$VERSION-darwin-arm64.pkg,installer,darwin,arm64,dist/lctk-$VERSION-darwin-arm64.pkg" \
+            --artifact "lctk-windows-amd64.spdx.json,sbom-host-windows,windows,amd64,dist/lctk-windows-amd64.spdx.json" \
+            --artifact "lctk-darwin-arm64.spdx.json,sbom-host-darwin,darwin,arm64,dist/lctk-darwin-arm64.spdx.json" \
+            --artifact "lctk-code-intel.spdx.json,sbom-code-image,linux,multi,dist/lctk-code-intel.spdx.json" \
+            --artifact "dependency-inventory.json,dependency-inventory,,,dist/dependency-inventory.json" \
+            --artifact "SHA256SUMS,checksums,,,dist/SHA256SUMS" \
+            --output dist/release-manifest.json
+      - name: Attest every published file
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            dist/lctk-*
+            dist/SHA256SUMS
+            dist/release-manifest.json
+            dist/migration-notes.md
+            dist/RELEASE_NOTES.md
+            dist/dependency-inventory.json
+      - name: Publish immutable GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          body_path: dist/RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/lctk-*
+            dist/SHA256SUMS
+            dist/release-manifest.json
+            dist/migration-notes.md
+            dist/dependency-inventory.json

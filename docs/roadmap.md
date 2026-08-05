@@ -754,29 +754,88 @@ This closes Stage 4. Symbols, definitions, references, syntax diagnostics, lifec
 
 ## Stage 5 — Persistent semantic intelligence
 
-- AST-aware chunk model;
-- a local CPU embedding model;
-- replaceable vector adapter;
-- shared inference compute, isolated project collections;
-- incremental invalidation;
-- hybrid lexical and vector ranking;
-- freshness and commit awareness.
+### Slice 5.1: Semantic contract and measured backend choice
+
+**Status:** complete. [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md) fixes the shared inference, model, chunk, storage, ranking, and freshness boundaries. The selected image is pinned by a multi-architecture OCI digest; the model is pinned by repository commit, byte length, SHA-256, and Apache-2.0 attribution. The rejected `sqlite-vec` bindings were compile-tested on the shipped toolchain rather than accepted from documentation.
+
+Acceptance requires an immutable model and runtime identity, license attribution, a reproducible quality corpus with lexical and semantic counterexamples, and measured CPU, memory, disk, cold-start, and query costs.
+
+### Slice 5.2: Persistent AST-aware chunks
+
+**Status:** complete. Supported source uses grouped Tree-sitter declaration extents with line-bounded splitting; other text uses bounded overlapping chunks. Structural identity and content digest are separate, unchanged chunks reuse embeddings, and add/change/delete publication is one SQLite transaction.
+
+Acceptance requires restart persistence, rename and deletion retraction, no work for unchanged content, explicit chunk precision, and project-scope refusal tests.
+
+### Slice 5.3: Shared local embedding and vector indexing
+
+**Status:** complete. One loopback-only llama.cpp server is shared by project containers through Docker's explicit host gateway. `lctk bootstrap` verifies and installs the pinned image and model, performs a real 768-dimensional embedding self-test, and revision-labels runtime arguments so configuration changes replace old containers. Failed batches leave the preceding semantic generation intact.
+
+Acceptance requires two projects sharing one inference process while retaining separate stores, offline query after installation, typed unavailable/busy/model-mismatch failures, and a failed batch preserving the previous generation.
+
+### Slice 5.4: Hybrid semantic search through MCP
+
+**Status:** complete. `code_search_semantic` performs deterministic reciprocal-rank fusion over exact cosine and lexical rankings, reports both ranks and scores, model/dimension identity, semantic and exact generations, disk freshness, structural precision, bounds, and typed remediation.
+
+Acceptance requires real semantic wins over exact search, exact identifiers surviving hybrid ranking, saved edits visible before the answer, and calls through every supported MCP client path.
+
+### Slice 5.5: Semantic lifecycle and resource proof
+
+**Status:** complete. A real three-file project published exact and semantic generation 1 with three persistent chunks, then answered through an independent MCP Go SDK client. The conceptual retry/backoff query ranked the syntax chunk first (`vector_score` 0.7003, lexical rank 1) while exact identifiers remained present. The shared process measured approximately 515-769 MiB during active CPU inference; the project service measured approximately 56 MiB. A full-repository dry run exposed and fixed physical-batch, per-slot context, batching, and progress-reporting defects without ever publishing a partial generation. Stage 7.5 subsequently closed the upper stress gate through one million semantic chunks and one million exact-search files.
+
+The live external client completed MCP handshake, tool listing, `project_info`, `exact_search`, and `code_search_semantic` through the authenticated project route. It observed `scope_source: route_and_registry`, `/workspace` paths, exact generation 1, semantic generation 1, and `freshness: fresh`.
 
 ## Stage 6 — Graph, repository map, and memory
 
-- persistent code graph adapter;
-- callers/callees/dependency paths/impact;
-- compact repository map;
-- explicit project-memory CRUD and decision records;
-- provenance, confidence, and review metadata.
+### Slice 6.1: Persistent derived graph
+
+**Status:** complete. Tree-sitter extracts declaration nodes, language import syntax, called identifiers, and enclosing declarations for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX. Graph rows are replaced per changed path and committed in the same SQLite transaction and exact generation as semantic state. Schema v1 migrates to v2 without discarding embeddings; the first graph sync fills the new tables.
+
+### Slice 6.2: Graph tools
+
+**Status:** complete. `callers_find`, `callees_find`, `dependency_path`, and `impact_analyze` expose bounded evidence through the project service and MCP. Calls retain path, caller, callee, line, and column; caller/callee pages use opaque cursors; dependency traversal is deterministic and depth-bounded. Every response states `precision: name_match`, ambiguity, graph/exact generations, and watcher freshness.
+
+### Slice 6.3: Compact repository map
+
+**Status:** complete. `repository_map` ranks files deterministically from incoming/outgoing imports and call activity, emits syntax declarations and signatures, enforces a 256-100000 character budget, and reports character count, whole-project counts, truncation, generation, and name-match precision.
+
+### Slice 6.4: Explicit reviewed project memory
+
+**Status:** complete. `memory_get`, `memory_search`, `memory_put`, and `memory_delete` provide explicit records with validated stable keys and kinds, project-relative provenance, confidence and review labels, source commit, timestamps, and optimistic revisions. Writes embed before their transaction; failed inference cannot create metadata-only state. Search is deterministic lexical/semantic RRF, while an empty query is the inference-free list operation. The gateway supplies the current Git commit and labels stale records without hiding them.
+
+### Slice 6.5: Graph and memory end-to-end proof
+
+**Status:** complete. Container tests cover add/change/delete retraction, duplicate-name ambiguity, pagination, dependency traversal, v1-to-v2 migration, stale revisions, escaping provenance, semantic/lexical memory search, and restart persistence. Gateway tests drive all nine Stage 6 tools through a real MCP SDK session and verify route-bound scope despite a foreign `project_id` argument.
+
+The live five-file fixture migrated an existing Stage 5 database in place: exact, semantic, and graph generation 3 were simultaneously `fresh`, with 13 declaration nodes, three import facts, and nine calls. A watcher-applied JavaScript edit produced `main.js -> dep.js` without manual reindexing; `callers_find` connected JavaScript caller `start` to Go declaration name `RetryFailedRequest`, explicitly as `name_match`. An independent MCP Go SDK client listed 18 tools and called the complete catalog: every read/write path succeeded, while a stale memory revision and an unapproved command produced their expected typed refusals. A separate put/restart/get/delete sequence recovered the same memory content and revision after the project container received a new loopback port.
 
 ## Stage 7 — Hardening and public release
 
-- installer/bootstrap command;
-- explicit `lctk update` with a migration plan and rollback;
-- signed and notarized artifacts/images;
-- generated dependency attribution, SBOM, and provenance;
-- production release automation and support policy;
-- target-hardware and Docker Desktop certification matrix;
-- performance stress suite up to the upper target of one million files;
-- Linux roadmap based on measured portability gaps.
+### Slice 7.1: Transactional bootstrap
+
+Implement the plan-first `lctk bootstrap` contract from [ADR-0022](adr/0022-transactional-bootstrap-update-and-release-evidence.md), immutable downloads, complete cancellation before download, disk preflight, installation, and functional verification.
+
+**Status:** complete. Bootstrap resolves the signed release envelope when an official component is absent, reports the complete core/image/model download and disk plan before writing, and checks cancellation before every external operation. Apply verifies immutable identities, installs the code image, inference image and model, performs a real embedding self-test, copies the packaged core into the versioned store, and creates the first atomic activation document. A locally packaged Windows launcher/core pair completed this path against an isolated home and then launched through the activated digest.
+
+### Slice 7.2: Update, migration, and rollback
+
+Implement signed release manifests, read-only update plans, schema compatibility, rollback bundles, copy-validate-swap migrations, atomic activation, and automatic restoration after a failed health gate.
+
+**Status:** complete. Ed25519 verification authenticates the exact payload bytes before any URL is trusted. Update refuses non-newer and incompatible releases, pulls the immutable candidate image, migrates each running project on a durable SQLite copy, restores migrated projects in reverse order after a failed health gate, and activates the verified host core last. Explicit rollback restores every available registered-project bundle, restarts only projects that were running, verifies the previous executable, and changes host activation last. Tests cover read-only plans, low disk before network, corrupt bytes, candidate health failure, stopped projects, activation tampering, and two-version rollback.
+
+### Slice 7.3: Release supply-chain evidence
+
+Generate dependency attribution, SPDX SBOMs, checksums, artifact attestations, image signatures, release notes, and migration metadata. Official publication fails closed without Windows Authenticode and Apple signing/notarization credentials.
+
+**Status:** complete as a fail-closed publication implementation; no official release has been claimed. The protected tag workflow requires the Ed25519, Authenticode, Developer ID, installer, and notarization credentials; runs host tests on both host targets; signs the Windows and macOS packages; executes the packaged launcher; builds and executes each Linux image architecture on its native GitHub runner; joins them by digest; and publishes SBOMs, checksums, module attribution, signatures, attestations, migration notes, and the signed manifest only after every gate succeeds.
+
+### Slice 7.4: Packaged and client-path verification
+
+Extract and execute both target archives, build and inspect both image architectures, run Docker lifecycle and every MCP tool through Codex plus independent protocol clients, and preserve machine-readable evidence.
+
+**Status:** complete for the Stage 7 evidence boundary, not target-OS certification. The bound Windows launcher/core package bootstrapped and executed from an isolated installation. Codex CLI `0.146.0-alpha.9.2` and an independent Go MCP SDK v1.7.0 client each called the complete 18-tool catalog against the live persistent stack, including typed refusals, route-bound foreign IDs, memory writes, and restart recovery; the SDK pass was repeated against final local image `sha256:4785290b20b5d707d8515e13c5bb800da8461cfd83802b49dc7469da80743d9e`. Hosted run `31012555479` built, extracted, executed, and preserved machine-readable evidence for Windows amd64 and macOS arm64 packages plus healthy native Linux amd64 and arm64 images at commit `7679060`. Earlier native image runs exposed an exact-only typed-nil semantic panic and migration crash windows; regressions, Docker test/race passes, local runtime smoke, and the final rerun close those defects. See [Stage 7 client verification](stage7-client-verification.md) and [releasing](releasing.md).
+
+### Slice 7.5: Compatibility and stress evidence
+
+Provide a parameterized suite through one million files, record resource and latency curves, verify low-disk and corruption refusals, update the honest certification matrix, and document measured Linux portability gaps without promoting Linux to a first-release target.
+
+**Status:** complete for the documented synthetic evidence boundary. Production-schema semantic publication and bounded exact-vector ranking passed at 1,000, 10,000, 100,000, and 1,000,000 chunks. Production exact inventory and Zoekt publication passed the same curve using ordinary bind-mounted files with project state in a Docker volume. Every point published the requested count; the exact target returned one untruncated match, and semantic returned the exact total while retaining only bounded top-K results. Low-disk, corrupt artifact/database, incompatible schema/model, candidate health, and rollback failures are fail-closed in automated tests. The measured Linux portability limits and remaining target certification gaps are recorded in [compatibility](compatibility.md) and [stress evidence](stress.md).

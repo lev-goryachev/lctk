@@ -1,6 +1,6 @@
 # Local Code ToolKit (LCTK)
 
-> **Status:** public pre-alpha. Project registration, per-project containers, route-bound project MCP endpoints, persistent `exact_search`, the client end-to-end lifecycle, and incremental indexing that follows saved files are implemented and measured against real components. Resource policies, symbol and semantic intelligence, and safe command execution remain planned work. See the [roadmap](docs/roadmap.md) for what each slice claims and how it was verified.
+> **Status:** public pre-alpha. Project registration, route-bound MCP, persistent exact and semantic search, syntax and graph intelligence, explicit project memory, transactional bootstrap/update/rollback, and a fail-closed release pipeline are implemented. Exact support claims remain limited to the evidence in the [roadmap](docs/roadmap.md) and [compatibility matrix](docs/compatibility.md).
 
 Local Code ToolKit is a local, extensible MCP platform for software development. It decouples code intelligence, indexing, project memory, and command execution from any specific LLM or IDE.
 
@@ -29,18 +29,27 @@ lctk project start PROJECT     # bring up its isolated container stack
 lctk codex launch PROJECT      # start an editor with the project's grant in its environment
 ```
 
-The project is then reachable at `http://127.0.0.1:4444/projects/{project_id}/mcp`, serving two tools:
+The project is then reachable at `http://127.0.0.1:4444/projects/{project_id}/mcp`, serving up to eighteen tools according to the project's live capabilities:
 
 - `project_info` — what this endpoint is bound to, what it can do, and how fresh its index is;
 - `exact_search` — indexed literal and regular-expression search over the saved working tree, including files that are saved but not committed;
 - `git_status` and `git_diff` — what has changed since the last commit, read-only, for a client that has no shell on the machine;
-- `run_command` — the project's build, test, or lint, but only the ones the machine owner approved, and only by name.
+- `run_command` — the project's build, test, or lint, but only the ones the machine owner approved, and only by name;
+- `file_outline` — syntax-derived declarations and parse status for one file;
+- `find_definition` and `find_references` — bounded, name-matched declaration and reference lookup across supported source files;
+- `code_search_semantic` — local conceptual search with syntax-aware chunks, lexical/vector rank evidence, model identity, and exact-versus-semantic generation freshness;
+- `callers_find` and `callees_find` — bounded name-matched call evidence with ambiguity and generation provenance;
+- `dependency_path` and `impact_analyze` — syntax-import routes and direct reverse-import/call evidence without type-resolution claims;
+- `repository_map` — deterministic importance-ranked declarations inside an exact character budget;
+- `memory_get`, `memory_search`, `memory_put`, and `memory_delete` — explicit persistent project knowledge with optimistic revisions, provenance, review/confidence labels, Git commit awareness, and hybrid retrieval.
 
 The index follows edits on its own. Saving a file makes it searchable without any command; measured on this repository, a file written was found by search 0.2 seconds later. When the index cannot be brought up to date, the answer says so rather than looking current.
 
 Around that:
 
 - `lctk daemon` hosts the gateway, the per-project grants, and the filesystem watcher;
+- `lctk bootstrap` for a read-only installation plan and confirmed immutable model/inference installation with a functional self-test;
+- `lctk update` for a signed read-only release plan, candidate project health gates, atomic host activation, and verified rollback;
 - `lctk project status/stop/restart/remove/reindex/watch/resources` and `lctk grant`, `lctk image`, `lctk settings`, `lctk doctor` for the rest of the lifecycle;
 - `lctk admin open` for a local page with the same operations, over an API a project credential cannot reach;
 - the scope of a request comes from the route and the server-side registry, so a tool argument naming another project is ignored and a credential issued for one project is refused on another.
@@ -59,6 +68,7 @@ The source of truth is under [`docs/`](docs/index.md):
 - [compatibility targets and evidence](docs/compatibility.md);
 - [development workflow](docs/development.md);
 - [versioning](docs/versioning.md) and [release process](docs/releasing.md);
+- [Stage 7 stress evidence](docs/stress.md);
 - [delivery roadmap](docs/roadmap.md);
 - [Codebase Memory MCP comparative assessment](docs/spikes/codebase-memory-mcp-assessment.md);
 - [Codex verification contract](docs/spikes/codex-compatibility.md) and [measured results](docs/spikes/codex-compatibility-results.md);

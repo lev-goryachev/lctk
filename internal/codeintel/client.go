@@ -33,11 +33,27 @@ const SchemaVersion = 1
 // nothing in the protocol depends on the value.
 const Backend = "zoekt"
 
+// SemanticBackend names LCTK's owned exact cosine adapter. It is provenance,
+// not a selector exposed to callers.
+const SemanticBackend = "lctk_exact_cosine"
+
+// IntelligenceSchemaVersion covers persistent semantic, graph, and memory
+// contracts independently of the exact-search wire schema.
+const IntelligenceSchemaVersion = 2
+
+// GraphBackend names the owned SQLite/name-match adapter as provenance.
+const GraphBackend = "lctk_sqlite_name_match"
+
 // DefaultSearchTimeout bounds a search when the caller sets no deadline of its
 // own. Index operations are deliberately not bounded here: a full rebuild of a
 // large project legitimately takes minutes, and the caller that asked for one
 // owns the deadline.
 const DefaultSearchTimeout = 30 * time.Second
+
+// DefaultSemanticTimeout includes the measured full exact-vector scan at the
+// one-million-file stress target plus headroom for local inference and host
+// contention. A caller-supplied deadline remains authoritative.
+const DefaultSemanticTimeout = 2 * time.Minute
 
 // DefaultWatchSetTimeout bounds the directory enumeration a watcher needs before
 // it can start. It is longer than a search because it is a whole-tree walk, and
@@ -73,6 +89,15 @@ const (
 	// resource policy allows. It is retryable, which is the distinction: the file is
 	// fine and the answer exists, the project was busy at that moment.
 	CodeParseBusy = "PARSE_BUSY"
+	// Semantic failures are separate from exact index failures because retrying
+	// inference and rebuilding corrupt semantic state are different actions.
+	CodeSemanticNotReady     = "SEMANTIC_NOT_READY"
+	CodeEmbeddingUnavailable = "EMBEDDING_UNAVAILABLE"
+	CodeSemanticCorrupt      = "SEMANTIC_CORRUPT"
+	CodeModelMismatch        = "MODEL_MISMATCH"
+	CodeInvalidQuery         = "INVALID_QUERY"
+	CodeMemoryNotFound       = "MEMORY_NOT_FOUND"
+	CodeMemoryConflict       = "MEMORY_REVISION_CONFLICT"
 )
 
 // Error is a typed failure a caller can act on.
@@ -162,7 +187,200 @@ type Status struct {
 	OutlineLanguages []string `json:"outline_languages,omitempty"`
 	// SymbolParallelism is how many files the project will parse at once, zero
 	// meaning unbounded. It explains a PARSE_BUSY refusal without guesswork.
-	SymbolParallelism int `json:"symbol_parallelism,omitempty"`
+	SymbolParallelism int             `json:"symbol_parallelism,omitempty"`
+	Semantic          *SemanticStatus `json:"semantic,omitempty"`
+	Graph             *GraphStatus    `json:"graph,omitempty"`
+}
+
+// GraphStatus identifies the graph generation and honest precision.
+type GraphStatus struct {
+	Ready       bool   `json:"ready"`
+	Generation  uint64 `json:"generation"`
+	FileCount   int    `json:"file_count"`
+	NodeCount   int    `json:"node_count"`
+	ImportCount int    `json:"import_count"`
+	CallCount   int    `json:"call_count"`
+	IndexedAt   string `json:"indexed_at,omitempty"`
+	Precision   string `json:"precision"`
+	Freshness   string `json:"freshness"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// SemanticStatus states which exact generation the persistent semantic store
+// describes. It is nil when the project stack has no inference configuration.
+type SemanticStatus struct {
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	ChunkCount     int    `json:"chunk_count"`
+	Model          string `json:"model,omitempty"`
+	Dimensions     int    `json:"dimensions,omitempty"`
+	IndexedAt      string `json:"indexed_at,omitempty"`
+	Freshness      string `json:"freshness"`
+	Reason         string `json:"reason,omitempty"`
+	ChunksTotal    int    `json:"chunks_total,omitempty"`
+	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
+	ChunksReused   int    `json:"chunks_reused,omitempty"`
+}
+
+// SemanticRequest is the host-owned request contract for conceptual retrieval.
+type SemanticRequest struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// SemanticMatch is one syntax-aware or bounded text chunk. Independent rank
+// fields make the hybrid result inspectable by an agent.
+type SemanticMatch struct {
+	Path           string  `json:"path"`
+	Language       string  `json:"language"`
+	ChunkPrecision string  `json:"chunk_precision"`
+	Anchor         string  `json:"anchor"`
+	StartLine      int     `json:"start_line"`
+	EndLine        int     `json:"end_line"`
+	Preview        string  `json:"preview"`
+	VectorScore    float64 `json:"vector_score,omitempty"`
+	LexicalScore   float64 `json:"lexical_score,omitempty"`
+	HybridScore    float64 `json:"hybrid_score"`
+	VectorRank     int     `json:"vector_rank,omitempty"`
+	LexicalRank    int     `json:"lexical_rank,omitempty"`
+}
+
+// SemanticResponse carries both semantic and exact generations so stale state
+// is a field, never an inference from timestamps.
+type SemanticResponse struct {
+	Matches         []SemanticMatch `json:"matches"`
+	Total           int             `json:"total"`
+	Truncated       bool            `json:"truncated"`
+	Generation      uint64          `json:"generation"`
+	ExactGeneration uint64          `json:"exact_generation"`
+	Freshness       string          `json:"freshness"`
+	Model           string          `json:"model"`
+	Dimensions      int             `json:"dimensions"`
+}
+
+// GraphRequest is the common request for caller and callee evidence.
+type GraphRequest struct {
+	Name   string `json:"name"`
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+type GraphEvidence struct {
+	Path   string `json:"path"`
+	Caller string `json:"caller,omitempty"`
+	Callee string `json:"callee"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+
+type GraphMatches struct {
+	Name         string          `json:"name"`
+	Direction    string          `json:"direction"`
+	Matches      []GraphEvidence `json:"matches"`
+	Total        int             `json:"total"`
+	Truncated    bool            `json:"truncated"`
+	NextCursor   string          `json:"next_cursor,omitempty"`
+	Ambiguous    bool            `json:"ambiguous"`
+	Declarations int             `json:"declarations"`
+	Generation   uint64          `json:"generation"`
+	Precision    string          `json:"precision"`
+}
+
+type DependencyRequest struct {
+	From     string `json:"from"`
+	To       string `json:"to"`
+	MaxDepth int    `json:"max_depth,omitempty"`
+}
+type DependencyResponse struct {
+	From       string   `json:"from"`
+	To         string   `json:"to"`
+	Path       []string `json:"path"`
+	Found      bool     `json:"found"`
+	MaxDepth   int      `json:"max_depth"`
+	Generation uint64   `json:"generation"`
+	Precision  string   `json:"precision"`
+}
+type ImpactRequest struct {
+	Target string `json:"target"`
+	Limit  int    `json:"limit,omitempty"`
+}
+type ImpactResponse struct {
+	Target     string          `json:"target"`
+	Files      []string        `json:"files"`
+	Calls      []GraphEvidence `json:"calls"`
+	Total      int             `json:"total"`
+	Truncated  bool            `json:"truncated"`
+	Ambiguous  bool            `json:"ambiguous"`
+	Generation uint64          `json:"generation"`
+	Precision  string          `json:"precision"`
+}
+type MapRequest struct {
+	MaxChars int `json:"max_chars,omitempty"`
+}
+type MapResponse struct {
+	Map        string `json:"map"`
+	Characters int    `json:"characters"`
+	MaxChars   int    `json:"max_chars"`
+	Truncated  bool   `json:"truncated"`
+	FileCount  int    `json:"file_count"`
+	NodeCount  int    `json:"node_count"`
+	Generation uint64 `json:"generation"`
+	Precision  string `json:"precision"`
+}
+
+type MemoryRecord struct {
+	Key           string   `json:"key"`
+	Kind          string   `json:"kind"`
+	Content       string   `json:"content"`
+	Confidence    float64  `json:"confidence"`
+	Provenance    []string `json:"provenance"`
+	SourceCommit  string   `json:"source_commit,omitempty"`
+	Revision      int      `json:"revision"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
+	ReviewedAt    string   `json:"reviewed_at,omitempty"`
+	ReviewDue     bool     `json:"review_due"`
+	LowConfidence bool     `json:"low_confidence"`
+}
+type MemoryPutRequest struct {
+	Key              string   `json:"key"`
+	Kind             string   `json:"kind"`
+	Content          string   `json:"content"`
+	Confidence       float64  `json:"confidence"`
+	Provenance       []string `json:"provenance,omitempty"`
+	SourceCommit     string   `json:"source_commit,omitempty"`
+	ExpectedRevision *int     `json:"expected_revision,omitempty"`
+	Reviewed         bool     `json:"reviewed,omitempty"`
+}
+type MemoryGetRequest struct {
+	Key string `json:"key"`
+}
+type MemoryDeleteRequest struct {
+	Key              string `json:"key"`
+	ExpectedRevision int    `json:"expected_revision"`
+}
+type MemorySearchRequest struct {
+	Query string `json:"query,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+type MemoryMatch struct {
+	Record       MemoryRecord `json:"record"`
+	VectorScore  float64      `json:"vector_score,omitempty"`
+	LexicalScore float64      `json:"lexical_score,omitempty"`
+	HybridScore  float64      `json:"hybrid_score,omitempty"`
+	VectorRank   int          `json:"vector_rank,omitempty"`
+	LexicalRank  int          `json:"lexical_rank,omitempty"`
+}
+type MemorySearchResponse struct {
+	Matches    []MemoryMatch `json:"matches"`
+	Total      int           `json:"total"`
+	Truncated  bool          `json:"truncated"`
+	Modes      []string      `json:"modes"`
+	Model      string        `json:"model,omitempty"`
+	Dimensions int           `json:"dimensions,omitempty"`
 }
 
 // Symbol is one declaration in a file.
@@ -290,6 +508,147 @@ func (c *Client) Search(ctx context.Context, request Request) (Response, error) 
 		response.Matches = []Match{}
 	}
 	return response, nil
+}
+
+// SemanticSearch asks the project-local store for hybrid conceptual retrieval.
+// It uses its measured semantic bound because the upper stress target performs
+// a full exact vector scan in addition to waiting for local inference.
+func (c *Client) SemanticSearch(ctx context.Context, request SemanticRequest) (SemanticResponse, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultSemanticTimeout)
+		defer cancel()
+	}
+	var response SemanticResponse
+	if err := c.call(ctx, "/semantic/search", request, &response); err != nil {
+		return SemanticResponse{}, err
+	}
+	if response.Matches == nil {
+		response.Matches = []SemanticMatch{}
+	}
+	return response, nil
+}
+
+// Callers returns saved call sites whose callee name matches exactly.
+func (c *Client) Callers(ctx context.Context, request GraphRequest) (GraphMatches, error) {
+	var response GraphMatches
+	if err := c.boundedCall(ctx, "/graph/callers", request, &response); err != nil {
+		return GraphMatches{}, err
+	}
+	if response.Matches == nil {
+		response.Matches = []GraphEvidence{}
+	}
+	return response, nil
+}
+
+// Callees returns saved calls inside declarations with the requested name.
+func (c *Client) Callees(ctx context.Context, request GraphRequest) (GraphMatches, error) {
+	var response GraphMatches
+	if err := c.boundedCall(ctx, "/graph/callees", request, &response); err != nil {
+		return GraphMatches{}, err
+	}
+	if response.Matches == nil {
+		response.Matches = []GraphEvidence{}
+	}
+	return response, nil
+}
+
+// DependencyPath traverses syntax import edges between project files.
+func (c *Client) DependencyPath(ctx context.Context, request DependencyRequest) (DependencyResponse, error) {
+	var response DependencyResponse
+	if err := c.boundedCall(ctx, "/graph/dependency-path", request, &response); err != nil {
+		return DependencyResponse{}, err
+	}
+	if response.Path == nil {
+		response.Path = []string{}
+	}
+	return response, nil
+}
+
+// Impact returns direct reverse dependency and name-call evidence.
+func (c *Client) Impact(ctx context.Context, request ImpactRequest) (ImpactResponse, error) {
+	var response ImpactResponse
+	if err := c.boundedCall(ctx, "/graph/impact", request, &response); err != nil {
+		return ImpactResponse{}, err
+	}
+	if response.Files == nil {
+		response.Files = []string{}
+	}
+	if response.Calls == nil {
+		response.Calls = []GraphEvidence{}
+	}
+	return response, nil
+}
+
+// RepositoryMap requests a deterministic character-bounded project overview.
+func (c *Client) RepositoryMap(ctx context.Context, request MapRequest) (MapResponse, error) {
+	var response MapResponse
+	if err := c.boundedCall(ctx, "/graph/repository-map", request, &response); err != nil {
+		return MapResponse{}, err
+	}
+	return response, nil
+}
+
+// MemoryGet reads one explicit project-memory key.
+func (c *Client) MemoryGet(ctx context.Context, request MemoryGetRequest) (MemoryRecord, error) {
+	var response MemoryRecord
+	if err := c.boundedCall(ctx, "/memory/get", request, &response); err != nil {
+		return MemoryRecord{}, err
+	}
+	if response.Provenance == nil {
+		response.Provenance = []string{}
+	}
+	return response, nil
+}
+
+// MemorySearch performs a bounded list or hybrid search.
+func (c *Client) MemorySearch(ctx context.Context, request MemorySearchRequest) (MemorySearchResponse, error) {
+	var response MemorySearchResponse
+	if err := c.boundedCall(ctx, "/memory/search", request, &response); err != nil {
+		return MemorySearchResponse{}, err
+	}
+	if response.Matches == nil {
+		response.Matches = []MemoryMatch{}
+	}
+	if response.Modes == nil {
+		response.Modes = []string{}
+	}
+	return response, nil
+}
+
+// MemoryPut creates or revision-checks an explicit memory update.
+func (c *Client) MemoryPut(ctx context.Context, request MemoryPutRequest) (MemoryRecord, error) {
+	var response MemoryRecord
+	if err := c.boundedCall(ctx, "/memory/put", request, &response); err != nil {
+		return MemoryRecord{}, err
+	}
+	if response.Provenance == nil {
+		response.Provenance = []string{}
+	}
+	return response, nil
+}
+
+// MemoryDelete deletes exactly the revision the client read.
+func (c *Client) MemoryDelete(ctx context.Context, request MemoryDeleteRequest) error {
+	var response struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := c.boundedCall(ctx, "/memory/delete", request, &response); err != nil {
+		return err
+	}
+	if !response.Deleted {
+		return &Error{Code: CodeInternalError, Message: "The memory service did not confirm deletion."}
+	}
+	return nil
+}
+
+func (c *Client) boundedCall(ctx context.Context, endpoint string, request, response any) error {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultSearchTimeout)
+		defer cancel()
+	}
+	return c.call(ctx, endpoint, request, response)
 }
 
 // Status reports the project service's index state.
@@ -657,6 +1016,20 @@ func ActionFor(code string) string {
 	case CodeParseBusy:
 		// The only one of these that waiting fixes, so it is the only one that says so.
 		return "The project is busy parsing; retry shortly, or ask about fewer files."
+	case CodeSemanticNotReady:
+		return "Wait for semantic indexing to finish, then retry. project_info reports its generation and reason."
+	case CodeEmbeddingUnavailable:
+		return "Check the shared local inference service with lctk doctor, then retry."
+	case CodeSemanticCorrupt:
+		return "Rebuild semantic state with lctk project reindex --full."
+	case CodeModelMismatch:
+		return "Run lctk update or rebuild semantic state with the installed model; do not mix model generations."
+	case CodeInvalidQuery:
+		return "Correct the request fields or bounds and try again."
+	case CodeMemoryNotFound:
+		return "List memory with memory_search, then use an existing key."
+	case CodeMemoryConflict:
+		return "Read the key with memory_get and retry with its current revision."
 	default:
 		return ""
 	}

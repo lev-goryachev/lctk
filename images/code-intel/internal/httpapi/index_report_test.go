@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/searchindex"
+	"github.com/lev-goryachev/lctk/images/code-intel/internal/semantic"
 )
 
 // stubIndexer answers with whatever a test hands it. Only the index routes are
@@ -133,6 +134,22 @@ func TestAnEscalationReportsARebuild(t *testing.T) {
 	}
 	if got.Applied != 120 {
 		t.Errorf("applied = %d, want every indexed file", got.Applied)
+	}
+}
+
+// Production starts exact-only containers without an embedding URL. A typed
+// nil pointer must stay disabled rather than becoming a non-nil interface that
+// panics when startup reconciliation tries to synchronize semantic state.
+func TestTypedNilSemanticStoreKeepsStartupExactOnly(t *testing.T) {
+	indexer := &stubIndexer{state: searchindex.State{Generation: 1}}
+	var semanticStore *semantic.Store
+	server := NewWithSemantic(indexer, nil, semanticStore, nil)
+
+	if server.semantic != nil {
+		t.Fatal("typed nil semantic store became an enabled backend")
+	}
+	if err := server.EnsureIndexed(t.Context()); err != nil {
+		t.Fatalf("EnsureIndexed without semantic backend: %v", err)
 	}
 }
 

@@ -1,0 +1,67 @@
+package releasebundle
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"testing"
+)
+
+func TestVerifierRejectsTamperingAndAcceptsCompleteManifest(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := validManifest()
+	payload, _ := json.Marshal(manifest)
+	envelope := Envelope{KeyID: "test", Algorithm: "ed25519", Payload: base64.StdEncoding.EncodeToString(payload), Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(private, payload))}
+	document, _ := json.Marshal(envelope)
+	verified, err := (Verifier{KeyID: "test", PublicKey: public}).Verify(document)
+	if err != nil || verified.Version != manifest.Version {
+		t.Fatalf("verified=%+v err=%v", verified, err)
+	}
+	envelope.Payload = base64.StdEncoding.EncodeToString(append(payload, ' '))
+	tampered, _ := json.Marshal(envelope)
+	if _, err := (Verifier{KeyID: "test", PublicKey: public}).Verify(tampered); err == nil {
+		t.Fatal("tampered payload verified")
+	}
+}
+
+func TestManifestRejectsMutableImageAndDuplicateHost(t *testing.T) {
+	manifest := validManifest()
+	manifest.CodeImage.Reference = "ghcr.io/example/code:latest"
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("mutable image accepted")
+	}
+	manifest = validManifest()
+	manifest.Artifacts = append(manifest.Artifacts, manifest.Artifacts[0])
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("duplicate host artifact accepted")
+	}
+}
+
+func TestVersionAtLeastUsesNumericComponents(t *testing.T) {
+	for _, test := range []struct {
+		current, minimum string
+		want             bool
+	}{
+		{"1.10.0", "1.9.9", true},
+		{"2.0.0", "1.99.99", true},
+		{"1.0.0", "1.0.0", true},
+		{"0.9.9", "1.0.0", false},
+		{"1.0.0-dev", "1.0.0", false},
+	} {
+		if got := VersionAtLeast(test.current, test.minimum); got != test.want {
+			t.Errorf("VersionAtLeast(%q, %q) = %t, want %t", test.current, test.minimum, got, test.want)
+		}
+	}
+}
+
+func validManifest() Manifest {
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	return Manifest{SchemaVersion: 1, Version: "1.0.0", Commit: "0123456789abcdef", PublishedAt: "2026-08-04T00:00:00Z", MinimumHostVersion: "0.1.0", ProjectSchemaFrom: 1, ProjectSchemaTo: 2,
+		Artifacts:      []Artifact{{Name: "lctk-core", Kind: "host-core", OS: "windows", Arch: "amd64", URL: "https://example/core", Bytes: 42, SHA256: hash}},
+		CodeImage:      Image{Name: "code", Reference: "ghcr.io/example/code@sha256:" + hash, Digest: "sha256:" + hash, CompressedBytes: 42, Platforms: []string{"linux/amd64", "linux/arm64"}},
+		InferenceImage: Image{Name: "inference", Reference: "ghcr.io/example/inference@sha256:" + hash, Digest: "sha256:" + hash, CompressedBytes: 42, Platforms: []string{"linux/amd64", "linux/arm64"}},
+		EmbeddingModel: Model{Name: "model", URL: "https://example/model", Bytes: 42, SHA256: hash, License: "Apache-2.0"}, MigrationNotesURL: "https://example/migration", RollbackInstructions: "lctk update rollback"}
+}

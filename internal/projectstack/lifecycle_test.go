@@ -371,6 +371,62 @@ func TestBuildImageReportsTheFailure(t *testing.T) {
 	}
 }
 
+func TestImageMatchesRequiresTheTagAndSignedDigestToShareAnIdentity(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{match: "image inspect lctk/code-intel:1.0.0", stdout: "sha256:expected\n"},
+		{match: "image inspect ghcr.io/example/code@sha256:abc", stdout: "sha256:expected\n"},
+	}}
+	manager := NewManagerWithRunner(runner)
+
+	matches, err := manager.ImageMatches(t.Context(), "lctk/code-intel:1.0.0", "ghcr.io/example/code@sha256:abc")
+	if err != nil || !matches {
+		t.Fatalf("ImageMatches = %t, %v; want true", matches, err)
+	}
+
+	runner.responses[1].stdout = "sha256:foreign\n"
+	matches, err = manager.ImageMatches(t.Context(), "lctk/code-intel:1.0.0", "ghcr.io/example/code@sha256:abc")
+	if err != nil || matches {
+		t.Fatalf("ImageMatches = %t, %v; want false for a mutable foreign tag", matches, err)
+	}
+}
+
+func TestImageMatchesTreatsOnlyARealMissingImageAsAbsent(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{match: "image inspect", stderr: "Error: No such image", err: errors.New("exit status 1")},
+	}}
+	manager := NewManagerWithRunner(runner)
+	if matches, err := manager.ImageMatches(t.Context(), "missing", "also-missing"); err != nil || matches {
+		t.Fatalf("missing ImageMatches = %t, %v", matches, err)
+	}
+
+	runner.responses[0].stderr = "permission denied"
+	if _, err := manager.ImageMatches(t.Context(), "forbidden", "unused"); err == nil {
+		t.Fatal("ImageMatches hid a non-missing Docker inspection failure")
+	}
+}
+
+func TestSchemaRollbackKeepsAnActiveDatabaseUntilAtomicReplacement(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{{match: "run"}}}
+	manager := NewManagerWithRunner(runner)
+	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
+
+	if err := manager.RestoreSchemaRollback(t.Context(), project, "1.0.0"); err != nil {
+		t.Fatalf("RestoreSchemaRollback: %v", err)
+	}
+	call := runner.callWith("run", "--rm")
+	if call == nil {
+		t.Fatalf("no isolated rollback helper was run: %v", runner.calls)
+	}
+	script := call[len(call)-1]
+	if !strings.Contains(script, `ln -f "$db" "$failed"`) ||
+		!strings.Contains(script, `mv -f "$rollback" "$db"`) {
+		t.Fatalf("rollback does not preserve then atomically replace the database:\n%s", script)
+	}
+	if strings.Contains(script, `mv "$db" "$failed"`) {
+		t.Fatalf("rollback removes the active database before commit:\n%s", script)
+	}
+}
+
 func TestIsNoSuchContainer(t *testing.T) {
 	if !isNoSuchContainer("", "Error: No such object: abc") {
 		t.Error("no such object was not recognized")

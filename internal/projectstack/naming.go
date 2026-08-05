@@ -66,12 +66,22 @@ type Names struct {
 //
 // [ADR-0007]: ../../docs/adr/0007-unified-versioning.md
 func DeriveNames(projectID string) (Names, error) {
+	return DeriveNamesForVersion(projectID, buildinfo.Version)
+}
+
+// DeriveNamesForVersion selects an explicit immutable product image while
+// preserving every stable project resource name. Update uses it to health-check
+// a candidate before activating the matching host core.
+func DeriveNamesForVersion(projectID, version string) (Names, error) {
 	if projectID == "" {
 		return Names{}, fmt.Errorf("%w: project id is empty", ErrInvalidProject)
 	}
 	if !composeNamePattern.MatchString(projectID) {
 		return Names{}, fmt.Errorf("%w: project id %q is not usable as a Compose project name",
 			ErrInvalidProject, projectID)
+	}
+	if version == "" {
+		return Names{}, fmt.Errorf("%w: product version is empty", ErrInvalidProject)
 	}
 
 	base := resourcePrefix + "-" + projectID
@@ -81,7 +91,7 @@ func DeriveNames(projectID string) (Names, error) {
 		Network:       base + "-net",
 		Volume:        base + "-state",
 		ContainerName: base + "-" + ServiceName,
-		Image:         ImageRepository + ":" + buildinfo.Version,
+		Image:         ImageRepository + ":" + version,
 	}, nil
 }
 

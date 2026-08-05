@@ -11,6 +11,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -47,6 +48,7 @@ type composeService struct {
 	Volumes     []composeMount     `yaml:"volumes"`
 	Ports       []string           `yaml:"ports"`
 	Networks    []string           `yaml:"networks"`
+	ExtraHosts  []string           `yaml:"extra_hosts"`
 	Healthcheck composeHealthcheck `yaml:"healthcheck"`
 	Labels      []string           `yaml:"labels"`
 }
@@ -95,7 +97,13 @@ type composeVolume struct {
 // which is why the budget is a parameter rather than something read from the
 // settings file here.
 func Render(project projectregistry.Project, budget hostsettings.Budget) ([]byte, error) {
-	names, err := DeriveNames(project.ID)
+	return RenderForVersion(project, budget, buildinfo.Version)
+}
+
+// RenderForVersion writes a candidate image identity without changing the
+// stable project, volume, container, or network names.
+func RenderForVersion(project projectregistry.Project, budget hostsettings.Budget, version string) ([]byte, error) {
+	names, err := DeriveNamesForVersion(project.ID, version)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +149,10 @@ func Render(project projectregistry.Project, budget hostsettings.Budget) ([]byte
 				// unambiguous here because a port specification contains no paths.
 				Ports:    []string{"127.0.0.1::" + strconv.Itoa(ServicePort)},
 				Networks: []string{"project"},
+				// The shared inference port is loopback-only on the host. Docker's
+				// explicit host gateway is therefore the sole route from an isolated
+				// project network to stateless embedding compute.
+				ExtraHosts: []string{"host.docker.internal:host-gateway"},
 				Healthcheck: composeHealthcheck{
 					Test:        []string{"CMD", "test", "-f", StateMount + "/ready"},
 					Interval:    "5s",
@@ -151,7 +163,7 @@ func Render(project projectregistry.Project, budget hostsettings.Budget) ([]byte
 				Labels: []string{
 					"tech.lctk.project-id=" + project.ID,
 					"tech.lctk.managed=true",
-					"tech.lctk.version=" + buildinfo.Version,
+					"tech.lctk.version=" + version,
 				},
 			},
 		},
@@ -184,6 +196,9 @@ func environment(project projectregistry.Project, budget hostsettings.Budget) []
 		"LCTK_PROJECT_PROFILE=" + string(project.Profile),
 		"LCTK_WORKSPACE=" + WorkspaceMount,
 		"LCTK_STATE_DIR=" + StateMount,
+		"LCTK_EMBEDDING_URL=" + inference.ProjectEndpoint,
+		"LCTK_EMBEDDING_MODEL=" + inference.ModelAlias,
+		"LCTK_EMBEDDING_DIMENSIONS=" + strconv.Itoa(inference.Dimensions),
 	}
 	if budget.IndexParallelism > 0 {
 		values = append(values, "LCTK_INDEX_PARALLELISM="+strconv.Itoa(budget.IndexParallelism))
@@ -203,7 +218,12 @@ func memoryLimit(megabytes int) string {
 // The write is atomic so an interrupted start cannot leave a half-written file
 // that Compose would later refuse or, worse, misread.
 func Write(project projectregistry.Project, budget hostsettings.Budget) (string, error) {
-	body, err := Render(project, budget)
+	return WriteForVersion(project, budget, buildinfo.Version)
+}
+
+// WriteForVersion persists a Compose candidate selected by update.
+func WriteForVersion(project projectregistry.Project, budget hostsettings.Budget, version string) (string, error) {
+	body, err := RenderForVersion(project, budget, version)
 	if err != nil {
 		return "", err
 	}

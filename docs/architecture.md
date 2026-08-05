@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Storage for index metadata and for semantic and graph state remains open. Codebase Memory MCP is reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
+Architecture baseline. Go is selected for LCTK-owned code, and the shared MCP gateway is an LCTK-owned component embedded in the host daemon. The persistent exact-search engine is Zoekt behind an LCTK adapter under [ADR-0011](adr/0011-zoekt-exact-search-backend.md), and the local registry is a versioned JSON document under [ADR-0013](adr/0013-registry-persistence.md). The change journal is a versioned per-project document in the LCTK home under [ADR-0015](adr/0015-change-observation-is-complete-or-declared-incomplete.md). Stage 5 adds one installation-wide stateless llama.cpp embedding service and one transactional semantic SQLite database in each project's existing state volume under [ADR-0020](adr/0020-shared-embedding-and-project-semantic-store.md). Stage 6 adds the derived syntax/name-match graph and explicit reviewed project memory to that isolated database under [ADR-0021](adr/0021-derived-code-graph-and-explicit-project-memory.md). Codebase Memory MCP remains reference-only prior art under [ADR-0010](adr/0010-codebase-memory-mcp-reference-only.md); it is not an LCTK core, backend, wrapper, or production dependency.
 
 ## Current implementation
 
@@ -23,6 +23,10 @@ The current implementation is deliberately narrower than the target architecture
 - Git awareness from Slice 3.1: `git_status` and `git_diff` on the project route, read-only and route-scoped, plus the branch, commit, and dirty state in `project_info`;
 - resource policy and the admin surface from Slice 2.3: background-load modes that change what a project costs, disk reporting with a refusal to start on a nearly full volume, and a local admin page over an API a project credential cannot reach;
 - incremental indexing from Slice 2.2: a settled batch applied to the index automatically, a gap reconciled instead of applied, a removed directory retracting everything beneath it, bulk changes rebuilt rather than applied, and a search that flushes pending changes before answering so an edit made a moment ago is already searchable.
+- the syntax and symbol layer from Stage 4: one Tree-sitter engine in the project service for Go, Python, Rust, C, C++, JavaScript, TypeScript, and TSX; live file outlines; bounded name-matched definition and reference lookup; per-language syntax verdicts; and parse concurrency governed by the existing resource mode.
+- persistent semantic intelligence from Stage 5: AST-aware chunks, transactional per-project SQLite state, hybrid lexical/vector ranking, and one shared pinned local embedding process with explicit model, generation, freshness, and failure evidence.
+- the Stage 6 graph, repository map, and explicit memory layer: derived name-match calls and imports committed with semantic generations, deterministic bounded graph tools and maps, and revision-checked reviewed knowledge with provenance and Git awareness.
+- Stage 7 installation and release hardening: a digest-verifying stable launcher, signed release manifests, plan-first bootstrap and update, crash-complete database migration and rollback, native multi-architecture release evidence, and fail-closed official signing/notarization gates.
 
 `lctk project reindex` remains for explicit catch-up and for recovering a corrupt index, but it is no longer how the index keeps up with editing. The legacy `/mcp` endpoint remains foundation compatibility evidence only and is not project-scoped.
 
@@ -136,15 +140,21 @@ Client tools describe a user action:
 ```text
 exact_search
 code_search_semantic
-symbol_find
-symbol_definition
-symbol_references
 file_outline
+find_definition
+find_references
+git_status
+git_diff
+run_command
 repository_map
 callers_find
 callees_find
+dependency_path
 impact_analyze
-diagnostics_get
+memory_get
+memory_search
+memory_put
+memory_delete
 ```
 
 `code-intel` selects adapters, merges results, and removes duplicates. Every relevant response includes compact:
@@ -191,3 +201,11 @@ The user selects one global machine mode:
 - `on-demand` — the daemon starts a stack on an MCP request or meaningful project activity and stops it after a configurable idle timeout.
 
 The first on-demand call may remain open until the stack is ready, subject to a separate startup timeout. The client must receive progress or status rather than an ambiguous `connection refused`.
+
+## Installation and release activation
+
+The user-facing `lctk` executable is a stable launcher. Host cores live under `versions/<version>/lctk-core`; `installation.json` names the active and previous relative paths together with their exact sizes and SHA-256 digests. The launcher verifies the selected bytes before execution. A freshly extracted official package has no activation document, so its launcher accepts only the sibling core whose post-signing identity was embedded during the release build.
+
+Bootstrap and update share a signed release manifest but have different commit points. Bootstrap verifies the package, images, model, disk budget, and inference behavior before creating the first activation. Update pulls the candidate image and restarts every previously running project against the target version. Only after all project health gates pass does it verify, self-test, and atomically activate the candidate host core.
+
+A schema migration is never run against the authoritative database in place. The project service checkpoints schema 1, copies it, migrates and integrity-checks the copy, proves that no non-empty WAL sidecar remains, and atomically swaps the copy while retaining the original rollback bundle. Successful application validation creates a hardlink marker to the exact migrated inode; after a process interruption, an unmarked activation is validated again, while a partially restored database completes its atomic rollback before startup continues. A failed project health gate restores migrated projects in reverse order. Explicit rollback also visits stopped projects so their persistent databases cannot remain newer than the reactivated host and image.
