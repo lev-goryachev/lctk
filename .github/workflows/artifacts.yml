@@ -52,7 +52,9 @@ jobs:
           done
           test "$(docker inspect "$container" --format '{{.State.Health.Status}}')" = healthy
           docker exec "$container" test -f /var/lib/lctk/ready
-          docker image inspect "$image" > "dist/code-intel-${{ matrix.arch }}-evidence.json"
+          docker image inspect "$image" | jq --arg platform "linux/${{ matrix.arch }}" --arg health healthy \
+            '{expected_platform: $platform, health: $health, image: .[0]}' \
+            > "dist/code-intel-${{ matrix.arch }}-evidence.json"
       - name: Upload native image evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -125,15 +127,18 @@ jobs:
           else
             tar -C dist/extracted -xzf "dist/lctk-${VERSION}-darwin-arm64.tar.gz"
           fi
-          "dist/extracted/${{ matrix.launcher }}" version --json > dist/version.json
-          test "$(jq -r .version dist/version.json)" = "$VERSION"
-          test "$(jq -r .os dist/version.json)" = "${{ matrix.goos }}"
-          test "$(jq -r .arch dist/version.json)" = "${{ matrix.goarch }}"
+          evidence="dist/version-${{ matrix.artifact }}.json"
+          "dist/extracted/${{ matrix.launcher }}" version --json > "$evidence"
+          test "$(jq -r .version "$evidence")" = "$VERSION"
+          test "$(jq -r .os "$evidence")" = "${{ matrix.goos }}"
+          test "$(jq -r .arch "$evidence")" = "${{ matrix.goarch }}"
       - name: Upload platform archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lctk-${{ inputs.version }}-${{ matrix.artifact }}
-          path: dist/lctk-${{ inputs.version }}-${{ matrix.artifact }}.${{ matrix.archive }}
+          path: |
+            dist/lctk-${{ inputs.version }}-${{ matrix.artifact }}.${{ matrix.archive }}
+            dist/version-${{ matrix.artifact }}.json
           if-no-files-found: error
 
   checksums:
