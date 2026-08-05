@@ -290,6 +290,16 @@ jobs:
           reference="$IMAGE@$DIGEST"
           mkdir -p ".artifacts/image-smoke/${{ matrix.arch }}/workspace" ".artifacts/image-smoke/${{ matrix.arch }}/state"
           container="lctk-code-intel-${{ matrix.arch }}-smoke"
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if test "$result" -ne 0; then
+              docker inspect "$container" || true
+              docker logs "$container" || true
+            fi
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            exit "$result"
+          }
           docker pull "$reference"
           test "$(docker image inspect "$reference" --format '{{.Os}}/{{.Architecture}}')" = "linux/${{ matrix.arch }}"
           docker run --detach --name "$container" --network none \
@@ -297,7 +307,7 @@ jobs:
             --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/workspace,target=/workspace,readonly" \
             --mount "type=bind,source=$PWD/.artifacts/image-smoke/${{ matrix.arch }}/state,target=/var/lib/lctk" \
             "$reference"
-          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          trap cleanup EXIT
           for attempt in $(seq 1 30); do
             health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
             test "$health" != unhealthy
