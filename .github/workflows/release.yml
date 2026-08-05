@@ -263,13 +263,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          inspect_with_retry() {
+            local reference="$1"
+            shift
+            local attempt output
+            for attempt in $(seq 1 12); do
+              if output="$(docker buildx imagetools inspect "$@" "$reference" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+              fi
+              if (( attempt < 12 )); then sleep 5; fi
+            done
+            printf 'Image index inspection failed after %d attempts:\n%s\n' "$attempt" "$output" >&2
+            return 1
+          }
           amd64="$(cat digests/image-digest-amd64.txt)"
           arm64="$(cat digests/image-digest-arm64.txt)"
           docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$amd64" "$IMAGE@$arm64"
-          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '$1 == "Digest:" { print $2; exit }')"
+          inspection="$(inspect_with_retry "$IMAGE:$VERSION")"
+          digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection")"
           test "${digest#sha256:}" != "$digest"
           reference="$IMAGE@$digest"
-          raw="$(docker buildx imagetools inspect --raw "$reference")"
+          raw="$(inspect_with_retry "$reference" --raw)"
           jq -e '[.manifests[].platform | select(.os == "linux") | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' <<<"$raw"
           jq -e '[.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")] | length == 2' <<<"$raw"
           printf 'CODE_IMAGE=%s\n' "$reference" > image.env
