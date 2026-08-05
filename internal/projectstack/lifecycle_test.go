@@ -387,7 +387,12 @@ func TestImageMatchesRequiresTheTagAndSignedDigestToShareAnIdentity(t *testing.T
 
 func TestImageMatchesTreatsOnlyARealMissingImageAsAbsent(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
-		{match: "image inspect", stderr: "Error: No such image", err: errors.New("exit status 1")},
+		{
+			match: "image inspect",
+			stderr: `Error: unable to inspect "lctk/code-intel:0.1.1": failed to find image ` +
+				`lctk/code-intel:0.1.1: lctk/code-intel:0.1.1: image not known`,
+			err: errors.New("exit status 1"),
+		},
 	}}
 	manager := NewManagerWithRunner(runner)
 	if matches, err := manager.ImageMatches(t.Context(), "missing", "also-missing"); err != nil || matches {

@@ -552,7 +552,11 @@ func isNoSuchContainer(stdout, stderr string) bool {
 func isNoSuchImage(stdout, stderr string) bool {
 	combined := strings.ToLower(stdout + " " + stderr)
 	return strings.Contains(combined, "no such image") ||
-		strings.Contains(combined, "no such object")
+		strings.Contains(combined, "no such object") ||
+		// Podman 5.8 reports an absent local image as "image not known".
+		// This is the expected pre-pull state during bootstrap, not a runtime
+		// failure, so the signed image may be fetched through InstallImage.
+		strings.Contains(combined, "image not known")
 }
 
 func isNoSuchNetwork(stdout, stderr string) bool {
