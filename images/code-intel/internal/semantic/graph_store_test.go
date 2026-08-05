@@ -154,6 +154,58 @@ func TestFailedSchemaOneActivationRestoresOriginalDatabase(t *testing.T) {
 	}
 }
 
+func TestInterruptedPreCommitMigrationRetriesWithoutLosingTheActiveDatabase(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "semantic.db")
+	source := &sourceStub{files: map[string][]byte{"a.go": []byte("package a\nfunc A(){}\n")}}
+	embedder := &deterministicEmbedder{dimension: 16}
+	store, err := Open(Config{Path: database, Model: "model-a", Dimensions: 16}, source, outlineStub{}, embedder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE graph_calls; DROP TABLE graph_imports; DROP TABLE graph_nodes; DROP TABLE graph_files; PRAGMA user_version=1;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the only pre-commit crash state after the durable migration copy
+	// exists and the original v1 inode has received its rollback name.
+	if err := copyDatabaseFile(database, database+".migration"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(database, database+".rollback-v1"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(Config{Path: database, Model: "model-a", Dimensions: 16}, source, outlineStub{}, embedder)
+	if err != nil {
+		t.Fatalf("retry interrupted migration: %v", err)
+	}
+	defer reopened.Close()
+	var version int
+	if err := reopened.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("retried migration schema = %d, want %d", version, schemaVersion)
+	}
+	if _, err := os.Stat(database + ".migration"); !os.IsNotExist(err) {
+		t.Fatalf("interrupted migration copy remains: %v", err)
+	}
+	activeInfo, err := os.Stat(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackInfo, err := os.Stat(database + ".rollback-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(activeInfo, rollbackInfo) {
+		t.Fatal("migration did not atomically replace the active v1 inode")
+	}
+}
+
 func TestCallPaginationAndDuplicateDeclarationAmbiguity(t *testing.T) {
 	ctx := context.Background()
 	source := &sourceStub{files: map[string][]byte{

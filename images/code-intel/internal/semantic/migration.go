@@ -46,11 +46,8 @@ func prepareDatabaseMigration(databasePath string) (string, error) {
 
 	temporary := databasePath + ".migration"
 	rollback := databasePath + ".rollback-v1"
-	if _, err := os.Stat(temporary); err == nil {
-		return "", fail(CodeCorrupt, "An unfinished project intelligence migration exists; preserve it for diagnosis before retrying.", false, nil)
-	}
-	if _, err := os.Stat(rollback); err == nil {
-		return "", fail(CodeCorrupt, "A schema v1 rollback bundle already exists; retire or restore it before another migration.", false, nil)
+	if err := resetInterruptedMigration(databasePath, temporary, rollback); err != nil {
+		return "", err
 	}
 	if err := copyDatabaseFile(databasePath, temporary); err != nil {
 		return "", err
@@ -79,16 +76,46 @@ func prepareDatabaseMigration(databasePath string) (string, error) {
 	if err := removeEmptySidecars(temporary); err != nil {
 		return "", err
 	}
-	if err := os.Rename(databasePath, rollback); err != nil {
+	// The state volume is a Linux filesystem. A hardlink preserves the exact v1
+	// inode without copying its bytes, while the active database name remains
+	// continuously valid until the single atomic replacement below commits v2.
+	if err := os.Link(databasePath, rollback); err != nil {
 		return "", fail(CodeInternalError, "The original project intelligence database could not become the rollback bundle.", false, err)
 	}
 	if err := os.Rename(temporary, databasePath); err != nil {
-		if restoreErr := os.Rename(rollback, databasePath); restoreErr != nil {
-			return "", fail(CodeCorrupt, "Migration activation failed and the original database could not be restored.", false, restoreErr)
+		if removeErr := os.Remove(rollback); removeErr != nil {
+			return "", fail(CodeCorrupt, "Migration activation failed and its uncommitted rollback link could not be removed.", false, removeErr)
 		}
 		return "", fail(CodeInternalError, "The migrated project intelligence database could not be activated.", false, err)
 	}
 	return rollback, nil
+}
+
+// resetInterruptedMigration recognizes only the safe pre-commit crash states.
+// Before activation, semantic.db and rollback-v1 are hardlinks to the same v1
+// inode; any migration copy is derived and can be discarded. Distinct files are
+// an actual retained rollback bundle and are never guessed away.
+func resetInterruptedMigration(databasePath, temporary, rollback string) error {
+	databaseInfo, err := os.Stat(databasePath)
+	if err != nil {
+		return fail(CodeCorrupt, "The project intelligence database could not be inspected for migration recovery.", false, err)
+	}
+	rollbackInfo, rollbackErr := os.Stat(rollback)
+	switch {
+	case rollbackErr == nil:
+		if !os.SameFile(databaseInfo, rollbackInfo) {
+			return fail(CodeCorrupt, "A distinct schema v1 rollback bundle already exists; retire or restore it before another migration.", false, nil)
+		}
+		if err := os.Remove(rollback); err != nil {
+			return fail(CodeCorrupt, "An interrupted migration rollback link could not be reset.", false, err)
+		}
+	case !os.IsNotExist(rollbackErr):
+		return fail(CodeCorrupt, "The migration rollback bundle could not be inspected.", false, rollbackErr)
+	}
+	if err := os.Remove(temporary); err != nil && !os.IsNotExist(err) {
+		return fail(CodeCorrupt, "An interrupted migration copy could not be reset.", false, err)
+	}
+	return nil
 }
 
 func removeEmptySidecars(databasePath string) error {
@@ -149,12 +176,17 @@ func restoreMigratedDatabase(databasePath, rollbackPath string) error {
 		return nil
 	}
 	failed := databasePath + ".failed-v2"
-	if err := os.Rename(databasePath, failed); err != nil {
+	if _, err := os.Stat(failed); err == nil {
+		return fail(CodeCorrupt, "A failed migrated database already exists and was preserved for diagnosis.", false, nil)
+	} else if !os.IsNotExist(err) {
+		return fail(CodeCorrupt, "The failed migrated database path could not be inspected.", false, err)
+	}
+	if err := os.Link(databasePath, failed); err != nil {
 		return fail(CodeCorrupt, "The failed migrated database could not be preserved for diagnosis.", false, err)
 	}
 	if err := os.Rename(rollbackPath, databasePath); err != nil {
-		if reactivateErr := os.Rename(failed, databasePath); reactivateErr != nil {
-			return fail(CodeCorrupt, "Migration rollback failed and neither database could be restored as active.", false, reactivateErr)
+		if removeErr := os.Remove(failed); removeErr != nil {
+			return fail(CodeCorrupt, "Migration rollback failed and its uncommitted diagnostic link could not be removed.", false, removeErr)
 		}
 		return fail(CodeCorrupt, "The schema v1 rollback database could not be restored.", false, err)
 	}

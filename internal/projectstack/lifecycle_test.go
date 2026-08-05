@@ -405,6 +405,28 @@ func TestImageMatchesTreatsOnlyARealMissingImageAsAbsent(t *testing.T) {
 	}
 }
 
+func TestSchemaRollbackKeepsAnActiveDatabaseUntilAtomicReplacement(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{{match: "run"}}}
+	manager := NewManagerWithRunner(runner)
+	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
+
+	if err := manager.RestoreSchemaRollback(t.Context(), project, "1.0.0"); err != nil {
+		t.Fatalf("RestoreSchemaRollback: %v", err)
+	}
+	call := runner.callWith("run", "--rm")
+	if call == nil {
+		t.Fatalf("no isolated rollback helper was run: %v", runner.calls)
+	}
+	script := call[len(call)-1]
+	if !strings.Contains(script, `ln -f "$db" "$failed"`) ||
+		!strings.Contains(script, `mv -f "$rollback" "$db"`) {
+		t.Fatalf("rollback does not preserve then atomically replace the database:\n%s", script)
+	}
+	if strings.Contains(script, `mv "$db" "$failed"`) {
+		t.Fatalf("rollback removes the active database before commit:\n%s", script)
+	}
+}
+
 func TestIsNoSuchContainer(t *testing.T) {
 	if !isNoSuchContainer("", "Error: No such object: abc") {
 		t.Error("no such object was not recognized")

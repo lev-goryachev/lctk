@@ -293,11 +293,11 @@ db=/state/semantic/semantic.db
 rollback=${db}.rollback-v1
 failed=${db}.failed-update
 test -f "$rollback" || exit 0
-# The displaced candidate is diagnostic, not an activation boundary. Replacing
-# its preceding copy keeps the latest failed state while allowing another
-# fully verified update/rollback cycle to restore the authoritative bundle.
-mv "$db" "$failed"
-if ! mv "$rollback" "$db"; then mv "$failed" "$db"; exit 5; fi`
+# A hardlink preserves the displaced candidate without copying it. The final
+# rename replaces semantic.db atomically, so a crash sees either the complete
+# current database or the complete rollback database and never a missing name.
+ln -f "$db" "$failed"
+mv -f "$rollback" "$db"`
 	args := []string{
 		"run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
 		"--mount", "type=volume,source=" + names.Volume + ",target=/state",
