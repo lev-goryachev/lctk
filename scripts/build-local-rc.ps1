@@ -1,6 +1,6 @@
 param(
     [string]$Version = "0.1.12",
-    [string]$TemplateVersion = "0.1.11",
+    [string]$TemplateVersion = "0.1.1",
     [string]$TemplateKeyID = "lctk-release-v1",
     [string]$TemplatePublicKey = "rSVhZIN82jXEG04WGzc9lAu5bszLjs//cSEO0bmJY8I="
 )
