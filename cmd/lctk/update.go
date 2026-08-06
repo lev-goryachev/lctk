@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
+	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
@@ -43,6 +45,9 @@ var (
 		return installation.NewManager(home)
 	}
 	loadUpdateRegistry = projectregistry.Load
+	loadUpdateDaemon   = daemonstate.Load
+	stopUpdateDaemon   = daemonstate.Stop
+	startUpdateDaemon  = daemonstate.Start
 	newUpdateInference = func(distribution inference.Distribution) (updateflow.Inference, error) {
 		return inference.NewManagerForDistribution(containerruntime.Runner{}, distribution)
 	}
@@ -106,9 +111,14 @@ func runUpdate(ctx context.Context, args []string, stdout io.Writer) error {
 
 	applyCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	plan, err := manager.Apply(applyCtx, manifest)
+	restartDaemon, err := suspendUpdateDaemon(home)
 	if err != nil {
 		return err
+	}
+	plan, applyErr := manager.Apply(applyCtx, manifest)
+	restartErr := restartDaemon()
+	if applyErr != nil || restartErr != nil {
+		return errors.Join(applyErr, restartErr)
 	}
 	if *asJSON {
 		return writeJSON(stdout, plan)
@@ -135,15 +145,44 @@ func runUpdateRollback(ctx context.Context, args []string, stdout io.Writer) err
 	}
 	rollbackCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	plan, err := updateManager(home, buildinfo.Version, "").Rollback(rollbackCtx)
+	restartDaemon, err := suspendUpdateDaemon(home)
 	if err != nil {
 		return err
+	}
+	plan, rollbackErr := updateManager(home, buildinfo.Version, "").Rollback(rollbackCtx)
+	restartErr := restartDaemon()
+	if rollbackErr != nil || restartErr != nil {
+		return errors.Join(rollbackErr, restartErr)
 	}
 	if *asJSON {
 		return writeJSON(stdout, plan)
 	}
 	fmt.Fprintf(stdout, "Rolled back to %s.\n", plan.TargetVersion)
 	return nil
+}
+
+// suspendUpdateDaemon keeps the long-lived host on the same activation as the
+// project and inference transaction. Setup already owns this boundary around
+// updateflow directly; the CLI must establish it itself before changing the
+// active core. A missing state means no daemon was running and must not create
+// one as an update side effect.
+func suspendUpdateDaemon(home string) (func() error, error) {
+	noRestart := func() error { return nil }
+	if _, err := loadUpdateDaemon(home); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return noRestart, nil
+		}
+		return nil, fmt.Errorf("inspect installed LCTK background service: %w", err)
+	}
+	if err := stopUpdateDaemon(home); err != nil {
+		return nil, fmt.Errorf("stop installed LCTK background service: %w", err)
+	}
+	return func() error {
+		if err := startUpdateDaemon(home); err != nil {
+			return fmt.Errorf("restart installed LCTK background service: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 // updateManager binds command-level injectable factories to the shared

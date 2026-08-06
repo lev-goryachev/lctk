@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/projectpath"
@@ -167,6 +168,36 @@ func TestRollbackRefusesProjectChangesBeforePreviousCoreVerification(t *testing.
 	}
 }
 
+func TestRollbackRestartsTheDaemonThroughTheActiveLauncher(t *testing.T) {
+	registry := testUpdateRegistry(t, 0)
+	current := &updateStackStub{states: map[string]projectstack.State{}}
+	previous := &updateStackStub{states: map[string]projectstack.State{}}
+	installer := &updateInstallerStub{}
+	restoreUpdateFactories(t, registry, current, previous, installer)
+	events := []string{}
+	loadUpdateDaemon = func(string) (daemonstate.State, error) {
+		return daemonstate.State{PID: 42, Executable: "installed-core"}, nil
+	}
+	stopUpdateDaemon = func(string) error {
+		events = append(events, "stop")
+		return nil
+	}
+	startUpdateDaemon = func(string) error {
+		events = append(events, "start")
+		if !installer.rolled {
+			t.Fatal("daemon restarted before host rollback activation")
+		}
+		return nil
+	}
+
+	if err := runUpdateRollback(t.Context(), []string{"--json"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("runUpdateRollback: %v", err)
+	}
+	if len(events) != 2 || events[0] != "stop" || events[1] != "start" {
+		t.Fatalf("daemon events = %v, want stop then start", events)
+	}
+}
+
 func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, current, target *updateStackStub, installer *updateInstallerStub) {
 	t.Helper()
 	oldVersion := buildinfo.Version
@@ -176,6 +207,9 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 	oldInstaller := newUpdateInstaller
 	oldRegistry := loadUpdateRegistry
 	oldInference := newUpdateInference
+	oldLoadDaemon := loadUpdateDaemon
+	oldStopDaemon := stopUpdateDaemon
+	oldStartDaemon := startUpdateDaemon
 	buildinfo.Version = "1.0.0"
 	newUpdateVerifier = func() (releasebundle.Verifier, error) { return releasebundle.Verifier{}, nil }
 	loadUpdateManifest = func(context.Context, string, releasebundle.Verifier) (releasebundle.Manifest, error) {
@@ -191,6 +225,9 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 	loadUpdateRegistry = func() (*projectregistry.Registry, error) { return registry, nil }
 	shared := &bootstrapInferenceStub{image: true, model: true}
 	newUpdateInference = func(inference.Distribution) (updateflow.Inference, error) { return shared, nil }
+	loadUpdateDaemon = func(string) (daemonstate.State, error) { return daemonstate.State{}, os.ErrNotExist }
+	stopUpdateDaemon = func(string) error { return nil }
+	startUpdateDaemon = func(string) error { return nil }
 	t.Setenv("LCTK_HOME", t.TempDir())
 	t.Cleanup(func() {
 		buildinfo.Version = oldVersion
@@ -200,6 +237,9 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 		newUpdateInstaller = oldInstaller
 		loadUpdateRegistry = oldRegistry
 		newUpdateInference = oldInference
+		loadUpdateDaemon = oldLoadDaemon
+		stopUpdateDaemon = oldStopDaemon
+		startUpdateDaemon = oldStartDaemon
 	})
 }
 
