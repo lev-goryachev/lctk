@@ -88,7 +88,10 @@ func ValidateManifest(manifest releasebundle.Manifest) (releasebundle.Artifact, 
 	if err != nil {
 		return releasebundle.Artifact{}, fail(FailurePackageInvalid, "%v", err)
 	}
-	if artifact.Name != ToolkitFileName || artifact.URL != ToolkitURL || artifact.Bytes != ToolkitBytes ||
+	// The signed release may mirror the exact RPM on GitHub or expose it from
+	// an authenticated local RC. Transport location is deliberately not part of
+	// the package identity; signed name, size, and SHA-256 authenticate the bytes.
+	if artifact.Name != ToolkitFileName || artifact.Bytes != ToolkitBytes ||
 		artifact.SHA256 != ToolkitSHA256 {
 		return releasebundle.Artifact{}, fail(FailurePackageInvalid,
 			"signed NVIDIA package identity does not match %s", ToolkitNEVRA)

@@ -122,6 +122,18 @@ func TestValidateManifestRejectsAnyGPUIdentityDrift(t *testing.T) {
 	}
 }
 
+func TestValidateManifestAcceptsSignedMirrorURL(t *testing.T) {
+	manifest := testManifest()
+	manifest.Artifacts[0].URL = "http://127.0.0.1:4466/" + ToolkitFileName
+	artifact, err := ValidateManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.URL != manifest.Artifacts[0].URL {
+		t.Fatalf("validated URL = %q, want signed mirror URL", artifact.URL)
+	}
+}
+
 func testManifest() releasebundle.Manifest {
 	return releasebundle.Manifest{
 		Version: "0.1.12",
