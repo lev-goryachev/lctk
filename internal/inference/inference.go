@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,21 +25,24 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/machinetunnel"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 )
 
 const (
-	ContainerName = "lctk-inference"
-	ContainerPort = 8080
-	ModelName     = "nomic-embed-text-v1.5.Q4_K_M.gguf"
-	ModelAlias    = ModelName
-	ModelSHA256   = "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac"
-	ModelBytes    = int64(84106624)
-	ModelURL      = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/0188c9bf409793f810680a5a431e7b899c46104c/" + ModelName
-	Image         = "ghcr.io/ggml-org/llama.cpp:server@sha256:14ab06c571008509adcedf635301edfa98071b1b8345269921d31ea4d519ae47"
-	Dimensions    = 768
+	ContainerName          = "lctk-inference"
+	CandidateContainerName = "lctk-inference-candidate"
+	RollbackContainerName  = "lctk-inference-rollback"
+	ContainerPort          = 8080
+	ModelName              = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+	ModelAlias             = ModelName
+	ModelSHA256            = "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac"
+	ModelBytes             = int64(84106624)
+	ModelURL               = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/0188c9bf409793f810680a5a431e7b899c46104c/" + ModelName
+	Image                  = "ghcr.io/ggml-org/llama.cpp:server@sha256:14ab06c571008509adcedf635301edfa98071b1b8345269921d31ea4d519ae47"
+	Dimensions             = 768
 	// ConfigRevision forces replacement when runtime arguments change while the
 	// immutable image and model remain the same.
-	ConfigRevision = "6"
+	ConfigRevision = "7"
 
 	// ProjectEndpoint is reached after the inference container joins the one
 	// requesting project's isolated network. No Windows host port is involved.
@@ -44,6 +50,10 @@ const (
 	// RuntimeNetwork is Podman's rootful default network. The shared inference
 	// container remains attached to it while also serving isolated projects.
 	RuntimeNetwork = "podman"
+	// RecoveryTimeout bounds cleanup and rollback work after the caller's
+	// context is cancelled. Recovery must continue independently, but it must
+	// never leave setup or update blocked indefinitely on a failed runtime.
+	RecoveryTimeout = 2 * time.Minute
 )
 
 var (
@@ -51,6 +61,7 @@ var (
 	ErrModelMissing = errors.New("embedding model is not installed")
 	ErrModelInvalid = errors.New("embedding model digest does not match")
 	ErrNotReady     = errors.New("embedding inference service is not ready")
+	ErrSwapFailed   = errors.New("embedding inference activation transaction failed")
 )
 
 // Runner executes OCI runtime operations and makes lifecycle behavior testable.
@@ -65,26 +76,31 @@ type tunnel interface {
 // Manager owns the shared container lifecycle. Configuration fields are private
 // so production always uses pinned identities; tests use NewManagerForTest.
 type Manager struct {
-	runner      Runner
-	image       string
-	modelPath   string
-	modelBytes  int64
-	modelSHA    string
-	downloadURL string
-	address     string
-	httpClient  *http.Client
-	tunnel      tunnel
+	runner       Runner
+	image        string
+	modelPath    string
+	modelBytes   int64
+	modelSHA     string
+	downloadURL  string
+	distribution Distribution
+	address      string
+	httpClient   *http.Client
+	tunnel       tunnel
 }
 
 // Status is the observable shared inference state.
 type Status struct {
-	Ready     bool   `json:"ready"`
-	Container string `json:"container"`
-	Image     string `json:"image"`
-	Model     string `json:"model"`
-	ModelPath string `json:"model_path"`
-	Endpoint  string `json:"endpoint"`
-	Detail    string `json:"detail,omitempty"`
+	Ready           bool               `json:"ready"`
+	Container       string             `json:"container"`
+	Image           string             `json:"image"`
+	Model           string             `json:"model"`
+	ModelPath       string             `json:"model_path"`
+	Endpoint        string             `json:"endpoint"`
+	Distribution    Distribution       `json:"distribution"`
+	Backend         string             `json:"backend"`
+	GPU             *nvidiainstall.GPU `json:"gpu,omitempty"`
+	OffloadedLayers string             `json:"offloaded_layers,omitempty"`
+	Detail          string             `json:"detail,omitempty"`
 }
 
 // ModelPath returns the installation-owned model location without creating it.
@@ -98,11 +114,28 @@ func ModelPath() (string, error) {
 
 // NewManager constructs the production manager from immutable component ids.
 func NewManager(runner Runner) (*Manager, error) {
+	selection, err := LoadSelection()
+	if err != nil {
+		return nil, err
+	}
+	return NewManagerForDistribution(runner, selection.Distribution)
+}
+
+// NewManagerForDistribution binds one explicit owner selection to its pinned
+// image and runtime contract. No automatic capability-based fallback exists.
+func NewManagerForDistribution(runner Runner, distribution Distribution) (*Manager, error) {
+	if !distribution.Valid() {
+		return nil, fmt.Errorf("unsupported inference distribution %q", distribution)
+	}
 	path, err := ModelPath()
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{runner: runner, image: Image, modelPath: path, modelBytes: ModelBytes,
+	image := Image
+	if distribution == DistributionNVIDIAGPU {
+		image = nvidiainstall.Image
+	}
+	return &Manager{runner: runner, image: image, distribution: distribution, modelPath: path, modelBytes: ModelBytes,
 		modelSHA: ModelSHA256, downloadURL: ModelURL, httpClient: &http.Client{Timeout: 2 * time.Second},
 		tunnel: machinetunnel.Default}, nil
 }
@@ -112,7 +145,8 @@ func NewManager(runner Runner) (*Manager, error) {
 func NewManagerForTest(runner Runner, image, modelPath, address string) *Manager {
 	size, digest := fileIdentity(modelPath)
 	return &Manager{runner: runner, image: image, modelPath: modelPath,
-		modelBytes: size, modelSHA: digest, downloadURL: ModelURL, address: address,
+		distribution: DistributionCPU,
+		modelBytes:   size, modelSHA: digest, downloadURL: ModelURL, address: address,
 		httpClient: &http.Client{Timeout: 2 * time.Second}}
 }
 
@@ -148,8 +182,9 @@ func verifyFile(path string, wantedBytes int64, wantedSHA string) error {
 	return nil
 }
 
-// Ensure starts the pinned service only after both image and model identities
-// are locally verifiable, then waits for the real HTTP health path.
+// Ensure activates the selected service only after image, model, candidate
+// health, real embeddings, and distribution-specific backend evidence pass.
+// Existing project-network attachments move in one rollback-capable transaction.
 func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error) {
 	status := m.baseStatus()
 	if m.runner == nil {
@@ -165,61 +200,326 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 		return status, err
 	}
 
-	// Podman normalizes Config.Image and may remove a tag from a digest-pinned
-	// reference. Container .Image and image-inspect .Id are the actual immutable
-	// image identity, so comparing them neither replaces a healthy container nor
-	// accepts a different image that happens to have a similar reference string.
-	format := `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
-	stdout, _, inspectErr := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
+	current, err := m.inspectIdentity(ctx, ContainerName)
+	if err != nil {
+		status.Detail = err.Error()
+		return status, err
+	}
+	if current.exists && current.running && current.imageID == expectedImageID &&
+		current.configRevision == ConfigRevision && current.distribution == m.distribution {
+		if err := m.waitReady(ctx, ContainerName, wait); err != nil {
+			status.Detail = err.Error()
+			return status, err
+		}
+		if err := m.SelfTest(ctx); err != nil {
+			status.Detail = err.Error()
+			return status, err
+		}
+		if err := m.attachBackendEvidence(ctx, ContainerName, &status); err != nil {
+			status.Detail = err.Error()
+			return status, err
+		}
+		status.Ready = true
+		return status, nil
+	}
+	return m.activateCandidate(ctx, wait, current)
+}
+
+type containerIdentity struct {
+	exists         bool
+	running        bool
+	imageID        string
+	configRevision string
+	distribution   Distribution
+}
+
+type networkAttachment struct {
+	name string
+}
+
+// inspectIdentity distinguishes absence from every other Podman failure and
+// compares the actual image ID rather than normalized reference text.
+func (m *Manager) inspectIdentity(ctx context.Context, name string) (containerIdentity, error) {
+	format := `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`
+	stdout, stderr, err := m.runner.Run(ctx, "inspect", name, "--format", format)
+	if err != nil {
+		if isNoSuchContainer(stdout, stderr) {
+			return containerIdentity{}, nil
+		}
+		return containerIdentity{}, fmt.Errorf("inspect embedding inference container %s: %s", name, firstLine(stderr, err))
+	}
 	fields := strings.Split(strings.TrimSpace(stdout), "|")
-	runningCurrent := inspectErr == nil && len(fields) == 3 && fields[0] == "running" &&
-		fields[1] == expectedImageID && fields[2] == ConfigRevision
-	if !runningCurrent {
-		if inspectErr == nil || strings.TrimSpace(stdout) != "" {
-			if _, stderr, err := m.runner.Run(ctx, "rm", "--force", ContainerName); err != nil {
-				return status, fmt.Errorf("replace embedding inference container: %s", firstLine(stderr, err))
+	if len(fields) != 4 || strings.TrimSpace(fields[1]) == "" {
+		return containerIdentity{}, fmt.Errorf("inspect embedding inference container %s returned a malformed identity", name)
+	}
+	return containerIdentity{
+		exists: true, running: fields[0] == "running", imageID: fields[1],
+		configRevision: fields[2], distribution: Distribution(fields[3]),
+	}, nil
+}
+
+// activateCandidate proves the replacement before moving the final name. The
+// old container remains a rollback target until every saved project attachment
+// and final-name health check succeeds.
+func (m *Manager) activateCandidate(ctx context.Context, wait time.Duration, current containerIdentity) (status Status, activationErr error) {
+	status = m.baseStatus()
+	if err := m.removeOwnedCandidate(ctx); err != nil {
+		return status, err
+	}
+	rollback, err := m.inspectIdentity(ctx, RollbackContainerName)
+	if err != nil {
+		return status, err
+	}
+	if rollback.exists {
+		return status, fmt.Errorf("%w: stale rollback container %s requires repair", ErrSwapFailed, RollbackContainerName)
+	}
+	if err := m.startContainer(ctx, CandidateContainerName); err != nil {
+		return status, err
+	}
+	candidateName := CandidateContainerName
+	defer func() {
+		if candidateName == "" {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RecoveryTimeout)
+		defer cancel()
+		if _, stderr, err := m.runner.Run(cleanupCtx, "rm", "--force", candidateName); err != nil && activationErr == nil {
+			activationErr = fmt.Errorf("remove failed inference candidate %s: %s", candidateName, firstLine(stderr, err))
+		}
+	}()
+	if err := m.waitReady(ctx, CandidateContainerName, wait); err != nil {
+		return status, err
+	}
+	if err := m.selfTestFor(ctx, CandidateContainerName); err != nil {
+		return status, err
+	}
+	if err := m.attachBackendEvidence(ctx, CandidateContainerName, &status); err != nil {
+		return status, err
+	}
+
+	attachments := []networkAttachment{}
+	oldRenamed := false
+	candidatePromoted := false
+	if current.exists {
+		attachments, err = m.projectAttachments(ctx, ContainerName)
+		if err != nil {
+			return status, err
+		}
+		if _, stderr, err := m.runner.Run(ctx, "rename", ContainerName, RollbackContainerName); err != nil {
+			return status, fmt.Errorf("%w: preserve previous inference container: %s", ErrSwapFailed, firstLine(stderr, err))
+		}
+		oldRenamed = true
+		for _, attachment := range attachments {
+			if _, stderr, err := m.runner.Run(ctx, "network", "disconnect", attachment.name, RollbackContainerName); err != nil {
+				return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted,
+					fmt.Errorf("disconnect previous inference from %s: %s", attachment.name, firstLine(stderr, err)))
 			}
 		}
-		runtimeModelPath, err := containerruntime.HostPath(m.modelPath)
-		if err != nil {
-			return status, fmt.Errorf("prepare embedding model mount: %w", err)
-		}
-		mount := "type=bind,source=" + runtimeModelPath + ",target=/models/" + ModelName + ",readonly"
-		args := []string{
-			"run", "--detach", "--name", ContainerName, "--restart", "unless-stopped",
-			"--label", "tech.lctk.managed=true", "--label", "tech.lctk.component=inference",
-			"--label", "tech.lctk.inference-config=" + ConfigRevision,
-			"--mount", mount, m.image,
-			"--model", "/models/" + ModelName, "--alias", ModelAlias,
-			"--embedding", "--pooling", "mean", "--host", "0.0.0.0",
-			"--parallel", "8",
-			"--port", fmt.Sprint(ContainerPort), "--ctx-size", "32768",
-			"--batch-size", "4096", "--ubatch-size", "4096",
-		}
-		if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
-			return status, fmt.Errorf("start embedding inference: %s", firstLine(stderr, err))
+	}
+	if _, stderr, err := m.runner.Run(ctx, "rename", CandidateContainerName, ContainerName); err != nil {
+		return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted,
+			fmt.Errorf("promote inference candidate: %s", firstLine(stderr, err)))
+	}
+	// From this point rollback owns cleanup of the promoted final name. The
+	// candidate-name defer must not remove a restored old final container.
+	candidateName = ""
+	candidatePromoted = true
+	for _, attachment := range attachments {
+		if _, stderr, err := m.runner.Run(ctx, "network", "connect", "--alias", ContainerName, attachment.name, ContainerName); err != nil {
+			return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted,
+				fmt.Errorf("connect inference candidate to %s: %s", attachment.name, firstLine(stderr, err)))
 		}
 	}
-	if wait <= 0 {
-		wait = 90 * time.Second
+	if err := m.waitReady(ctx, ContainerName, wait); err != nil {
+		return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted, err)
 	}
-	deadline := time.Now().Add(wait)
-	for {
-		if err := m.health(ctx); err == nil {
-			status.Ready = true
-			return status, nil
-		} else {
-			status.Detail = err.Error()
-		}
-		if time.Now().After(deadline) {
-			return status, fmt.Errorf("%w: %s", ErrNotReady, status.Detail)
-		}
-		select {
-		case <-ctx.Done():
-			return status, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
+	if err := m.selfTestFor(ctx, ContainerName); err != nil {
+		return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted, err)
+	}
+	if err := m.attachBackendEvidence(ctx, ContainerName, &status); err != nil {
+		return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted, err)
+	}
+	if oldRenamed {
+		if _, stderr, err := m.runner.Run(ctx, "rm", "--force", RollbackContainerName); err != nil {
+			return status, m.restoreAfterSwapFailure(ctx, attachments, oldRenamed, candidatePromoted,
+				fmt.Errorf("remove committed inference rollback container: %s", firstLine(stderr, err)))
 		}
 	}
+	status.Container = ContainerName
+	status.Ready = true
+	return status, nil
+}
+
+// restoreAfterSwapFailure removes only the promoted candidate, reconnects the
+// saved old container while its unique name prevents alias collision, and then
+// restores the public name. All rollback errors are retained for diagnosis.
+func (m *Manager) restoreAfterSwapFailure(ctx context.Context, attachments []networkAttachment, oldRenamed, candidatePromoted bool, cause error) error {
+	errorsFound := []error{fmt.Errorf("%w: %v", ErrSwapFailed, cause)}
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RecoveryTimeout)
+	defer cancel()
+	if candidatePromoted {
+		if _, stderr, err := m.runner.Run(rollbackCtx, "rm", "--force", ContainerName); err != nil {
+			errorsFound = append(errorsFound, fmt.Errorf("remove failed inference candidate: %s", firstLine(stderr, err)))
+		}
+	}
+	if oldRenamed {
+		for _, attachment := range attachments {
+			if _, stderr, err := m.runner.Run(rollbackCtx, "network", "connect", "--alias", ContainerName, attachment.name, RollbackContainerName); err != nil && !isAlreadyConnected(stderr) {
+				errorsFound = append(errorsFound, fmt.Errorf("restore inference network %s: %s", attachment.name, firstLine(stderr, err)))
+			}
+		}
+		if _, stderr, err := m.runner.Run(rollbackCtx, "rename", RollbackContainerName, ContainerName); err != nil {
+			errorsFound = append(errorsFound, fmt.Errorf("restore previous inference name: %s", firstLine(stderr, err)))
+		}
+	}
+	return errors.Join(errorsFound...)
+}
+
+func (m *Manager) startContainer(ctx context.Context, name string) error {
+	runtimeModelPath, err := containerruntime.HostPath(m.modelPath)
+	if err != nil {
+		return fmt.Errorf("prepare embedding model mount: %w", err)
+	}
+	mount := "type=bind,source=" + runtimeModelPath + ",target=/models/" + ModelName + ",readonly"
+	args := []string{
+		"run", "--detach", "--name", name, "--restart", "unless-stopped",
+		"--label", "tech.lctk.managed=true", "--label", "tech.lctk.component=inference",
+		"--label", "tech.lctk.inference-config=" + ConfigRevision,
+		"--label", "tech.lctk.inference-distribution=" + string(m.distribution),
+	}
+	if m.distribution == DistributionNVIDIAGPU {
+		args = append(args, "--device", nvidiainstall.CDIDevice)
+	}
+	args = append(args,
+		"--mount", mount, m.image,
+		"--model", "/models/"+ModelName, "--alias", ModelAlias,
+		"--embedding", "--pooling", "mean", "--host", "0.0.0.0",
+		"--parallel", "8", "--port", fmt.Sprint(ContainerPort), "--ctx-size", "32768",
+		"--batch-size", "4096", "--ubatch-size", "4096",
+	)
+	if m.distribution == DistributionNVIDIAGPU {
+		args = append(args, "--n-gpu-layers", "99")
+	}
+	if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
+		return fmt.Errorf("start %s embedding inference candidate: %s", m.distribution, firstLine(stderr, err))
+	}
+	return nil
+}
+
+func (m *Manager) removeOwnedCandidate(ctx context.Context) error {
+	format := `{{index .Config.Labels "tech.lctk.managed"}}|{{index .Config.Labels "tech.lctk.component"}}`
+	stdout, stderr, err := m.runner.Run(ctx, "inspect", CandidateContainerName, "--format", format)
+	if err != nil {
+		if isNoSuchContainer(stdout, stderr) {
+			return nil
+		}
+		return fmt.Errorf("inspect stale inference candidate: %s", firstLine(stderr, err))
+	}
+	if strings.TrimSpace(stdout) != "true|inference" {
+		return fmt.Errorf("container %s exists but is not owned by LCTK", CandidateContainerName)
+	}
+	if _, stderr, err := m.runner.Run(ctx, "rm", "--force", CandidateContainerName); err != nil {
+		return fmt.Errorf("remove stale inference candidate: %s", firstLine(stderr, err))
+	}
+	return nil
+}
+
+func (m *Manager) projectAttachments(ctx context.Context, name string) ([]networkAttachment, error) {
+	stdout, stderr, err := m.runner.Run(ctx, "inspect", name, "--format", `{{json .NetworkSettings.Networks}}`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect inference network topology: %s", firstLine(stderr, err))
+	}
+	var networks map[string]struct {
+		Aliases []string `json:"Aliases"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &networks); err != nil {
+		return nil, fmt.Errorf("decode inference network topology: %w", err)
+	}
+	if _, ok := networks[RuntimeNetwork]; !ok {
+		return nil, fmt.Errorf("inference container is detached from runtime network %s", RuntimeNetwork)
+	}
+	attachments := make([]networkAttachment, 0, len(networks)-1)
+	for name, network := range networks {
+		if name == RuntimeNetwork {
+			continue
+		}
+		if name == "" || !validProjectAliases(network.Aliases) {
+			return nil, fmt.Errorf("inference network %q has unexpected aliases %v", name, network.Aliases)
+		}
+		attachments = append(attachments, networkAttachment{name: name})
+	}
+	sort.Slice(attachments, func(i, j int) bool { return attachments[i].name < attachments[j].name })
+	return attachments, nil
+}
+
+func validProjectAliases(aliases []string) bool {
+	foundPublic := false
+	for _, alias := range aliases {
+		switch {
+		case alias == ContainerName:
+			foundPublic = true
+		case isShortContainerID(alias):
+		default:
+			return false
+		}
+	}
+	return foundPublic
+}
+
+func isShortContainerID(value string) bool {
+	if len(value) != 12 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+var offloadPattern = regexp.MustCompile(`(?i)offloaded\s+([1-9][0-9]*)/([1-9][0-9]*)\s+layers\s+to\s+gpu`)
+
+func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status *Status) error {
+	if m.distribution == DistributionCPU {
+		status.Backend = "cpu"
+		return nil
+	}
+	stdout, stderr, err := m.runner.Run(ctx, "exec", name, "nvidia-smi",
+		"--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits")
+	if err != nil {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing,
+			Detail: "CUDA container cannot query the NVIDIA adapter: " + firstLine(stderr, err)}
+	}
+	gpu, err := nvidiainstall.ParseHostProbe(stdout)
+	if err != nil {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing, Detail: err.Error()}
+	}
+	// Backend evidence is contained near llama.cpp startup. Bound the log read
+	// so Admin polling and activation cannot copy an unbounded container log.
+	logs, logStderr, err := m.runner.Run(ctx, "logs", "--tail", "200", name)
+	if err != nil {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+			Detail: "read llama.cpp CUDA diagnostics: " + firstLine(logStderr, err)}
+	}
+	match := offloadPattern.FindStringSubmatch(logs)
+	if len(match) != 3 || !strings.Contains(strings.ToLower(logs), "cuda") {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+			Detail: "llama.cpp did not report CUDA initialization and offloaded model layers"}
+	}
+	status.Backend = "cuda"
+	status.GPU = &gpu
+	status.OffloadedLayers = match[1] + "/" + match[2]
+	return nil
+}
+
+func isNoSuchContainer(stdout, stderr string) bool {
+	combined := strings.ToLower(stdout + " " + stderr)
+	return strings.Contains(combined, "no such object") || strings.Contains(combined, "no such container")
+}
+
+func isAlreadyConnected(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "already connected")
 }
 
 // Status checks installed identities, container state, and the live endpoint
@@ -235,18 +535,21 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		status.Detail = err.Error()
 		return status, err
 	}
-	format := `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
-	stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
+	identity, err := m.inspectIdentity(ctx, ContainerName)
 	if err != nil {
-		status.Detail = firstLine(stderr, err)
-		return status, fmt.Errorf("inspect embedding inference: %s", status.Detail)
+		status.Detail = err.Error()
+		return status, err
 	}
-	fields := strings.Split(strings.TrimSpace(stdout), "|")
-	if len(fields) != 3 || fields[0] != "running" || fields[1] != expectedImageID || fields[2] != ConfigRevision {
+	if !identity.exists || !identity.running || identity.imageID != expectedImageID ||
+		identity.configRevision != ConfigRevision || identity.distribution != m.distribution {
 		status.Detail = "The pinned embedding container is not running."
 		return status, ErrNotReady
 	}
 	if err := m.health(ctx); err != nil {
+		status.Detail = err.Error()
+		return status, err
+	}
+	if err := m.attachBackendEvidence(ctx, ContainerName, &status); err != nil {
 		status.Detail = err.Error()
 		return status, err
 	}
@@ -289,11 +592,15 @@ func (m *Manager) baseStatus() Status {
 		endpoint = m.address + "/v1/embeddings"
 	}
 	return Status{Container: ContainerName, Image: m.image, Model: ModelAlias,
-		ModelPath: m.modelPath, Endpoint: endpoint}
+		ModelPath: m.modelPath, Endpoint: endpoint, Distribution: m.distribution}
 }
 
 func (m *Manager) health(ctx context.Context) error {
-	address, err := m.serviceAddress(ctx)
+	return m.healthFor(ctx, ContainerName)
+}
+
+func (m *Manager) healthFor(ctx context.Context, name string) error {
+	address, err := m.serviceAddressFor(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -312,10 +619,37 @@ func (m *Manager) health(ctx context.Context) error {
 	return nil
 }
 
+func (m *Manager) waitReady(ctx context.Context, name string, wait time.Duration) error {
+	if wait <= 0 {
+		wait = 90 * time.Second
+	}
+	deadline := time.Now().Add(wait)
+	var detail string
+	for {
+		if err := m.healthFor(ctx, name); err == nil {
+			return nil
+		} else {
+			detail = err.Error()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: %s", ErrNotReady, detail)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
 // serviceAddress resolves one Windows-reachable base URL. Production always
 // derives it from the exact private container and the authenticated machine
 // tunnel; tests may supply an isolated HTTP endpoint directly.
 func (m *Manager) serviceAddress(ctx context.Context) (string, error) {
+	return m.serviceAddressFor(ctx, ContainerName)
+}
+
+func (m *Manager) serviceAddressFor(ctx context.Context, name string) (string, error) {
 	if m.tunnel == nil {
 		if strings.TrimSpace(m.address) == "" {
 			return "", errors.New("embedding service endpoint is not configured")
@@ -323,7 +657,7 @@ func (m *Manager) serviceAddress(ctx context.Context) (string, error) {
 		return m.address, nil
 	}
 	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, RuntimeNetwork)
-	stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
+	stdout, stderr, err := m.runner.Run(ctx, "inspect", name, "--format", format)
 	if err != nil {
 		return "", fmt.Errorf("inspect embedding container address: %s", firstLine(stderr, err))
 	}
@@ -332,7 +666,7 @@ func (m *Manager) serviceAddress(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("embedding container has no address on runtime network %s", RuntimeNetwork)
 	}
 	remote := net.JoinHostPort(containerAddress, fmt.Sprint(ContainerPort))
-	local, err := m.tunnel.Ensure(ctx, "inference", remote)
+	local, err := m.tunnel.Ensure(ctx, "inference-"+name, remote)
 	if err != nil {
 		return "", fmt.Errorf("open embedding machine tunnel: %w", err)
 	}

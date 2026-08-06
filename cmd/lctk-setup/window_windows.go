@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/lev-goryachev/lctk/internal/diskspace"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/setupflow"
 	"golang.org/x/sys/windows"
@@ -135,14 +136,15 @@ type nativeSetupWindow struct {
 	request setupRequest
 	window  uintptr
 
-	installEdit   uintptr
-	runtimeEdit   uintptr
-	browseInstall uintptr
-	browseRuntime uintptr
-	installButton uintptr
-	statusLabel   uintptr
-	errorLabel    uintptr
-	progress      uintptr
+	installEdit       uintptr
+	runtimeEdit       uintptr
+	browseInstall     uintptr
+	browseRuntime     uintptr
+	installButton     uintptr
+	distributionCombo uintptr
+	statusLabel       uintptr
+	errorLabel        uintptr
+	progress          uintptr
 
 	context context.Context
 	cancel  context.CancelFunc
@@ -191,7 +193,7 @@ func newNativeSetupWindow(request setupRequest) (*nativeSetupWindow, error) {
 	}
 	controls := initCommonControls{Size: uint32(unsafe.Sizeof(initCommonControls{})), ICC: 0x20}
 	procInitCommon.Call(uintptr(unsafe.Pointer(&controls)))
-	const windowWidth, windowHeight = 780, 520
+	const windowWidth, windowHeight = 780, 620
 	screenWidth, _, _ := procGetSystemMetrics.Call(0)
 	screenHeight, _, _ := procGetSystemMetrics.Call(1)
 	x := (int32(screenWidth) - windowWidth) / 2
@@ -240,6 +242,7 @@ func (window *nativeSetupWindow) createControls(instance uintptr) error {
 		{fmt.Sprintf("Version %s  |  Windows build %d, %s  |  WSL2 %s", window.request.Manifest.Version, window.request.Host.Build, window.request.Host.Architecture, readyText(window.request.Host.WSLReady)), 28, 93, 700, 24},
 		{"Installation directory", 28, 132, 700, 22},
 		{"Runtime data directory (WSL disk, images, project indexes and memory)", 28, 207, 700, 22},
+		{"Local inference distribution", 28, 282, 700, 22},
 	}
 	for _, label := range labels {
 		if _, err := create("STATIC", label.text, wsChild|wsVisible|ssLeft, label.x, label.y, label.width, label.height, 0); err != nil {
@@ -267,6 +270,18 @@ func (window *nativeSetupWindow) createControls(instance uintptr) error {
 	if err != nil {
 		return err
 	}
+	window.distributionCombo, err = create("COMBOBOX", "", wsChild|wsVisible|wsTabStop|wsVScroll|cbsDropDownList, 28, 308, 420, 120, 0)
+	if err != nil {
+		return err
+	}
+	for _, option := range []string{"CPU - supported on every compatible Windows host", "NVIDIA GPU - requires a verified Pascal-or-newer adapter"} {
+		procSendMessageW.Call(window.distributionCombo, cbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(option))))
+	}
+	selectedDistribution := uintptr(0)
+	if window.request.Distribution == inference.DistributionNVIDIAGPU {
+		selectedDistribution = 1
+	}
+	procSendMessageW.Call(window.distributionCombo, cbSetCurSel, selectedDistribution, 0)
 	lockText := "Both locations can be changed before LCTK and its managed WSL machine are created."
 	if window.request.InstallLocked && window.request.RuntimeLocked {
 		lockText = "The existing installation and lctk-runtime machine keep their current locations; setup will continue them in place."
@@ -279,22 +294,22 @@ func (window *nativeSetupWindow) createControls(instance uintptr) error {
 		setEnabled(window.runtimeEdit, false)
 		setEnabled(window.browseRuntime, false)
 	}
-	if _, err := create("STATIC", lockText, wsChild|wsVisible|ssLeft, 28, 270, 708, 40, 0); err != nil {
+	if _, err := create("STATIC", lockText, wsChild|wsVisible|ssLeft, 28, 350, 708, 40, 0); err != nil {
 		return err
 	}
-	window.statusLabel, err = create("STATIC", "", wsChild|wsVisible|ssLeft, 28, 320, 708, 42, 0)
+	window.statusLabel, err = create("STATIC", "", wsChild|wsVisible|ssLeft, 28, 400, 708, 42, 0)
 	if err != nil {
 		return err
 	}
-	window.errorLabel, err = create("STATIC", "", wsChild|wsVisible|ssLeft, 28, 365, 708, 45, 0)
+	window.errorLabel, err = create("STATIC", "", wsChild|wsVisible|ssLeft, 28, 445, 708, 45, 0)
 	if err != nil {
 		return err
 	}
-	window.progress, err = create("msctls_progress32", "", wsChild|wsVisible|pbsMarquee, 28, 416, 490, 20, 0)
+	window.progress, err = create("msctls_progress32", "", wsChild|wsVisible|pbsMarquee, 28, 516, 490, 20, 0)
 	if err != nil {
 		return err
 	}
-	window.installButton, err = create("BUTTON", setupButtonText(window.request.Action), wsChild|wsVisible|wsTabStop|bsPushButton, 548, 407, 188, 38, idInstall)
+	window.installButton, err = create("BUTTON", setupButtonText(window.request.Action), wsChild|wsVisible|wsTabStop|bsPushButton, 548, 507, 188, 38, idInstall)
 	return err
 }
 
@@ -363,6 +378,12 @@ func (window *nativeSetupWindow) startOrClose() {
 		window.finish(err, false)
 		return
 	}
+	distribution, err := selectedDistribution(window.distributionCombo)
+	if err != nil {
+		window.finish(err, false)
+		return
+	}
+	window.request.Distribution = distribution
 	if window.request.RuntimeLocked && !strings.EqualFold(locations.RuntimeDataDir, window.request.Locations.RuntimeDataDir) {
 		window.finish(errors.New("the runtime-data directory cannot change while lctk-runtime exists"), false)
 		return
@@ -448,6 +469,7 @@ func (window *nativeSetupWindow) render() {
 	setEnabled(window.browseInstall, !window.request.InstallLocked && !installing && !complete)
 	setEnabled(window.runtimeEdit, !window.request.RuntimeLocked && !installing && !complete)
 	setEnabled(window.browseRuntime, !window.request.RuntimeLocked && !installing && !complete)
+	setEnabled(window.distributionCombo, !installing && !complete)
 	setEnabled(window.installButton, !installing)
 	buttonText := setupButtonText(window.request.Action)
 	if complete {
@@ -508,10 +530,30 @@ func setupConfirmation(plan setupflow.Plan, locations lctkhome.Locations) string
 	} else if plan.Action == setupflow.ActionRepair {
 		versionLine = fmt.Sprintf("Repair LCTK %s in place?", plan.Version)
 	}
+	inferenceLine := "CPU"
+	if plan.InferenceDistribution == inference.DistributionNVIDIAGPU {
+		inferenceLine = "NVIDIA GPU"
+		if plan.GPU != nil {
+			inferenceLine = fmt.Sprintf("NVIDIA GPU - %s, driver %s, %d MiB VRAM, compute %s",
+				plan.GPU.Name, plan.GPU.DriverVersion, plan.GPU.VRAMMiB, plan.GPU.ComputeCapability)
+		}
+	}
 	return fmt.Sprintf(
-		"%s\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nDownload: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime\n\nProjects, indexes, memory, settings, and OAuth approvals are preserved.",
-		versionLine, locations.InstallDir, locations.RuntimeDataDir, diskspace.Human(plan.DownloadBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
+		"%s\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nInference: %s\nDownload: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime\n\nProjects, indexes, memory, settings, and OAuth approvals are preserved.",
+		versionLine, locations.InstallDir, locations.RuntimeDataDir, inferenceLine, diskspace.Human(plan.DownloadBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
 	)
+}
+
+func selectedDistribution(combo uintptr) (inference.Distribution, error) {
+	index, _, _ := procSendMessageW.Call(combo, cbGetCurSel, 0, 0)
+	switch int32(index) {
+	case 0:
+		return inference.DistributionCPU, nil
+	case 1:
+		return inference.DistributionNVIDIAGPU, nil
+	default:
+		return "", errors.New("select CPU or NVIDIA GPU inference before continuing")
+	}
 }
 
 // setupCompleteStatus confirms the action that succeeded before Admin opens.

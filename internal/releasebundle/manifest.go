@@ -38,19 +38,20 @@ type Envelope struct {
 // Manifest is the compatibility and immutable-component contract for one
 // release. URLs locate bytes; sizes and SHA-256 digests decide their identity.
 type Manifest struct {
-	SchemaVersion        int        `json:"schema_version"`
-	Version              string     `json:"version"`
-	Commit               string     `json:"commit"`
-	PublishedAt          string     `json:"published_at"`
-	MinimumHostVersion   string     `json:"minimum_host_version"`
-	ProjectSchemaFrom    int        `json:"project_schema_from"`
-	ProjectSchemaTo      int        `json:"project_schema_to"`
-	Artifacts            []Artifact `json:"artifacts"`
-	CodeImage            Image      `json:"code_image"`
-	InferenceImage       Image      `json:"inference_image"`
-	EmbeddingModel       Model      `json:"embedding_model"`
-	MigrationNotesURL    string     `json:"migration_notes_url"`
-	RollbackInstructions string     `json:"rollback_instructions"`
+	SchemaVersion           int        `json:"schema_version"`
+	Version                 string     `json:"version"`
+	Commit                  string     `json:"commit"`
+	PublishedAt             string     `json:"published_at"`
+	MinimumHostVersion      string     `json:"minimum_host_version"`
+	ProjectSchemaFrom       int        `json:"project_schema_from"`
+	ProjectSchemaTo         int        `json:"project_schema_to"`
+	Artifacts               []Artifact `json:"artifacts"`
+	CodeImage               Image      `json:"code_image"`
+	InferenceImage          Image      `json:"inference_image"`
+	NVIDIAGPUInferenceImage Image      `json:"nvidia_gpu_inference_image,omitempty"`
+	EmbeddingModel          Model      `json:"embedding_model"`
+	MigrationNotesURL       string     `json:"migration_notes_url"`
+	RollbackInstructions    string     `json:"rollback_instructions"`
 }
 
 // Artifact is one host launcher, host core, archive, checksum, or SBOM.
@@ -66,11 +67,14 @@ type Artifact struct {
 
 // Image identifies an OCI manifest by digest; Reference must include @sha256.
 type Image struct {
-	Name            string   `json:"name"`
-	Reference       string   `json:"reference"`
-	Digest          string   `json:"digest"`
-	CompressedBytes int64    `json:"compressed_bytes"`
-	Platforms       []string `json:"platforms"`
+	Name            string `json:"name"`
+	Reference       string `json:"reference"`
+	Digest          string `json:"digest"`
+	CompressedBytes int64  `json:"compressed_bytes"`
+	// UnpackedBytes is required for the large CUDA distribution so setup can
+	// reserve installation storage before asking Podman to unpack its layers.
+	UnpackedBytes int64    `json:"unpacked_bytes,omitempty"`
+	Platforms     []string `json:"platforms"`
 }
 
 // Model repeats the immutable model contract so bootstrap/update can reject a
@@ -166,6 +170,21 @@ func (m Manifest) Validate() error {
 				return errors.New("Windows release omits a one-click installer component")
 			}
 		}
+		// Selectable GPU inference begins with 0.1.12 while schema 2 remains
+		// readable by 0.1.11. The version gate accepts historical signed schema-2
+		// manifests but makes omission from every new Windows release terminal.
+		if VersionAtLeast(m.Version, "0.1.12") {
+			if !seen["nvidia-container-toolkit-base\x00linux\x00amd64"] {
+				return errors.New("Windows release omits the NVIDIA CDI package")
+			}
+			if err := validateImage(m.NVIDIAGPUInferenceImage); err != nil {
+				return fmt.Errorf("NVIDIA GPU inference image: %w", err)
+			}
+			if m.NVIDIAGPUInferenceImage.UnpackedBytes <= 0 ||
+				!hasPlatform(m.NVIDIAGPUInferenceImage.Platforms, "linux/amd64") {
+				return errors.New("NVIDIA GPU inference image omits linux/amd64 storage evidence")
+			}
+		}
 	}
 	if err := validateImage(m.CodeImage); err != nil {
 		return fmt.Errorf("code image: %w", err)
@@ -202,6 +221,15 @@ func validateImage(image Image) error {
 		return errors.New("immutable OCI identity is invalid")
 	}
 	return nil
+}
+
+func hasPlatform(platforms []string, wanted string) bool {
+	for _, platform := range platforms {
+		if platform == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func validSHA256(value string) bool {

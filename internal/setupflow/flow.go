@@ -11,7 +11,9 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/runtimeinstall"
 	"github.com/lev-goryachev/lctk/internal/updateflow"
@@ -35,19 +37,22 @@ const (
 
 // Plan is the complete read-only setup decision shown by setup.exe.
 type Plan struct {
-	Action                    Action              `json:"action"`
-	CurrentVersion            string              `json:"current_version,omitempty"`
-	Version                   string              `json:"version"`
-	Host                      windowssetup.Status `json:"host"`
-	Runtime                   runtimeinstall.Plan `json:"runtime"`
-	Core                      installation.Plan   `json:"core"`
-	Desktop                   desktopinstall.Plan `json:"desktop"`
-	Upgrade                   updateflow.Plan     `json:"upgrade,omitempty"`
-	DownloadBytes             int64               `json:"download_bytes"`
-	RuntimeDataRequiredBytes  int64               `json:"runtime_data_required_bytes"`
-	RuntimeDataAvailableBytes uint64              `json:"runtime_data_available_bytes"`
-	Ready                     bool                `json:"ready"`
-	Writes                    bool                `json:"writes"`
+	Action                    Action                 `json:"action"`
+	CurrentVersion            string                 `json:"current_version,omitempty"`
+	Version                   string                 `json:"version"`
+	Host                      windowssetup.Status    `json:"host"`
+	Runtime                   runtimeinstall.Plan    `json:"runtime"`
+	Core                      installation.Plan      `json:"core"`
+	Desktop                   desktopinstall.Plan    `json:"desktop"`
+	InferenceDistribution     inference.Distribution `json:"inference_distribution"`
+	GPU                       *nvidiainstall.GPU     `json:"gpu,omitempty"`
+	NVIDIA                    nvidiainstall.Plan     `json:"nvidia,omitempty"`
+	Upgrade                   updateflow.Plan        `json:"upgrade,omitempty"`
+	DownloadBytes             int64                  `json:"download_bytes"`
+	RuntimeDataRequiredBytes  int64                  `json:"runtime_data_required_bytes"`
+	RuntimeDataAvailableBytes uint64                 `json:"runtime_data_available_bytes"`
+	Ready                     bool                   `json:"ready"`
+	Writes                    bool                   `json:"writes"`
 }
 
 // Progress is one durable user-facing setup phase.
@@ -68,6 +73,11 @@ type desktopInstaller interface {
 	Install(context.Context, releasebundle.Manifest) (string, error)
 }
 
+type nvidiaInstaller interface {
+	Inspect(context.Context, releasebundle.Manifest) (nvidiainstall.Plan, error)
+	Ensure(context.Context, releasebundle.Manifest) (nvidiainstall.Status, error)
+}
+
 // updateCoordinator is the same project and host transaction used by the CLI.
 // Setup supplies an already signature-verified manifest.
 type updateCoordinator interface {
@@ -84,7 +94,10 @@ type Manager struct {
 	Runtime        runtimeInstaller
 	Core           coreInstaller
 	Desktop        desktopInstaller
+	NVIDIA         nvidiaInstaller
+	Distribution   inference.Distribution
 	ProbeHost      func(context.Context) (windowssetup.Status, error)
+	ProbeNVIDIA    func(context.Context) (nvidiainstall.GPU, error)
 	EnableWSL      func(context.Context) (bool, error)
 	RegisterResume func() error
 	Run            func(context.Context, string, ...string) ([]byte, error)
@@ -96,15 +109,20 @@ type Manager struct {
 
 // NewManager returns the complete production setup transaction.
 func NewManager(home, manifestSource string) *Manager {
-	return &Manager{
+	manager := &Manager{
 		Home: home, ManifestSource: manifestSource,
 		Runtime: runtimeinstall.NewManager(home), Core: installation.NewManager(home), Desktop: desktopinstall.NewManager(home),
+		NVIDIA: nvidiainstall.NewManager(), Distribution: inference.DistributionCPU,
 		ProbeHost: windowssetup.Probe, EnableWSL: windowssetup.EnableWSL, RegisterResume: windowssetup.RegisterResume,
-		Run: run, StopDaemon: daemonstate.Stop, StartDaemon: daemonstate.Start,
-		NewUpdate: func(currentVersion string) updateCoordinator {
-			return updateflow.NewManager(home, currentVersion, manifestSource)
-		},
+		ProbeNVIDIA: nvidiainstall.ProbeHost,
+		Run:         run, StopDaemon: daemonstate.Stop, StartDaemon: daemonstate.Start,
 	}
+	manager.NewUpdate = func(currentVersion string) updateCoordinator {
+		update := updateflow.NewManager(home, currentVersion, manifestSource)
+		update.Distribution = manager.Distribution
+		return update
+	}
+	return manager
 }
 
 // DecideAction compares strict numeric product versions. Re-running the exact
@@ -127,6 +145,9 @@ func DecideAction(currentVersion, targetVersion string) (Action, error) {
 
 // Inspect completes every non-mutating prerequisite and component decision.
 func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) (Plan, error) {
+	if !m.Distribution.Valid() {
+		return Plan{}, fmt.Errorf("setup selected unsupported inference distribution %q", m.Distribution)
+	}
 	host, err := m.ProbeHost(ctx)
 	if err != nil {
 		return Plan{Version: manifest.Version, Host: host}, err
@@ -142,6 +163,22 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 	desktopPlan, err := m.Desktop.Inspect(manifest)
 	if err != nil {
 		return Plan{}, err
+	}
+	var gpu *nvidiainstall.GPU
+	var nvidiaPlan nvidiainstall.Plan
+	if m.Distribution == inference.DistributionNVIDIAGPU {
+		if m.ProbeNVIDIA == nil || m.NVIDIA == nil {
+			return Plan{}, errors.New("setup NVIDIA validation is incomplete")
+		}
+		found, err := m.ProbeNVIDIA(ctx)
+		if err != nil {
+			return Plan{Version: manifest.Version, Host: host, InferenceDistribution: m.Distribution}, err
+		}
+		gpu = &found
+		nvidiaPlan, err = m.NVIDIA.Inspect(ctx, manifest)
+		if err != nil {
+			return Plan{}, err
+		}
 	}
 	action, err := DecideAction(corePlan.CurrentVersion, manifest.Version)
 	if err != nil {
@@ -164,7 +201,8 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 	return Plan{
 		Action: action, CurrentVersion: corePlan.CurrentVersion, Version: manifest.Version,
 		Host: host, Runtime: runtimePlan, Core: corePlan, Desktop: desktopPlan, Upgrade: upgradePlan,
-		DownloadBytes: runtimePlan.DownloadBytes + corePlan.DownloadBytes + desktopPlan.DownloadBytes,
+		InferenceDistribution: m.Distribution, GPU: gpu, NVIDIA: nvidiaPlan,
+		DownloadBytes: runtimePlan.DownloadBytes + corePlan.DownloadBytes + desktopPlan.DownloadBytes + nvidiaPlan.DownloadBytes,
 		Ready:         ready,
 	}, nil
 }
@@ -234,6 +272,12 @@ func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) 
 	if err := m.Runtime.Install(ctx, manifest); err != nil {
 		return err
 	}
+	if m.Distribution == inference.DistributionNVIDIAGPU {
+		m.report("nvidia", "Installing and verifying NVIDIA WSL CDI support")
+		if _, err := m.NVIDIA.Ensure(ctx, manifest); err != nil {
+			return err
+		}
+	}
 	if plan.Action != ActionUpgrade {
 		m.report("core", "Installing and verifying the LCTK host core")
 		if _, err := m.Core.Install(ctx, manifest); err != nil {
@@ -247,7 +291,8 @@ func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) 
 	m.report("components", "Installing container images and the embedding model")
 	bootstrapCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	output, err := m.Run(bootstrapCtx, executable, "bootstrap", "--manifest", m.ManifestSource, "--yes", "--json")
+	output, err := m.Run(bootstrapCtx, executable, "bootstrap", "--manifest", m.ManifestSource,
+		"--inference-distribution", string(m.Distribution), "--yes", "--json")
 	if err != nil {
 		return fmt.Errorf("bootstrap signed runtime components: %s: %w", string(output), err)
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 )
 
 type runnerCall struct {
@@ -58,7 +59,7 @@ func TestEnsureReusesThePinnedHealthyContainer(t *testing.T) {
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{args: []string{"image", "inspect", "image@sha256:test", "--format", "{{.Id}}"}, stdout: "sha256:test\n"},
-		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|sha256:test|" + ConfigRevision + "\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: "running|sha256:test|" + ConfigRevision + "|cpu\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
 	status, err := manager.Ensure(context.Background(), time.Second)
@@ -75,7 +76,8 @@ func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *t
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{stdout: "sha256:test\n"},
-		{stdout: "running|sha256:test|" + ConfigRevision + "\n"},
+		{stdout: "running|sha256:test|" + ConfigRevision + "|cpu\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{(index .NetworkSettings.Networks "podman").IPAddress}}`}, stdout: "10.88.0.2\n"},
 		{args: []string{"inspect", ContainerName, "--format", `{{(index .NetworkSettings.Networks "podman").IPAddress}}`}, stdout: "10.88.0.2\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
@@ -96,7 +98,7 @@ func TestStatusUsesTheImmutableImageIDInsteadOfNormalizedReferenceText(t *testin
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{args: []string{"image", "inspect", "registry/image:tag@sha256:test", "--format", "{{.Id}}"}, stdout: "sha256:local-id\n"},
-		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|sha256:local-id|" + ConfigRevision + "\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: "running|sha256:local-id|" + ConfigRevision + "|cpu\n"},
 	}}
 	manager := NewManagerForTest(runner, "registry/image:tag@sha256:test", model, health.URL)
 	status, err := manager.Status(t.Context())
@@ -141,7 +143,10 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{stdout: "sha256:test\n"},
 		{stderr: "No such container", err: errors.New("exit 1")},
-		{stdout: "container-id\n"},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stdout: "candidate-id\n"},
+		{args: []string{"rename", CandidateContainerName, ContainerName}},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
 	runtimeModel, err := containerruntime.HostPath(model)
@@ -152,12 +157,12 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if !status.Ready || len(runner.seen) != 3 {
+	if !status.Ready || len(runner.seen) != 6 {
 		t.Fatalf("status = %+v, calls = %v", status, runner.seen)
 	}
-	run := strings.Join(runner.seen[2], " ")
+	run := strings.Join(runner.seen[4], " ")
 	for _, required := range []string{
-		"run --detach --name " + ContainerName,
+		"run --detach --name " + CandidateContainerName,
 		"source=" + runtimeModel,
 		"target=/models/" + ModelName + ",readonly",
 		"--embedding --pooling mean",
@@ -170,6 +175,98 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 	}
 	if strings.Contains(run, "--publish") {
 		t.Errorf("inference run exposes a WSL port instead of using the authenticated machine tunnel: %s", run)
+	}
+}
+
+func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
+	model := writeTestModel(t)
+	server := healthyServer(t)
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "sha256:gpu\n"},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stdout: "candidate\n"},
+		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{args: []string{"logs", "--tail", "200", CandidateContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"rename", CandidateContainerName, ContainerName}},
+		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{args: []string{"logs", "--tail", "200", ContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+	}}
+	manager := NewManagerForTest(runner, nvidiainstall.Image, model, server.URL)
+	manager.distribution = DistributionNVIDIAGPU
+	status, err := manager.Ensure(t.Context(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Backend != "cuda" || status.GPU == nil || status.OffloadedLayers != "13/13" {
+		t.Fatalf("unexpected GPU status: %+v", status)
+	}
+	run := strings.Join(runner.seen[4], " ")
+	for _, wanted := range []string{
+		"--device " + nvidiainstall.CDIDevice,
+		"--n-gpu-layers 99",
+		"tech.lctk.inference-distribution=nvidia_gpu",
+	} {
+		if !strings.Contains(run, wanted) {
+			t.Errorf("GPU candidate args omit %q: %s", wanted, run)
+		}
+	}
+}
+
+func TestCandidateSwapPreservesProjectAliasAndDeletesRollbackOnlyAfterProof(t *testing.T) {
+	model := writeTestModel(t)
+	server := healthyServer(t)
+	topology := `{"podman":{"Aliases":["0123456789ab"]},"lctk-project-net":{"Aliases":["lctk-inference","abcdef012345"]}}`
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "sha256:new\n"},
+		{stdout: "running|sha256:old|6|cpu\n"},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stdout: "candidate\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{json .NetworkSettings.Networks}}`}, stdout: topology},
+		{args: []string{"rename", ContainerName, RollbackContainerName}},
+		{args: []string{"network", "disconnect", "lctk-project-net", RollbackContainerName}},
+		{args: []string{"rename", CandidateContainerName, ContainerName}},
+		{args: []string{"network", "connect", "--alias", ContainerName, "lctk-project-net", ContainerName}},
+		{args: []string{"rm", "--force", RollbackContainerName}},
+	}}
+	manager := NewManagerForTest(runner, "image@sha256:new", model, server.URL)
+	status, err := manager.Ensure(t.Context(), time.Second)
+	if err != nil || !status.Ready {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("unconsumed runtime calls: %+v", runner.calls)
+	}
+}
+
+func TestCandidateSwapFailureRestoresOldNameAndAlias(t *testing.T) {
+	model := writeTestModel(t)
+	server := healthyServer(t)
+	topology := `{"podman":{"Aliases":["0123456789ab"]},"lctk-project-net":{"Aliases":["lctk-inference","abcdef012345"]}}`
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "sha256:new\n"},
+		{stdout: "running|sha256:old|6|cpu\n"},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stderr: "No such container", err: errors.New("exit 1")},
+		{stdout: "candidate\n"},
+		{stdout: topology},
+		{},
+		{},
+		{},
+		{stderr: "forced network error", err: errors.New("exit 125")},
+		{args: []string{"rm", "--force", ContainerName}},
+		{args: []string{"network", "connect", "--alias", ContainerName, "lctk-project-net", RollbackContainerName}},
+		{args: []string{"rename", RollbackContainerName, ContainerName}},
+	}}
+	manager := NewManagerForTest(runner, "image@sha256:new", model, server.URL)
+	_, err := manager.Ensure(t.Context(), time.Second)
+	if !errors.Is(err, ErrSwapFailed) {
+		t.Fatalf("error=%v want ErrSwapFailed", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("rollback omitted calls: %+v", runner.calls)
 	}
 }
 
@@ -209,10 +306,18 @@ func writeTestModel(t *testing.T) string {
 func healthyServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("health path = %q", r.URL.Path)
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/embeddings":
+			vector := make([]float64, Dimensions)
+			if err := json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"embedding": vector}}}); err != nil {
+				t.Errorf("encode self-test response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected inference path = %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 	return server

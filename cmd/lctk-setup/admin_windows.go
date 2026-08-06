@@ -746,8 +746,17 @@ func (window *nativeAdminWindow) render() {
 		runtimeText += ": " + snapshot.Overview.Runtime.Detail
 	}
 	header := status
+	inferenceText := "inference unavailable"
+	if snapshot.Overview.Inference.Ready {
+		inferenceText = "inference " + snapshot.Overview.Inference.Backend
+		if snapshot.Overview.Inference.GPU != nil {
+			inferenceText += " " + snapshot.Overview.Inference.GPU.Name
+		}
+	} else if snapshot.Overview.Inference.Detail != "" {
+		inferenceText += ": " + snapshot.Overview.Inference.Detail
+	}
 	if snapshot.Overview.Version != "" {
-		header = fmt.Sprintf("LCTK %s | %s | %s", snapshot.Overview.Version, runtimeText, status)
+		header = fmt.Sprintf("LCTK %s | %s | %s | %s", snapshot.Overview.Version, runtimeText, inferenceText, status)
 	}
 	if failure != "" {
 		header += "  Error: " + failure

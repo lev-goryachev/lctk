@@ -17,6 +17,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
+	"github.com/lev-goryachev/lctk/internal/updateflow"
 )
 
 type updateInstallerStub struct {
@@ -174,6 +175,7 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 	oldStack := newUpdateStack
 	oldInstaller := newUpdateInstaller
 	oldRegistry := loadUpdateRegistry
+	oldInference := newUpdateInference
 	buildinfo.Version = "1.0.0"
 	newUpdateVerifier = func() (releasebundle.Verifier, error) { return releasebundle.Verifier{}, nil }
 	loadUpdateManifest = func(context.Context, string, releasebundle.Verifier) (releasebundle.Manifest, error) {
@@ -187,6 +189,8 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 	}
 	newUpdateInstaller = func(string) updateInstaller { return installer }
 	loadUpdateRegistry = func() (*projectregistry.Registry, error) { return registry, nil }
+	shared := &bootstrapInferenceStub{image: true, model: true}
+	newUpdateInference = func(inference.Distribution) (updateflow.Inference, error) { return shared, nil }
 	t.Setenv("LCTK_HOME", t.TempDir())
 	t.Cleanup(func() {
 		buildinfo.Version = oldVersion
@@ -195,6 +199,7 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 		newUpdateStack = oldStack
 		newUpdateInstaller = oldInstaller
 		loadUpdateRegistry = oldRegistry
+		newUpdateInference = oldInference
 	})
 }
 

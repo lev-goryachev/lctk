@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/inference"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 )
 
@@ -39,6 +40,8 @@ func main() {
 	codeImage := flag.String("code-image", "", "immutable code-intel image reference")
 	codeBytes := flag.Int64("code-image-bytes", 0, "compressed code-intel bytes")
 	inferenceBytes := flag.Int64("inference-image-bytes", 0, "compressed inference image bytes")
+	nvidiaInferenceBytes := flag.Int64("nvidia-inference-image-bytes", 0, "compressed NVIDIA inference image bytes")
+	nvidiaInferenceUnpackedBytes := flag.Int64("nvidia-inference-image-unpacked-bytes", 0, "unpacked NVIDIA inference layer bytes")
 	keyID := flag.String("key-id", "", "release signing key identifier")
 	output := flag.String("output", "", "signed envelope output path")
 	printPublic := flag.Bool("print-public-key", false, "print the release public key and exit")
@@ -61,6 +64,10 @@ func main() {
 	}
 	if _, err := time.Parse(time.RFC3339, *published); err != nil {
 		fatal(fmt.Errorf("published-at: %w", err))
+	}
+	if *nvidiaInferenceBytes != nvidiainstall.ImageCompressedBytes ||
+		*nvidiaInferenceUnpackedBytes != nvidiainstall.ImageUnpackedBytes {
+		fatal(errors.New("NVIDIA inference compressed and unpacked sizes must match the pinned CUDA image"))
 	}
 	parsedArtifacts, err := loadArtifacts(artifacts, strings.TrimRight(*baseURL, "/"))
 	if err != nil {
@@ -87,6 +94,7 @@ func main() {
 				CompressedBytes: *codeBytes, Platforms: []string{"linux/amd64"},
 			}
 		}
+		manifest.NVIDIAGPUInferenceImage = nvidiaImage()
 	} else {
 		if *codeImage == "" || *codeBytes <= 0 || *inferenceBytes <= 0 {
 			fatal(errors.New("code and inference image sizes are required without --template-envelope"))
@@ -116,6 +124,7 @@ func main() {
 				Name: "embedding-inference", Reference: inference.Image, Digest: inferenceDigest,
 				CompressedBytes: *inferenceBytes, Platforms: []string{"linux/amd64", "linux/arm64"},
 			},
+			NVIDIAGPUInferenceImage: nvidiaImage(),
 			EmbeddingModel: releasebundle.Model{
 				Name: inference.ModelName, URL: inference.ModelURL, Bytes: inference.ModelBytes,
 				SHA256: inference.ModelSHA256, License: "Apache-2.0",
@@ -143,6 +152,17 @@ func main() {
 	encoded = append(encoded, '\n')
 	if err := os.WriteFile(*output, encoded, 0o600); err != nil {
 		fatal(err)
+	}
+}
+
+// nvidiaImage centralizes the immutable CUDA identity so official and local
+// manifests cannot diverge from the package that validates and runs it.
+func nvidiaImage() releasebundle.Image {
+	return releasebundle.Image{
+		Name: "embedding-inference-nvidia-gpu", Reference: nvidiainstall.Image,
+		Digest: nvidiainstall.ImageDigest, CompressedBytes: nvidiainstall.ImageCompressedBytes,
+		UnpackedBytes: nvidiainstall.ImageUnpackedBytes,
+		Platforms:     []string{"linux/amd64", "linux/arm64"},
 	}
 }
 

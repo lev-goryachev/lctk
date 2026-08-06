@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/buildinfo"
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
@@ -41,6 +43,9 @@ var (
 		return installation.NewManager(home)
 	}
 	loadUpdateRegistry = projectregistry.Load
+	newUpdateInference = func(distribution inference.Distribution) (updateflow.Inference, error) {
+		return inference.NewManagerForDistribution(containerruntime.Runner{}, distribution)
+	}
 )
 
 // runUpdate presents the CLI's plan/apply contract while delegating every
@@ -144,12 +149,12 @@ func runUpdateRollback(ctx context.Context, args []string, stdout io.Writer) err
 // updateManager binds command-level injectable factories to the shared
 // coordinator. Production and setup use the same transaction implementation.
 func updateManager(home, currentVersion, manifestSource string) *updateflow.Manager {
-	return &updateflow.Manager{
-		Home: home, CurrentVersion: currentVersion, ManifestSource: manifestSource,
-		Installer: newUpdateInstaller(home), LoadRegistry: loadUpdateRegistry,
-		NewStack: newUpdateStack, ProjectSchema: updateflow.CurrentProjectSchema,
-		CandidateWait: updateflow.DefaultStartWait,
-	}
+	manager := updateflow.NewManager(home, currentVersion, manifestSource)
+	manager.Installer = newUpdateInstaller(home)
+	manager.LoadRegistry = loadUpdateRegistry
+	manager.NewStack = newUpdateStack
+	manager.NewInference = newUpdateInference
+	return manager
 }
 
 // rollbackRegisteredProjects preserves the focused legacy unit-test entry point

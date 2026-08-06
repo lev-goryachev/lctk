@@ -16,8 +16,10 @@ import (
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/daemon"
 	"github.com/lev-goryachev/lctk/internal/diskspace"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/setupflow"
 	"github.com/lev-goryachev/lctk/internal/uninstall"
@@ -39,6 +41,7 @@ type setupRequest struct {
 	CurrentVersion string
 	InstallLocked  bool
 	RuntimeLocked  bool
+	Distribution   inference.Distribution
 }
 
 func main() {
@@ -127,10 +130,15 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	selection, err := inference.LoadSelection()
+	if err != nil {
+		return err
+	}
 	return runSetupWindow(setupRequest{
 		Context: ctx, Manifest: manifest, ManifestSource: *manifestSource,
 		Host: host, Locations: locations, Action: action, CurrentVersion: currentVersion,
 		InstallLocked: installLocked, RuntimeLocked: runtimeLocked,
+		Distribution: selection.Distribution,
 	})
 }
 
@@ -166,6 +174,7 @@ func inspectSelection(ctx context.Context, request setupRequest, locations lctkh
 		return nil, setupflow.Plan{}, err
 	}
 	manager := setupflow.NewManager(locations.InstallDir, request.ManifestSource)
+	manager.Distribution = request.Distribution
 	plan, err := manager.Inspect(ctx, request.Manifest)
 	if err != nil {
 		return nil, setupflow.Plan{}, err
@@ -179,8 +188,12 @@ func inspectSelection(ctx context.Context, request setupRequest, locations lctkh
 	}
 	plan.RuntimeDataAvailableBytes = available
 	if !request.RuntimeLocked {
-		plan.RuntimeDataRequiredBytes = freshRuntimeDataMinimum
-		plan.Ready = plan.Ready && available >= freshRuntimeDataMinimum
+		minimum := int64(freshRuntimeDataMinimum)
+		if request.Distribution == inference.DistributionNVIDIAGPU {
+			minimum += nvidiainstall.ImageCompressedBytes + nvidiainstall.ImageUnpackedBytes + nvidiainstall.ToolkitBytes
+		}
+		plan.RuntimeDataRequiredBytes = minimum
+		plan.Ready = plan.Ready && available >= uint64(minimum)
 	}
 	return manager, plan, nil
 }

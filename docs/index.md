@@ -17,6 +17,7 @@ Significant architecture decisions are recorded in ADRs. Changing an accepted de
 | Document | Purpose |
 |---|---|
 | [`product.md`](product.md) | Product goals, users, capabilities, and boundaries |
+| [`brand.md`](brand.md) | Accepted logo meaning, colors, variants, spacing, and distribution assets |
 | [`architecture.md`](architecture.md) | Control plane, project stacks, MCP routing, and component boundaries |
 | [`project-lifecycle.md`](project-lifecycle.md) | Add/start/stop/restart/remove operations and project states |
 | [`indexing.md`](indexing.md) | Watcher, incremental indexing, freshness, and persistence |

@@ -37,6 +37,7 @@ var payloadNames = map[string]bool{
 	"lctk.exe":              true,
 	"lctk-setup.exe":        true,
 	"lctk-code-intel.tar":   true,
+	"nvidia-container-toolkit-base-1.19.1-1.x86_64.rpm": true,
 }
 
 func main() {

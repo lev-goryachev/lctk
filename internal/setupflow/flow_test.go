@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/runtimeinstall"
@@ -118,7 +119,8 @@ func TestInstallAppliesTheAcceptedDependencyOrder(t *testing.T) {
 	home := t.TempDir()
 	var calls []string
 	manager := &Manager{
-		Home: home, ManifestSource: "https://example/manifest",
+		Distribution: inference.DistributionCPU,
+		Home:         home, ManifestSource: "https://example/manifest",
 		Runtime: runtimeStub{&calls}, Core: coreStub{home, &calls}, Desktop: desktopStub{&calls},
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
@@ -176,7 +178,8 @@ func TestUpgradeUsesTheSharedTransactionAndRestartsTheDaemon(t *testing.T) {
 		Host: installation.Plan{CurrentVersion: "1.0.0", TargetVersion: "1.1.0", Ready: true},
 	}}
 	manager := &Manager{
-		Home: home, ManifestSource: "https://example/manifest",
+		Distribution: inference.DistributionCPU,
+		Home:         home, ManifestSource: "https://example/manifest",
 		Runtime: runtimeStub{&calls}, Core: upgradeCoreStub{}, Desktop: desktopStub{&calls},
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
@@ -206,7 +209,8 @@ func TestUpgradeRollsBackAndRestartsThePreviousDaemonAfterALaterFailure(t *testi
 		Host: installation.Plan{CurrentVersion: "1.0.0", TargetVersion: "1.1.0", Ready: true},
 	}}
 	manager := &Manager{
-		Home: home, ManifestSource: "https://example/manifest",
+		Distribution: inference.DistributionCPU,
+		Home:         home, ManifestSource: "https://example/manifest",
 		Runtime: runtimeStub{&calls}, Core: upgradeCoreStub{}, Desktop: failingDesktopStub{&calls},
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
@@ -232,7 +236,8 @@ func TestUpgradeRollsBackAndRestartsThePreviousDaemonAfterALaterFailure(t *testi
 func TestInstallStopsForARequiredReboot(t *testing.T) {
 	var enabled, resumed bool
 	manager := &Manager{
-		Runtime: runtimeStub{new([]string)}, Core: coreStub{t.TempDir(), new([]string)}, Desktop: desktopStub{new([]string)},
+		Distribution: inference.DistributionCPU,
+		Runtime:      runtimeStub{new([]string)}, Core: coreStub{t.TempDir(), new([]string)}, Desktop: desktopStub{new([]string)},
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, RequiresEnablement: true}, nil
 		},

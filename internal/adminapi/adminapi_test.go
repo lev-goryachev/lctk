@@ -16,6 +16,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/projectauth"
@@ -101,6 +102,9 @@ func newFixture(t *testing.T) *fixture {
 		Settings:       func() (hostsettings.Settings, error) { return hostsettings.Defaults, nil },
 		Probe: func(context.Context) (runtimeapi.Status, error) {
 			return runtimeapi.Status{Available: true, Provider: "podman", Version: "5.8.2", OSType: "linux"}, nil
+		},
+		Inference: func(context.Context) (inference.Status, error) {
+			return inference.Status{Ready: true, Distribution: inference.DistributionCPU, Backend: "cpu"}, nil
 		},
 		Logs: func() []logring.Record {
 			return []logring.Record{{At: testNow, Level: "INFO", Message: "watching project"}}
@@ -434,6 +438,10 @@ func TestTheOverviewCarriesTheRuntimeDiagnostic(t *testing.T) {
 	runtime, _ := body["runtime"].(map[string]any)
 	if runtime["available"] != true || runtime["provider"] != "podman" || runtime["version"] != "5.8.2" {
 		t.Fatalf("runtime = %v, want the probe's answer", runtime)
+	}
+	inferenceView, _ := body["inference"].(map[string]any)
+	if inferenceView["ready"] != true || inferenceView["distribution"] != "cpu" || inferenceView["backend"] != "cpu" {
+		t.Fatalf("inference = %v, want measured CPU backend", inferenceView)
 	}
 	if body["version"] == "" {
 		t.Error("the overview carries no version")

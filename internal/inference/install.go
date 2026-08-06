@@ -130,6 +130,10 @@ func (m *Manager) InstallModel(ctx context.Context, client *http.Client) error {
 // SelfTest proves the loaded model answers the actual OpenAI-compatible client
 // path and returns the pinned dimension with finite values.
 func (m *Manager) SelfTest(ctx context.Context) error {
+	return m.selfTestFor(ctx, ContainerName)
+}
+
+func (m *Manager) selfTestFor(ctx context.Context, name string) error {
 	body, err := json.Marshal(map[string]any{
 		"model": ModelAlias, "input": []string{"search_query: locate retry backoff logic"},
 		"encoding_format": "float",
@@ -137,7 +141,7 @@ func (m *Manager) SelfTest(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	address, err := m.serviceAddress(ctx)
+	address, err := m.serviceAddressFor(ctx, name)
 	if err != nil {
 		return fmt.Errorf("resolve embedding self-test endpoint: %w", err)
 	}

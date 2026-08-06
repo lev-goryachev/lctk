@@ -30,6 +30,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/codeintel"
 	"github.com/lev-goryachev/lctk/internal/diskspace"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/logring"
 	"github.com/lev-goryachev/lctk/internal/projectauth"
@@ -55,6 +56,7 @@ type Options struct {
 	Settings          func() (hostsettings.Settings, error)
 	Watch             func(projectID string) (watchsupervisor.View, bool)
 	Probe             func(ctx context.Context) (runtimeapi.Status, error)
+	Inference         func(ctx context.Context) (inference.Status, error)
 	Logs              func() []logring.Record
 	Now               func() time.Time
 	Register          func(path string, profile projectregistry.Profile) (projectregistration.Result, error)
@@ -92,6 +94,15 @@ func New(options Options) *Server {
 	}
 	if options.Probe == nil {
 		options.Probe = runtimeapi.Probe
+	}
+	if options.Inference == nil {
+		options.Inference = func(ctx context.Context) (inference.Status, error) {
+			manager, err := inference.NewRuntimeManager()
+			if err != nil {
+				return inference.Status{}, err
+			}
+			return manager.Status(ctx)
+		}
 	}
 	if options.Logs == nil {
 		options.Logs = func() []logring.Record { return nil }
@@ -248,6 +259,7 @@ type overview struct {
 	// Runtime is the container runtime diagnostic: this is the "doctor" an
 	// operator needs, and it is the first thing that is wrong when anything is.
 	Runtime      runtimeView           `json:"runtime"`
+	Inference    inference.Status      `json:"inference"`
 	Home         string                `json:"home"`
 	Settings     hostsettings.Settings `json:"settings"`
 	ServerTime   string                `json:"server_time"`
@@ -283,6 +295,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		view.Runtime.Detail = err.Error()
 	} else {
 		view.Runtime = runtimeView{Available: true, Provider: status.Provider, Version: status.Version, OSType: status.OSType}
+	}
+	if status, err := s.options.Inference(probeCtx); err != nil {
+		status.Detail = err.Error()
+		view.Inference = status
+	} else {
+		view.Inference = status
 	}
 	writeJSON(w, http.StatusOK, view)
 }

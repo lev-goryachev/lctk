@@ -1,6 +1,6 @@
 param(
-    [string]$Version = "0.1.11",
-    [string]$TemplateVersion = "0.1.1",
+    [string]$Version = "0.1.12",
+    [string]$TemplateVersion = "0.1.11",
     [string]$TemplateKeyID = "lctk-release-v1",
     [string]$TemplatePublicKey = "rSVhZIN82jXEG04WGzc9lAu5bszLjs//cSEO0bmJY8I="
 )
@@ -128,6 +128,17 @@ try {
     $templateURL = "https://github.com/lev-goryachev/lctk/releases/download/v$TemplateVersion/release-manifest.json"
     Invoke-WebRequest -UseBasicParsing -Uri $templateURL -OutFile $template
 
+    # The local candidate carries the same signed, pinned CDI package as an
+    # official release so GPU acceptance has no ambient repository dependency.
+    $nvidiaPackage = Join-Path $package "nvidia-container-toolkit-base-1.19.1-1.x86_64.rpm"
+    Invoke-WebRequest -UseBasicParsing `
+        -Uri "https://nvidia.github.io/libnvidia-container/stable/rpm/x86_64/nvidia-container-toolkit-base-1.19.1-1.x86_64.rpm" `
+        -OutFile $nvidiaPackage
+    if ((Get-Item -LiteralPath $nvidiaPackage).Length -ne 6190068 -or
+        (Get-FileHash -Algorithm SHA256 $nvidiaPackage).Hash.ToLowerInvariant() -ne "b12de77bdffd3df13cea4589a1b04a133b1ffcb250b860f7349420eed37aeb5d") {
+        throw "Pinned NVIDIA Container Toolkit package identity differs."
+    }
+
     $trust = "-s -w -X github.com/lev-goryachev/lctk/internal/buildinfo.Version=$Version -X github.com/lev-goryachev/lctk/internal/buildinfo.Commit=$commit -X github.com/lev-goryachev/lctk/internal/buildinfo.Date=$publishedAt -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedKeyID=lctk-local-rc -X github.com/lev-goryachev/lctk/internal/releasebundle.TrustedPublicKey=$publicKey"
     go build -trimpath -ldflags $trust -o (Join-Path $package "lctk-core.exe") ./cmd/lctk
     go build -trimpath -ldflags "$trust -H=windowsgui" -o (Join-Path $package "lctk-setup.exe") ./cmd/lctk-setup
@@ -143,14 +154,16 @@ try {
         --base-url "http://127.0.0.1:4466" --key-id "lctk-local-rc" `
         --template-envelope $template --template-key-id $TemplateKeyID --template-public-key $TemplatePublicKey `
         --code-image $imageReference --code-image-bytes $imageBytes `
+        --nvidia-inference-image-bytes 2586107421 --nvidia-inference-image-unpacked-bytes 4360073216 `
         --artifact "lctk-core.exe,host-core,windows,amd64,$core" `
         --artifact "lctk.exe,host-launcher,windows,amd64,$package\lctk.exe" `
         --artifact "lctk-setup.exe,installer,windows,amd64,$package\lctk-setup.exe" `
         --artifact "lctk-code-intel.tar,code-image-archive,linux,amd64,$imageArchive" `
+        --artifact "nvidia-container-toolkit-base-1.19.1-1.x86_64.rpm,nvidia-container-toolkit-base,linux,amd64,$nvidiaPackage" `
         --output $manifest
 
     $payload = Join-Path $resolvedArtifactRoot "payload.zip"
-    Compress-Archive -LiteralPath $core,(Join-Path $package "lctk.exe"),(Join-Path $package "lctk-setup.exe"),$imageArchive,$manifest -DestinationPath $payload
+    Compress-Archive -LiteralPath $core,(Join-Path $package "lctk.exe"),(Join-Path $package "lctk-setup.exe"),$imageArchive,$nvidiaPackage,$manifest -DestinationPath $payload
     $outputs = @()
     foreach ($candidate in @(
         @{ Name = "LCTK-Setup-local-RC.exe"; Bootstrap = "bootstrap-setup.exe"; LinkerFlags = "-s -w -H=windowsgui" },

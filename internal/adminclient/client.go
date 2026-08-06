@@ -17,6 +17,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/logring"
 )
 
@@ -33,6 +34,7 @@ type Client struct {
 type Overview struct {
 	Version      string                `json:"version"`
 	Runtime      Runtime               `json:"runtime"`
+	Inference    inference.Status      `json:"inference"`
 	Home         string                `json:"home"`
 	Settings     hostsettings.Settings `json:"settings"`
 	ServerTime   string                `json:"server_time"`
