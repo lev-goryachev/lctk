@@ -142,7 +142,7 @@ Above those, and above the delta-depth limit from [Slice 1.5](#persistent-exact-
 
 Escalation is judged on what actually changed rather than on what was submitted, which is the same decision as the filter above. A branch checked out and immediately checked back would otherwise be a bulk change twice over and force two full rebuilds for no net edit.
 
-An explicit `lctk project reindex --full` is stronger than an automatic exact-index escalation. It recomputes every semantic embedding and graph fact, reports zero reused chunks, and publishes the replacement only after all inference succeeds. The transaction replaces only derived semantic and graph rows; explicit project memory remains intact. Automatic bulk and delta-depth exact rebuilds still reuse unchanged semantic chunks because they are ordinary catch-up, not an operator request for fresh inference evidence.
+An explicit `lctk project reindex --full` is stronger than an automatic exact-index escalation. It recomputes every semantic embedding and graph fact, reports zero reused chunks, and publishes the replacement only after all inference succeeds. The transaction replaces only derived semantic and graph rows; explicit project memory remains intact. The CLI bounds this recovery at 45 minutes, which covers the measured 30-minute CPU baseline and matches the native setup transaction budget. Automatic bulk and delta-depth exact rebuilds still reuse unchanged semantic chunks because they are ordinary catch-up, not an operator request for fresh inference evidence.
 
 ## Layered updates
 
