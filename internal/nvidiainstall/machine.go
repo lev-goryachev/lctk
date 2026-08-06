@@ -3,7 +3,9 @@ package nvidiainstall
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"strings"
 
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
 )
@@ -22,7 +24,14 @@ func (machineTransport) RunInput(ctx context.Context, input io.Reader, args ...s
 }
 
 func runMachine(ctx context.Context, input io.Reader, args ...string) (string, string, error) {
-	selected := append([]string{"ssh", containerruntime.MachineName}, args...)
+	remote, err := remoteCommand(args)
+	if err != nil {
+		return "", "", err
+	}
+	// Podman 5.8.2 assembles COMMAND [ARG ...] into one remote shell command.
+	// Supply one fully POSIX-quoted argument so spaces, newlines, semicolons,
+	// and embedded quotes cannot change the fixed argv boundaries.
+	selected := []string{"ssh", containerruntime.MachineName, remote}
 	command, err := containerruntime.MachineCommand(ctx, selected...)
 	if err != nil {
 		return "", "", err
@@ -33,4 +42,17 @@ func runMachine(ctx context.Context, input io.Reader, args ...string) (string, s
 	command.Stderr = &stderr
 	err = command.Run()
 	return stdout.String(), stderr.String(), err
+}
+
+func remoteCommand(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.New("NVIDIA machine command is empty")
+	}
+	quoted := make([]string, len(args))
+	for index, arg := range args {
+		// A single quote inside a POSIX single-quoted word is represented by
+		// closing the word, emitting one quote, and opening it again.
+		quoted[index] = "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+	}
+	return strings.Join(quoted, " "), nil
 }
