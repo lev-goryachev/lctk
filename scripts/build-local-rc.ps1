@@ -48,7 +48,7 @@ try {
     # Windows binaries. The signed archive hash authenticates transport while
     # the signed OCI manifest digest authenticates the runnable image.
     $locations = Get-ItemProperty -LiteralPath "HKCU:\Software\LCTK" -ErrorAction Stop
-    if (-not [IO.Path]::IsPathFullyQualified($locations.RuntimeDataDir) -or -not [IO.Path]::IsPathFullyQualified($locations.InstallDir)) {
+    if (-not [IO.Path]::IsPathRooted($locations.RuntimeDataDir) -or -not [IO.Path]::IsPathRooted($locations.InstallDir)) {
         throw "The installed LCTK locations are incomplete."
     }
     $podman = Join-Path $locations.InstallDir "runtime\podman\5.8.2\bin\podman.exe"
