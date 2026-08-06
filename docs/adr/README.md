@@ -41,5 +41,6 @@ ADRs record significant decisions together with their context, alternatives, and
 | [0026](0026-owner-approved-oauth-for-project-mcp.md) | Owner-approved OAuth for project MCP clients | accepted |
 | [0027](0027-native-setup-in-place-upgrade-and-repair.md) | Native setup in-place upgrade and repair | accepted |
 | [0028](0028-authenticated-local-code-image-artifacts.md) | Authenticated local code-image artifacts | accepted |
+| [0029](0029-selectable-cpu-and-nvidia-gpu-inference.md) | Selectable CPU and NVIDIA GPU inference distributions | accepted |
 
 Create a new ADR by copying [`template.md`](template.md). A number is not reused even if the ADR is later rejected.
