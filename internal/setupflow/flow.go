@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
 	"github.com/lev-goryachev/lctk/internal/inference"
@@ -51,6 +52,10 @@ type Plan struct {
 	DownloadBytes             int64                  `json:"download_bytes"`
 	RuntimeDataRequiredBytes  int64                  `json:"runtime_data_required_bytes"`
 	RuntimeDataAvailableBytes uint64                 `json:"runtime_data_available_bytes"`
+	InferenceImageInstalled   bool                   `json:"inference_image_installed"`
+	InferenceModelInstalled   bool                   `json:"inference_model_installed"`
+	InferenceDownloadBytes    int64                  `json:"inference_download_bytes"`
+	InferenceRuntimeBytes     int64                  `json:"inference_runtime_required_bytes"`
 	Ready                     bool                   `json:"ready"`
 	Writes                    bool                   `json:"writes"`
 }
@@ -89,22 +94,23 @@ type updateCoordinator interface {
 // Manager wires the production installers while keeping the coordinator
 // independently testable.
 type Manager struct {
-	Home           string
-	ManifestSource string
-	Runtime        runtimeInstaller
-	Core           coreInstaller
-	Desktop        desktopInstaller
-	NVIDIA         nvidiaInstaller
-	Distribution   inference.Distribution
-	ProbeHost      func(context.Context) (windowssetup.Status, error)
-	ProbeNVIDIA    func(context.Context) (nvidiainstall.GPU, error)
-	EnableWSL      func(context.Context) (bool, error)
-	RegisterResume func() error
-	Run            func(context.Context, string, ...string) ([]byte, error)
-	NewUpdate      func(string) updateCoordinator
-	StopDaemon     func(string) error
-	StartDaemon    func(string) error
-	Progress       Progress
+	Home             string
+	ManifestSource   string
+	Runtime          runtimeInstaller
+	Core             coreInstaller
+	Desktop          desktopInstaller
+	NVIDIA           nvidiaInstaller
+	Distribution     inference.Distribution
+	ProbeHost        func(context.Context) (windowssetup.Status, error)
+	ProbeNVIDIA      func(context.Context) (nvidiainstall.GPU, error)
+	InspectInference func(context.Context, inference.Distribution) (imageInstalled bool, modelInstalled bool, err error)
+	EnableWSL        func(context.Context) (bool, error)
+	RegisterResume   func() error
+	Run              func(context.Context, string, ...string) ([]byte, error)
+	NewUpdate        func(string) updateCoordinator
+	StopDaemon       func(string) error
+	StartDaemon      func(string) error
+	Progress         Progress
 }
 
 // NewManager returns the complete production setup transaction.
@@ -116,6 +122,13 @@ func NewManager(home, manifestSource string) *Manager {
 		ProbeHost: windowssetup.Probe, EnableWSL: windowssetup.EnableWSL, RegisterResume: windowssetup.RegisterResume,
 		ProbeNVIDIA: nvidiainstall.ProbeHost,
 		Run:         run, StopDaemon: daemonstate.Stop, StartDaemon: daemonstate.Start,
+	}
+	manager.InspectInference = func(ctx context.Context, distribution inference.Distribution) (bool, bool, error) {
+		shared, err := inference.NewManagerForDistribution(containerruntime.Runner{}, distribution)
+		if err != nil {
+			return false, false, err
+		}
+		return shared.ImageAvailable(ctx), shared.ModelAvailable(), nil
 	}
 	manager.NewUpdate = func(currentVersion string) updateCoordinator {
 		update := updateflow.NewManager(home, currentVersion, manifestSource)
@@ -164,6 +177,28 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 	if err != nil {
 		return Plan{}, err
 	}
+	if m.InspectInference == nil {
+		return Plan{}, errors.New("setup inference inspection is incomplete")
+	}
+	imageInstalled, modelInstalled, err := m.InspectInference(ctx, m.Distribution)
+	if err != nil {
+		return Plan{}, err
+	}
+	selectedImage := manifest.InferenceImage
+	if m.Distribution == inference.DistributionNVIDIAGPU {
+		selectedImage = manifest.NVIDIAGPUInferenceImage
+	}
+	inferenceDownloadBytes := int64(0)
+	inferenceRuntimeBytes := int64(0)
+	if !imageInstalled {
+		inferenceDownloadBytes += selectedImage.CompressedBytes
+		inferenceRuntimeBytes = selectedImage.CompressedBytes + selectedImage.UnpackedBytes
+	}
+	modelDownloadBytes := int64(0)
+	if !modelInstalled {
+		modelDownloadBytes = manifest.EmbeddingModel.Bytes
+		inferenceDownloadBytes += modelDownloadBytes
+	}
 	var gpu *nvidiainstall.GPU
 	var nvidiaPlan nvidiainstall.Plan
 	if m.Distribution == inference.DistributionNVIDIAGPU {
@@ -195,6 +230,11 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 		}
 	}
 	ready := host.Supported && !host.RequiresEnablement && runtimePlan.Ready && corePlan.Ready
+	// The model installer retains the verified file only after a temporary
+	// download has completed, so reserve both copies in the installation home.
+	if modelDownloadBytes > 0 && corePlan.AvailableBytes < uint64(corePlan.RequiredBytes+modelDownloadBytes*2) {
+		ready = false
+	}
 	if action == ActionUpgrade {
 		ready = ready && upgradePlan.Ready
 	}
@@ -202,7 +242,9 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 		Action: action, CurrentVersion: corePlan.CurrentVersion, Version: manifest.Version,
 		Host: host, Runtime: runtimePlan, Core: corePlan, Desktop: desktopPlan, Upgrade: upgradePlan,
 		InferenceDistribution: m.Distribution, GPU: gpu, NVIDIA: nvidiaPlan,
-		DownloadBytes: runtimePlan.DownloadBytes + corePlan.DownloadBytes + desktopPlan.DownloadBytes + nvidiaPlan.DownloadBytes,
+		InferenceImageInstalled: imageInstalled, InferenceModelInstalled: modelInstalled,
+		InferenceDownloadBytes: inferenceDownloadBytes, InferenceRuntimeBytes: inferenceRuntimeBytes,
+		DownloadBytes: runtimePlan.DownloadBytes + corePlan.DownloadBytes + desktopPlan.DownloadBytes + nvidiaPlan.DownloadBytes + inferenceDownloadBytes,
 		Ready:         ready,
 	}, nil
 }

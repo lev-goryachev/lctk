@@ -13,6 +13,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
+	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/runtimeinstall"
 	"github.com/lev-goryachev/lctk/internal/updateflow"
@@ -20,6 +21,10 @@ import (
 )
 
 type runtimeStub struct{ calls *[]string }
+
+func inferenceInstalled(context.Context, inference.Distribution) (bool, bool, error) {
+	return true, true, nil
+}
 
 func (s runtimeStub) Inspect(releasebundle.Manifest) (runtimeinstall.Plan, error) {
 	return runtimeinstall.Plan{Ready: true, DownloadBytes: 20}, nil
@@ -59,6 +64,15 @@ type failingDesktopStub struct{ calls *[]string }
 
 func (s failingDesktopStub) Inspect(releasebundle.Manifest) (desktopinstall.Plan, error) {
 	return desktopinstall.Plan{}, nil
+}
+
+type nvidiaStub struct{ downloadBytes int64 }
+
+func (s nvidiaStub) Inspect(context.Context, releasebundle.Manifest) (nvidiainstall.Plan, error) {
+	return nvidiainstall.Plan{DownloadBytes: s.downloadBytes}, nil
+}
+func (nvidiaStub) Ensure(context.Context, releasebundle.Manifest) (nvidiainstall.Status, error) {
+	return nvidiainstall.Status{Ready: true}, nil
 }
 func (s failingDesktopStub) Install(context.Context, releasebundle.Manifest) (string, error) {
 	*s.calls = append(*s.calls, "desktop")
@@ -125,6 +139,7 @@ func TestInstallAppliesTheAcceptedDependencyOrder(t *testing.T) {
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
 		},
+		InspectInference: inferenceInstalled,
 		Run: func(_ context.Context, executable string, args ...string) ([]byte, error) {
 			calls = append(calls, "bootstrap")
 			// ActiveExecutable returns the native release filename because setup is
@@ -147,6 +162,38 @@ func TestInstallAppliesTheAcceptedDependencyOrder(t *testing.T) {
 	}
 	if want := []string{"runtime", "core", "bootstrap", "desktop", "start-daemon"}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want=%v", calls, want)
+	}
+}
+
+func TestInspectIncludesMissingGPUImageModelAndUnpackedRuntimeStorage(t *testing.T) {
+	var calls []string
+	manager := &Manager{
+		Distribution: inference.DistributionNVIDIAGPU,
+		Runtime:      runtimeStub{&calls}, Core: coreStub{t.TempDir(), &calls}, Desktop: desktopStub{&calls},
+		NVIDIA: nvidiaStub{downloadBytes: 7},
+		ProbeHost: func(context.Context) (windowssetup.Status, error) {
+			return windowssetup.Status{Supported: true, WSLReady: true}, nil
+		},
+		ProbeNVIDIA: func(context.Context) (nvidiainstall.GPU, error) {
+			return nvidiainstall.GPU{Name: "NVIDIA test GPU"}, nil
+		},
+		InspectInference: func(context.Context, inference.Distribution) (bool, bool, error) {
+			return false, false, nil
+		},
+	}
+	manifest := releasebundle.Manifest{
+		Version:                 "1.0.0",
+		NVIDIAGPUInferenceImage: releasebundle.Image{CompressedBytes: 2_586_107_421, UnpackedBytes: 4_360_073_216},
+		EmbeddingModel:          releasebundle.Model{Bytes: inference.ModelBytes},
+	}
+	plan, err := manager.Inspect(t.Context(), manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDownload := int64(20 + 10 + 5 + 7 + 2_586_107_421 + inference.ModelBytes)
+	if plan.InferenceImageInstalled || plan.InferenceModelInstalled || plan.InferenceDownloadBytes != 2_586_107_421+inference.ModelBytes ||
+		plan.InferenceRuntimeBytes != 2_586_107_421+4_360_073_216 || plan.DownloadBytes != wantDownload {
+		t.Fatalf("incomplete GPU plan: %+v", plan)
 	}
 }
 
@@ -184,9 +231,10 @@ func TestUpgradeUsesTheSharedTransactionAndRestartsTheDaemon(t *testing.T) {
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
 		},
-		NewUpdate:   func(string) updateCoordinator { return updater },
-		StopDaemon:  func(string) error { calls = append(calls, "stop-daemon"); return nil },
-		StartDaemon: func(string) error { calls = append(calls, "start-daemon"); return nil },
+		InspectInference: inferenceInstalled,
+		NewUpdate:        func(string) updateCoordinator { return updater },
+		StopDaemon:       func(string) error { calls = append(calls, "stop-daemon"); return nil },
+		StartDaemon:      func(string) error { calls = append(calls, "start-daemon"); return nil },
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			calls = append(calls, "bootstrap")
 			return []byte(`{"ready":true}`), nil
@@ -215,9 +263,10 @@ func TestUpgradeRollsBackAndRestartsThePreviousDaemonAfterALaterFailure(t *testi
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, WSLReady: true}, nil
 		},
-		NewUpdate:   func(string) updateCoordinator { return updater },
-		StopDaemon:  func(string) error { calls = append(calls, "stop-daemon"); return nil },
-		StartDaemon: func(string) error { calls = append(calls, "start-daemon"); return nil },
+		InspectInference: inferenceInstalled,
+		NewUpdate:        func(string) updateCoordinator { return updater },
+		StopDaemon:       func(string) error { calls = append(calls, "stop-daemon"); return nil },
+		StartDaemon:      func(string) error { calls = append(calls, "start-daemon"); return nil },
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			calls = append(calls, "bootstrap")
 			return []byte(`{"ready":true}`), nil
@@ -241,8 +290,9 @@ func TestInstallStopsForARequiredReboot(t *testing.T) {
 		ProbeHost: func(context.Context) (windowssetup.Status, error) {
 			return windowssetup.Status{Supported: true, RequiresEnablement: true}, nil
 		},
-		EnableWSL:      func(context.Context) (bool, error) { enabled = true; return true, nil },
-		RegisterResume: func() error { resumed = true; return nil },
+		InspectInference: inferenceInstalled,
+		EnableWSL:        func(context.Context) (bool, error) { enabled = true; return true, nil },
+		RegisterResume:   func() error { resumed = true; return nil },
 	}
 	if err := manager.Install(t.Context(), releasebundle.Manifest{}); !errors.Is(err, ErrRebootRequired) {
 		t.Fatalf("err=%v", err)

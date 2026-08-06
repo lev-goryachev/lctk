@@ -539,8 +539,8 @@ func setupConfirmation(plan setupflow.Plan, locations lctkhome.Locations) string
 		}
 	}
 	return fmt.Sprintf(
-		"%s\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nInference: %s\nDownload: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime\n\nProjects, indexes, memory, settings, and OAuth approvals are preserved.",
-		versionLine, locations.InstallDir, locations.RuntimeDataDir, inferenceLine, diskspace.Human(plan.DownloadBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
+		"%s\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nInference: %s\nDownload: %s\nRuntime-data required: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime\n\nProjects, indexes, memory, settings, and OAuth approvals are preserved.",
+		versionLine, locations.InstallDir, locations.RuntimeDataDir, inferenceLine, diskspace.Human(plan.DownloadBytes), diskspace.Human(plan.RuntimeDataRequiredBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
 	)
 }
 

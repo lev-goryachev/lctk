@@ -19,7 +19,6 @@ import (
 	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
-	"github.com/lev-goryachev/lctk/internal/nvidiainstall"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/setupflow"
 	"github.com/lev-goryachev/lctk/internal/uninstall"
@@ -187,14 +186,12 @@ func inspectSelection(ctx context.Context, request setupRequest, locations lctkh
 		return nil, setupflow.Plan{}, fmt.Errorf("inspect selected runtime-data volume: %w", err)
 	}
 	plan.RuntimeDataAvailableBytes = available
+	minimum := plan.InferenceRuntimeBytes
 	if !request.RuntimeLocked {
-		minimum := int64(freshRuntimeDataMinimum)
-		if request.Distribution == inference.DistributionNVIDIAGPU {
-			minimum += nvidiainstall.ImageCompressedBytes + nvidiainstall.ImageUnpackedBytes + nvidiainstall.ToolkitBytes
-		}
-		plan.RuntimeDataRequiredBytes = minimum
-		plan.Ready = plan.Ready && available >= uint64(minimum)
+		minimum += int64(freshRuntimeDataMinimum)
 	}
+	plan.RuntimeDataRequiredBytes = minimum
+	plan.Ready = plan.Ready && available >= uint64(minimum)
 	return manager, plan, nil
 }
 
