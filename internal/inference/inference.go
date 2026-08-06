@@ -155,8 +155,9 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 	if m.runner == nil {
 		return status, errors.New("embedding inference runner is not configured")
 	}
-	if _, stderr, err := m.runner.Run(ctx, "image", "inspect", m.image, "--format", "{{.Id}}"); err != nil {
-		status.Detail = firstLine(stderr, err)
+	expectedImageID, detail, err := m.imageID(ctx)
+	if err != nil {
+		status.Detail = detail
 		return status, fmt.Errorf("%w: %s", ErrImageMissing, status.Detail)
 	}
 	if err := verifyFile(m.modelPath, m.modelBytes, m.modelSHA); err != nil {
@@ -164,11 +165,15 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 		return status, err
 	}
 
-	format := `{{.State.Status}}|{{.Config.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
+	// Podman normalizes Config.Image and may remove a tag from a digest-pinned
+	// reference. Container .Image and image-inspect .Id are the actual immutable
+	// image identity, so comparing them neither replaces a healthy container nor
+	// accepts a different image that happens to have a similar reference string.
+	format := `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
 	stdout, _, inspectErr := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
 	fields := strings.Split(strings.TrimSpace(stdout), "|")
 	runningCurrent := inspectErr == nil && len(fields) == 3 && fields[0] == "running" &&
-		fields[1] == m.image && fields[2] == ConfigRevision
+		fields[1] == expectedImageID && fields[2] == ConfigRevision
 	if !runningCurrent {
 		if inspectErr == nil || strings.TrimSpace(stdout) != "" {
 			if _, stderr, err := m.runner.Run(ctx, "rm", "--force", ContainerName); err != nil {
@@ -221,18 +226,23 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 // without changing any of them.
 func (m *Manager) Status(ctx context.Context) (Status, error) {
 	status := m.baseStatus()
+	expectedImageID, detail, err := m.imageID(ctx)
+	if err != nil {
+		status.Detail = detail
+		return status, fmt.Errorf("%w: %s", ErrImageMissing, status.Detail)
+	}
 	if err := verifyFile(m.modelPath, m.modelBytes, m.modelSHA); err != nil {
 		status.Detail = err.Error()
 		return status, err
 	}
-	format := `{{.State.Status}}|{{.Config.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
+	format := `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`
 	stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
 	if err != nil {
 		status.Detail = firstLine(stderr, err)
 		return status, fmt.Errorf("inspect embedding inference: %s", status.Detail)
 	}
 	fields := strings.Split(strings.TrimSpace(stdout), "|")
-	if len(fields) != 3 || fields[0] != "running" || fields[1] != m.image || fields[2] != ConfigRevision {
+	if len(fields) != 3 || fields[0] != "running" || fields[1] != expectedImageID || fields[2] != ConfigRevision {
 		status.Detail = "The pinned embedding container is not running."
 		return status, ErrNotReady
 	}
@@ -242,6 +252,21 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	}
 	status.Ready = true
 	return status, nil
+}
+
+// imageID resolves the pinned manifest reference to the local immutable image
+// identity used by Podman container inspection. A missing or empty identity is
+// terminal because lifecycle code cannot safely decide whether to reuse it.
+func (m *Manager) imageID(ctx context.Context) (string, string, error) {
+	stdout, stderr, err := m.runner.Run(ctx, "image", "inspect", m.image, "--format", "{{.Id}}")
+	if err != nil {
+		return "", firstLine(stderr, err), err
+	}
+	id := strings.TrimSpace(stdout)
+	if id == "" {
+		return "", "the pinned embedding image has an empty immutable ID", errors.New("empty embedding image ID")
+	}
+	return id, "", nil
 }
 
 func fileIdentity(path string) (int64, string) {

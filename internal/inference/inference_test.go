@@ -58,7 +58,7 @@ func TestEnsureReusesThePinnedHealthyContainer(t *testing.T) {
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{args: []string{"image", "inspect", "image@sha256:test", "--format", "{{.Id}}"}, stdout: "sha256:test\n"},
-		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Config.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|image@sha256:test|" + ConfigRevision + "\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|sha256:test|" + ConfigRevision + "\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
 	status, err := manager.Ensure(context.Background(), time.Second)
@@ -75,7 +75,7 @@ func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *t
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{stdout: "sha256:test\n"},
-		{stdout: "running|image@sha256:test|" + ConfigRevision + "\n"},
+		{stdout: "running|sha256:test|" + ConfigRevision + "\n"},
 		{args: []string{"inspect", ContainerName, "--format", `{{(index .NetworkSettings.Networks "podman").IPAddress}}`}, stdout: "10.88.0.2\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
@@ -88,6 +88,23 @@ func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *t
 	}
 	if tunnel.remote != "10.88.0.2:8080" {
 		t.Fatalf("machine tunnel remote=%q", tunnel.remote)
+	}
+}
+
+func TestStatusUsesTheImmutableImageIDInsteadOfNormalizedReferenceText(t *testing.T) {
+	model := writeTestModel(t)
+	health := healthyServer(t)
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{args: []string{"image", "inspect", "registry/image:tag@sha256:test", "--format", "{{.Id}}"}, stdout: "sha256:local-id\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|sha256:local-id|" + ConfigRevision + "\n"},
+	}}
+	manager := NewManagerForTest(runner, "registry/image:tag@sha256:test", model, health.URL)
+	status, err := manager.Status(t.Context())
+	if err != nil || !status.Ready {
+		t.Fatalf("Status = %+v, %v; want the matching immutable image ID to be ready", status, err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remaining runtime calls = %d", len(runner.calls))
 	}
 }
 
