@@ -165,7 +165,7 @@ func TestMissingImageIsDistinguishable(t *testing.T) {
 }
 
 func TestInstallImageArchiveVerifiesTransportAndOCIDigest(t *testing.T) {
-	body := []byte("verified OCI archive")
+	body := []byte("verified container image archive")
 	digest := sha256.Sum256(body)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write(body)
@@ -186,7 +186,7 @@ func TestInstallImageArchiveVerifiesTransportAndOCIDigest(t *testing.T) {
 	}
 	t.Setenv("LCTK_HOME", t.TempDir())
 	artifact := releasebundle.Artifact{
-		Name: "lctk-code-intel.oci", Kind: "code-image-archive", OS: "linux", Arch: "amd64",
+		Name: "lctk-code-intel.tar", Kind: "code-image-archive", OS: "linux", Arch: "amd64",
 		URL: server.URL, Bytes: int64(len(body)), SHA256: hex.EncodeToString(digest[:]),
 	}
 	if err := manager.InstallImageArchive(t.Context(), "localhost/lctk/code-intel@sha256:"+expectedOCI, "0.1.6", artifact); err != nil {
@@ -198,7 +198,7 @@ func TestInstallImageArchiveVerifiesTransportAndOCIDigest(t *testing.T) {
 }
 
 func TestInstallImageArchiveRejectsLoadedDigestMismatch(t *testing.T) {
-	body := []byte("verified OCI archive")
+	body := []byte("verified container image archive")
 	digest := sha256.Sum256(body)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write(body)
@@ -209,7 +209,7 @@ func TestInstallImageArchiveRejectsLoadedDigestMismatch(t *testing.T) {
 	manager.imageClient = server.Client()
 	manager.loadImageArchive = func(context.Context, io.Reader) (string, string, error) { return "", "", nil }
 	t.Setenv("LCTK_HOME", t.TempDir())
-	artifact := releasebundle.Artifact{Name: "lctk-code-intel.oci", Kind: "code-image-archive", OS: "linux", Arch: "amd64", URL: server.URL,
+	artifact := releasebundle.Artifact{Name: "lctk-code-intel.tar", Kind: "code-image-archive", OS: "linux", Arch: "amd64", URL: server.URL,
 		Bytes: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
 	err := manager.InstallImageArchive(t.Context(), "localhost/lctk/code-intel@sha256:"+strings.Repeat("a", 64), "0.1.6", artifact)
 	if err == nil || !strings.Contains(err.Error(), "differs from signed") {

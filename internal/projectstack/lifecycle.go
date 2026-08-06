@@ -267,10 +267,10 @@ func (m *Manager) InstallImage(ctx context.Context, immutableReference, version 
 	return nil
 }
 
-// InstallImageArchive downloads the optional signed local-RC OCI artifact,
+// InstallImageArchive downloads the optional signed local-RC image artifact,
 // streams it into the private Podman machine, and verifies the loaded manifest
 // digest before the product version tag can be used. The archive SHA-256 binds
-// transport bytes; the OCI digest independently binds runnable image content.
+// transport bytes; the manifest digest independently binds runnable image content.
 func (m *Manager) InstallImageArchive(ctx context.Context, immutableReference, version string, artifact releasebundle.Artifact) error {
 	if immutableReference == "" || version == "" || artifact.Kind != "code-image-archive" || artifact.OS != "linux" || artifact.Arch != "amd64" {
 		return errors.New("local code-intel image identity is incomplete")

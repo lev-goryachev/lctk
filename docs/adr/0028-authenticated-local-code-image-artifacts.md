@@ -13,9 +13,9 @@ Official releases solve this through a digest-addressed registry image. A local 
 
 ## Decision
 
-When the local RC contains code-intel changes, its builder runs the production Dockerfile through LCTK's explicit private Podman connection, saves the resulting `linux/amd64` image as an OCI archive, and appends that archive to the one-file candidate. The locally signed manifest replaces the template's code-image identity and adds one `code-image-archive/linux/amd64` artifact.
+When the local RC contains code-intel changes, its builder runs the production Dockerfile through LCTK's explicit private Podman connection, saves the resulting `linux/amd64` image as a Docker archive, and appends that archive to the one-file candidate. Docker format is required because it preserves the image healthcheck; the project runtime also supplies the same explicit health policy when it creates a container. The locally signed manifest replaces the template's code-image identity and adds one `code-image-archive/linux/amd64` artifact.
 
-The update coordinator selects the archive only when that exact optional artifact identity is present. It downloads the bytes from the candidate's numeric-loopback package server, verifies the signed byte count and SHA-256, and streams the verified file to `podman load` over stdin. It then inspects the loaded product-version tag and requires its OCI manifest digest to equal the signed `code_image` digest before any project is stopped or started. The temporary archive is stored beneath the installation home and removed after the load attempt.
+The update coordinator selects the archive only when that exact optional artifact identity is present. It downloads the bytes from the candidate's numeric-loopback package server, verifies the signed byte count and SHA-256, and streams the verified file to `podman load` over stdin. It then inspects the loaded product-version tag and requires its image manifest digest to equal the signed `code_image` digest before any project is stopped or started. The temporary archive is stored beneath the installation home and removed after the load attempt.
 
 Official manifests without the optional archive continue to pull the immutable registry reference. The local path does not add a mutable-reference fallback, a manual tag override, or a second update transaction.
 
@@ -40,7 +40,7 @@ Rejected. The remote service resolves input paths in the managed Linux machine, 
 ## Consequences
 
 - A local candidate now contains the exact Windows and Linux components built from one commit.
-- Archive transport and runnable OCI content have independent signed integrity checks.
+- Archive transport and runnable image content have independent signed integrity checks.
 - The one-file local setup grows by the compressed code-intel image size.
 - Official registry-based updates are unchanged.
 - Local RC construction now requires the installed private Podman runtime and a successful production image build.

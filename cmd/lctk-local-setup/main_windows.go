@@ -36,7 +36,7 @@ var payloadNames = map[string]bool{
 	"lctk-core.exe":         true,
 	"lctk.exe":              true,
 	"lctk-setup.exe":        true,
-	"lctk-code-intel.oci":   true,
+	"lctk-code-intel.tar":   true,
 }
 
 func main() {

@@ -61,14 +61,14 @@ try {
         $env:XDG_DATA_HOME = $locations.RuntimeDataDir
         $env:XDG_CONFIG_HOME = Join-Path $locations.InstallDir "runtime\podman\config"
         $imageTag = "localhost/lctk/code-intel:$Version"
-        & $podman --connection lctk-runtime-root build --tag $imageTag images/code-intel
+        & $podman --connection lctk-runtime-root build --format docker --tag $imageTag images/code-intel
         if ($LASTEXITCODE -ne 0) { throw "Building the local code-intel image failed." }
         $imageDigest = (& $podman --connection lctk-runtime-root image inspect $imageTag --format '{{.Digest}}').Trim()
         if ($LASTEXITCODE -ne 0 -or $imageDigest -notmatch '^sha256:[0-9a-f]{64}$') {
             throw "The local code-intel image has no immutable manifest digest."
         }
-        $imageArchive = Join-Path $package "lctk-code-intel.oci"
-        & $podman --connection lctk-runtime-root save --format oci-archive --output $imageArchive $imageTag
+        $imageArchive = Join-Path $package "lctk-code-intel.tar"
+        & $podman --connection lctk-runtime-root save --format docker-archive --output $imageArchive $imageTag
         if ($LASTEXITCODE -ne 0) { throw "Saving the local code-intel image failed." }
     }
     finally {
@@ -99,7 +99,7 @@ try {
         --artifact "lctk-core.exe,host-core,windows,amd64,$core" `
         --artifact "lctk.exe,host-launcher,windows,amd64,$package\lctk.exe" `
         --artifact "lctk-setup.exe,installer,windows,amd64,$package\lctk-setup.exe" `
-        --artifact "lctk-code-intel.oci,code-image-archive,linux,amd64,$imageArchive" `
+        --artifact "lctk-code-intel.tar,code-image-archive,linux,amd64,$imageArchive" `
         --output $manifest
 
     $payload = Join-Path $resolvedArtifactRoot "payload.zip"

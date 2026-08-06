@@ -173,7 +173,7 @@ func (Runner) Run(ctx context.Context, args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
-// Load streams one already verified OCI archive into LCTK's private Podman
+// Load streams one already verified container image archive into LCTK's private Podman
 // connection. Streaming through stdin is required for a remote Podman client:
 // an --input path would be interpreted inside the managed Linux machine rather
 // than on the Windows host that downloaded and authenticated the artifact.
