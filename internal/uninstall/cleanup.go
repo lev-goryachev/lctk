@@ -36,6 +36,17 @@ func cleanupManagedRuntimeResidue(runtimeData, userHome string) error {
 			return fmt.Errorf("remove managed runtime residue %q: %w", path, err)
 		}
 	}
+	containersRoot := filepath.Join(runtimeData, "containers")
+	orphaned, err := onlyKnownPodmanScaffold(containersRoot)
+	if err != nil {
+		return err
+	}
+	if orphaned {
+		if err := os.RemoveAll(containersRoot); err != nil {
+			return fmt.Errorf("remove orphaned managed Podman scaffold %q: %w", containersRoot, err)
+		}
+		return nil
+	}
 	// These directories are all Podman-owned containers. Removing an empty one
 	// is cleanup; a non-empty one belongs to another machine and is preserved.
 	for _, path := range []string{
@@ -51,6 +62,57 @@ func cleanupManagedRuntimeResidue(runtimeData, userHome string) error {
 	}
 	return nil
 }
+
+// onlyKnownPodmanScaffold identifies the exact empty Windows client residue
+// left after the sole LCTK WSL machine is removed. Any unknown path proves the
+// data root is shared and prevents broad deletion.
+func onlyKnownPodmanScaffold(root string) (bool, error) {
+	allowedDirectories := map[string]bool{
+		".": true, "podman": true, "podman/machine": true,
+		"podman/machine/wsl": true, "podman/machine/wsl/cache": true,
+		"podman/machine/wsl/wsldist": true,
+		"podman/machine/hyperv":      true, "podman/machine/hyperv/cache": true,
+		"storage": true, "storage/containers": true,
+	}
+	allowedFiles := map[string]bool{
+		"podman/machine/machine": true, "podman/machine/machine.pub": true,
+		"podman/machine/port-alloc.dat": true, "podman/machine/port-alloc.lck": true,
+	}
+	found := false
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, fs.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		found = true
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if entry.IsDir() {
+			if allowedDirectories[relative] {
+				return nil
+			}
+			return errUnknownScaffold
+		}
+		if allowedFiles[relative] {
+			return nil
+		}
+		return errUnknownScaffold
+	})
+	if errors.Is(err, errUnknownScaffold) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect managed Podman scaffold %q: %w", root, err)
+	}
+	return found, nil
+}
+
+var errUnknownScaffold = errors.New("Podman scaffold contains an unknown path")
 
 func removeDirectoryIfEmpty(path string) error {
 	entries, err := os.ReadDir(path)

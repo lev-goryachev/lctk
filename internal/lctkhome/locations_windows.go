@@ -54,6 +54,9 @@ func clearPlatformLocations() error {
 }
 
 func defaultRuntimeDataDir() (string, error) {
+	if localAppData := os.Getenv("LocalAppData"); localAppData != "" {
+		return filepath.Join(localAppData, "lctk-runtime-data"), nil
+	}
 	profile := os.Getenv("USERPROFILE")
 	if profile == "" {
 		var err error
@@ -62,7 +65,7 @@ func defaultRuntimeDataDir() (string, error) {
 			return "", fmt.Errorf("resolve Podman data home: %w", err)
 		}
 	}
-	// This is Podman 5.8's own Windows default. Saving it explicitly keeps an
-	// existing partial installation attached to the same WSL distribution.
-	return filepath.Join(profile, ".local", "share"), nil
+	// Keep the private Podman data outside its ambient shared default. The user
+	// may still choose another absolute location before the machine exists.
+	return filepath.Join(profile, "AppData", "Local", "lctk-runtime-data"), nil
 }
