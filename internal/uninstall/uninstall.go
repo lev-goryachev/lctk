@@ -25,22 +25,26 @@ type machineRunner interface {
 
 // Manager owns every uninstall side effect behind injectable boundaries.
 type Manager struct {
-	Home        string
-	Registry    func() (*projectregistry.Registry, error)
-	Machine     machineRunner
-	Export      func(context.Context, string, string) error
-	StopDaemon  func(string) error
-	Unregister  func() error
-	RuntimeData func() (string, error)
-	UserHome    func() (string, error)
-	Cleanup     func(string, string) error
-	Remove      func(string) error
+	Home     string
+	Registry func() (*projectregistry.Registry, error)
+	Machine  machineRunner
+	// MachineAbsent verifies the system WSL inventory when a partial removal has
+	// already deleted the private Podman client needed for machine rm.
+	MachineAbsent func(context.Context) (bool, error)
+	Export        func(context.Context, string, string) error
+	StopDaemon    func(string) error
+	Unregister    func() error
+	RuntimeData   func() (string, error)
+	UserHome      func() (string, error)
+	Cleanup       func(string, string) error
+	Remove        func(string) error
 }
 
 // NewManager returns the production uninstaller.
 func NewManager(home string) *Manager {
 	return &Manager{Home: home, Registry: projectregistry.Load, Machine: machineCLI{}, Export: exportVolume,
-		StopDaemon: daemonstate.Stop, Unregister: desktopinstall.Unregister,
+		MachineAbsent: managedDistributionAbsent,
+		StopDaemon:    daemonstate.Stop, Unregister: desktopinstall.Unregister,
 		RuntimeData: lctkhome.RuntimeDataDir, UserHome: os.UserHomeDir,
 		Cleanup: cleanupManagedRuntimeResidue, Remove: scheduleRemoval}
 }
@@ -79,7 +83,19 @@ func (m *Manager) Run(ctx context.Context, preserve bool) (string, error) {
 		}
 	}
 	if _, stderr, err := m.Machine.Run(ctx, "rm", "--force", containerruntime.MachineName); err != nil && !bytes.Contains(bytes.ToLower([]byte(stderr)), []byte("does not exist")) {
-		return backup, fmt.Errorf("remove managed Podman machine: %s: %w", stderr, err)
+		if !errors.Is(err, containerruntime.ErrClientMissing) {
+			return backup, fmt.Errorf("remove managed Podman machine: %s: %w", stderr, err)
+		}
+		if m.MachineAbsent == nil {
+			return backup, fmt.Errorf("verify partially removed managed Podman machine: %w", err)
+		}
+		absent, verifyErr := m.MachineAbsent(ctx)
+		if verifyErr != nil {
+			return backup, verifyErr
+		}
+		if !absent {
+			return backup, errors.New("managed WSL distribution lctk-runtime still exists but its private Podman client is missing")
+		}
 	}
 	runtimeData, err := m.RuntimeData()
 	if err != nil {

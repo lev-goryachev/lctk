@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/projectpath"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
@@ -17,6 +18,33 @@ type machineStub struct{ calls [][]string }
 func (m *machineStub) Run(_ context.Context, args ...string) (string, string, error) {
 	m.calls = append(m.calls, append([]string(nil), args...))
 	return "", "", nil
+}
+
+type failingMachineStub struct{ err error }
+
+func (m failingMachineStub) Run(context.Context, ...string) (string, string, error) {
+	return "", "", m.err
+}
+
+func TestPartialUninstallContinuesOnlyAfterSystemConfirmsTheMachineIsAbsent(t *testing.T) {
+	home := t.TempDir()
+	verified := false
+	manager := &Manager{
+		Home: home, Registry: func() (*projectregistry.Registry, error) { return projectregistry.New(), nil },
+		Machine:       failingMachineStub{err: containerruntime.ErrClientMissing},
+		MachineAbsent: func(context.Context) (bool, error) { verified = true; return true, nil },
+		StopDaemon:    func(string) error { return nil }, Unregister: func() error { return nil },
+		Export:      func(context.Context, string, string) error { return nil },
+		RuntimeData: func() (string, error) { return filepath.Join(home, "runtime-data"), nil },
+		UserHome:    func() (string, error) { return filepath.Join(home, "user"), nil },
+		Cleanup:     func(string, string) error { return nil }, Remove: func(string) error { return nil },
+	}
+	if _, err := manager.Run(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !verified {
+		t.Fatal("system WSL absence verification was skipped")
+	}
 }
 
 func TestCleanupContinuesAfterIndependentUnregisterFailure(t *testing.T) {
