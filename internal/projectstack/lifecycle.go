@@ -153,6 +153,15 @@ func (m *Manager) WithVersion(version string) *Manager {
 	return m
 }
 
+// WithInferenceDistribution binds the backend already selected by an update
+// transaction. Reading inference.json again while switching project versions
+// would let a rollback to a pre-selection host reactivate the owner's newer GPU
+// choice after the coordinator had deliberately staged CPU compatibility.
+func (m *Manager) WithInferenceDistribution(distribution inference.Distribution) *Manager {
+	m.sharedInference, m.inferenceErr = inference.NewManagerForDistribution(m.runner, distribution)
+	return m
+}
+
 func (m *Manager) names(projectID string) (Names, error) {
 	return DeriveNamesForVersion(projectID, m.version)
 }

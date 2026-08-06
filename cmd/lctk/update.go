@@ -38,8 +38,8 @@ var (
 	loadUpdateManifest = func(ctx context.Context, source string, verifier releasebundle.Verifier) (releasebundle.Manifest, error) {
 		return releasebundle.Load(ctx, source, http.DefaultClient, verifier)
 	}
-	newUpdateStack = func(version string) updateStack {
-		return projectstack.NewManager().WithVersion(version)
+	newUpdateStack = func(version string, distribution inference.Distribution) updateStack {
+		return projectstack.NewManager().WithVersion(version).WithInferenceDistribution(distribution)
 	}
 	newUpdateInstaller = func(home string) updateInstaller {
 		return installation.NewManager(home)

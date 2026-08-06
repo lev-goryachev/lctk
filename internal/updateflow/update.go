@@ -96,7 +96,7 @@ type Manager struct {
 	ManifestSource string
 	Installer      Installer
 	LoadRegistry   func() (*projectregistry.Registry, error)
-	NewStack       func(string) Stack
+	NewStack       func(string, inference.Distribution) Stack
 	ProjectSchema  int
 	CandidateWait  time.Duration
 	Distribution   inference.Distribution
@@ -113,7 +113,9 @@ func NewManager(home, currentVersion, manifestSource string) *Manager {
 	return &Manager{
 		Home: home, CurrentVersion: currentVersion, ManifestSource: manifestSource,
 		Installer: installation.NewManager(home), LoadRegistry: projectregistry.Load,
-		NewStack:      func(version string) Stack { return projectstack.NewManager().WithVersion(version) },
+		NewStack: func(version string, distribution inference.Distribution) Stack {
+			return projectstack.NewManager().WithVersion(version).WithInferenceDistribution(distribution)
+		},
 		ProjectSchema: CurrentProjectSchema, CandidateWait: DefaultStartWait,
 		NewInference: func(distribution inference.Distribution) (Inference, error) {
 			return inference.NewManagerForDistribution(containerruntime.Runner{}, distribution)
@@ -137,12 +139,12 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 	if err != nil {
 		return Plan{}, err
 	}
-	currentStack := m.NewStack(m.CurrentVersion)
-	if err := currentStack.RuntimeAvailable(ctx); err != nil {
-		return Plan{}, err
-	}
 	distribution, err := m.resolveDistribution()
 	if err != nil {
+		return Plan{}, err
+	}
+	currentStack := m.NewStack(m.CurrentVersion, distribution)
+	if err := currentStack.RuntimeAvailable(ctx); err != nil {
 		return Plan{}, err
 	}
 	var gpu *nvidiainstall.GPU
@@ -183,12 +185,12 @@ func (m *Manager) Apply(ctx context.Context, manifest releasebundle.Manifest) (P
 	if err != nil {
 		return plan, err
 	}
-	currentStack := m.NewStack(m.CurrentVersion)
+	currentStack := m.NewStack(m.CurrentVersion, plan.InferenceDistribution)
 	_, running, err := InventoryProjects(ctx, currentStack, registry.List())
 	if err != nil {
 		return plan, err
 	}
-	targetStack := m.NewStack(manifest.Version)
+	targetStack := m.NewStack(manifest.Version, plan.InferenceDistribution)
 	restoreInference, err := m.activateInference(ctx, manifest, plan.InferenceDistribution)
 	if err != nil {
 		return plan, err
@@ -226,7 +228,7 @@ func (m *Manager) Rollback(ctx context.Context) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	restoreInference, err := m.activateRollbackInference(ctx, current.PreviousVersion)
+	rollbackDistribution, restoreInference, err := m.activateRollbackInference(ctx, current.PreviousVersion)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -239,8 +241,8 @@ func (m *Manager) Rollback(ctx context.Context) (Plan, error) {
 	if err != nil {
 		return fail(err)
 	}
-	currentStack := m.NewStack(current.ActiveVersion)
-	previousStack := m.NewStack(current.PreviousVersion)
+	currentStack := m.NewStack(current.ActiveVersion, rollbackDistribution)
+	previousStack := m.NewStack(current.PreviousVersion, rollbackDistribution)
 	projects := registry.List()
 	_, running, err := InventoryProjects(ctx, currentStack, projects)
 	if err != nil {
@@ -260,32 +262,32 @@ func (m *Manager) Rollback(ctx context.Context) (Plan, error) {
 // activateRollbackInference gives a pre-0.1.12 host the CPU service it knows
 // how to maintain while retaining the owner's newer selection document inertly.
 // If later rollback work fails, the current selected backend is restored.
-func (m *Manager) activateRollbackInference(ctx context.Context, previousVersion string) (func(context.Context) error, error) {
+func (m *Manager) activateRollbackInference(ctx context.Context, previousVersion string) (inference.Distribution, func(context.Context) error, error) {
 	noRestore := func(context.Context) error { return nil }
-	if releasebundle.VersionAtLeast(previousVersion, "0.1.12") {
-		return noRestore, nil
-	}
 	if m.NewInference == nil || m.LoadSelection == nil {
-		return nil, errors.New("rollback inference coordinator is incomplete")
+		return "", nil, errors.New("rollback inference coordinator is incomplete")
 	}
 	selection, err := m.LoadSelection()
 	if err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	if releasebundle.VersionAtLeast(previousVersion, "0.1.12") {
+		return selection.Distribution, noRestore, nil
 	}
 	cpu, err := m.NewInference(inference.DistributionCPU)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if !cpu.ImageAvailable(ctx) {
-		return nil, errors.New("verified CPU inference image is unavailable for rollback")
+		return "", nil, errors.New("verified CPU inference image is unavailable for rollback")
 	}
 	if _, err := cpu.Ensure(ctx, 2*time.Minute); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if err := cpu.SelfTest(ctx); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return func(rollbackCtx context.Context) error {
+	return inference.DistributionCPU, func(rollbackCtx context.Context) error {
 		if selection.Distribution == inference.DistributionCPU {
 			return nil
 		}

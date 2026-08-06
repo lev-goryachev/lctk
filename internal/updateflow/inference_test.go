@@ -134,9 +134,12 @@ func TestPre012RollbackUsesCPUAndCanRestoreSelectedGPU(t *testing.T) {
 			return inference.Selection{SchemaVersion: inference.SelectionSchemaVersion, Distribution: inference.DistributionNVIDIAGPU}, nil
 		},
 	}
-	restore, err := manager.activateRollbackInference(t.Context(), "0.1.11")
+	distribution, restore, err := manager.activateRollbackInference(t.Context(), "0.1.11")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if distribution != inference.DistributionCPU {
+		t.Fatalf("rollback distribution = %q, want CPU", distribution)
 	}
 	if cpu.ensured != 1 || cpu.selfTested != 1 {
 		t.Fatalf("pre-0.1.12 rollback did not activate CPU: %+v", cpu)

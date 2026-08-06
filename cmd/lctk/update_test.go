@@ -52,6 +52,7 @@ func (s *updateInstallerStub) Rollback() (installation.Activation, error) {
 
 type updateStackStub struct {
 	states           map[string]projectstack.State
+	distribution     inference.Distribution
 	failStart        string
 	imageInstalled   bool
 	archiveInstalled bool
@@ -196,6 +197,9 @@ func TestRollbackRestartsTheDaemonThroughTheActiveLauncher(t *testing.T) {
 	if len(events) != 2 || events[0] != "stop" || events[1] != "start" {
 		t.Fatalf("daemon events = %v, want stop then start", events)
 	}
+	if current.distribution != inference.DistributionCPU {
+		t.Fatalf("previous-version stack distribution = %q, want CPU", current.distribution)
+	}
 }
 
 func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, current, target *updateStackStub, installer *updateInstallerStub) {
@@ -215,10 +219,12 @@ func restoreUpdateFactories(t *testing.T, registry *projectregistry.Registry, cu
 	loadUpdateManifest = func(context.Context, string, releasebundle.Verifier) (releasebundle.Manifest, error) {
 		return testUpdateManifest(), nil
 	}
-	newUpdateStack = func(version string) updateStack {
+	newUpdateStack = func(version string, distribution inference.Distribution) updateStack {
 		if version == "1.1.0" {
+			target.distribution = distribution
 			return target
 		}
+		current.distribution = distribution
 		return current
 	}
 	newUpdateInstaller = func(string) updateInstaller { return installer }
