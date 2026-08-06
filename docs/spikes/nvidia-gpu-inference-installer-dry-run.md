@@ -120,12 +120,17 @@ The proof executes this sequence:
 1. Create a uniquely named isolated network and old container with a fixed network alias.
 2. Start and health-check a candidate on the runtime network without exposing a host port.
 3. Inspect the old container's complete non-runtime network map and aliases and reject malformed topology.
-4. Rename the old container to a unique rollback name, rename candidate to the final test name, and connect the saved network with each saved alias.
-5. Resolve the fixed alias from a third disposable container and prove it reaches the candidate.
-6. Inject one forced reconnection failure, remove the candidate, restore the old name and saved aliases, and prove the old endpoint resolves again.
-7. Remove only the uniquely named test containers and network and confirm absence.
+4. Rename the old container to a unique rollback name and disconnect its saved non-runtime networks so no DNS alias is ambiguous.
+5. Rename candidate to the final test name and connect the saved network with each saved alias.
+6. Resolve the fixed alias from a third disposable container and prove it reaches the candidate.
+7. Inject one forced reconnection failure, remove the candidate, restore the old name and saved aliases, and prove the old endpoint resolves again.
+8. Remove only the uniquely named test containers and network and confirm absence.
 
 Production follows the same state machine. The candidate is never attached to project networks before it passes backend and embedding checks. The old container is not deleted until the final container is healthy through every restored network and the selection file is committed.
+
+### Proof result
+
+The isolated proof passed on the installed private Podman 5.8.2 runtime after this plan became inspectable at commit `2acb81744be1661bf8cb9af0546b008eef59e630`. A pinned, already-local Alpine image represented old and candidate HTTP services without a network pull. The old alias returned `old`, the activated candidate returned `new`, and the forced rollback returned `old`; each bounded DNS and HTTP probe succeeded on its first attempt. A deliberately absent network produced Podman exit 125 and triggered the rollback branch. The saved inspection contained the runtime network, the test project network, and the exact `lctk-inference` alias. All uniquely named test containers and the test network were then removed, and the production inference and project containers were not changed.
 
 Primary Podman contracts:
 
