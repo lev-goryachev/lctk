@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,33 @@ func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *t
 	status, err := manager.Ensure(t.Context(), time.Second)
 	if err != nil || !status.Ready {
 		t.Fatalf("Ensure status=%+v err=%v", status, err)
+	}
+	if tunnel.remote != "10.88.0.2:8080" {
+		t.Fatalf("machine tunnel remote=%q", tunnel.remote)
+	}
+}
+
+func TestProductionSelfTestReusesThePrivateContainerMachineTunnel(t *testing.T) {
+	model := writeTestModel(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/embeddings" {
+			t.Errorf("self-test path=%q", request.URL.Path)
+		}
+		vector := make([]float64, Dimensions)
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"embedding": vector}}}); err != nil {
+			t.Errorf("encode self-test response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	format := `{{(index .NetworkSettings.Networks "podman").IPAddress}}`
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{args: []string{"inspect", ContainerName, "--format", format}, stdout: "10.88.0.2\n"},
+	}}
+	manager := NewManagerForTest(runner, "image@sha256:test", model, "")
+	tunnel := &tunnelStub{address: strings.TrimPrefix(server.URL, "http://")}
+	manager.tunnel = tunnel
+	if err := manager.SelfTest(t.Context()); err != nil {
+		t.Fatalf("SelfTest: %v", err)
 	}
 	if tunnel.remote != "10.88.0.2:8080" {
 		t.Fatalf("machine tunnel remote=%q", tunnel.remote)

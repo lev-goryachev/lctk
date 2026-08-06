@@ -137,7 +137,11 @@ func (m *Manager) SelfTest(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.address+"/v1/embeddings", bytes.NewReader(body))
+	address, err := m.serviceAddress(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve embedding self-test endpoint: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address+"/v1/embeddings", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

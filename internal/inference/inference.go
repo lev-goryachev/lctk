@@ -268,26 +268,9 @@ func (m *Manager) baseStatus() Status {
 }
 
 func (m *Manager) health(ctx context.Context) error {
-	address := m.address
-	if m.tunnel != nil {
-		format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, RuntimeNetwork)
-		stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
-		if err != nil {
-			return fmt.Errorf("inspect embedding container address: %s", firstLine(stderr, err))
-		}
-		containerAddress := strings.TrimSpace(stdout)
-		if containerAddress == "" {
-			return fmt.Errorf("embedding container has no address on runtime network %s", RuntimeNetwork)
-		}
-		remote := net.JoinHostPort(containerAddress, fmt.Sprint(ContainerPort))
-		local, err := m.tunnel.Ensure(ctx, "inference", remote)
-		if err != nil {
-			return fmt.Errorf("open embedding machine tunnel: %w", err)
-		}
-		address = "http://" + local
-	}
-	if address == "" {
-		return errors.New("embedding health endpoint is not configured")
+	address, err := m.serviceAddress(ctx)
+	if err != nil {
+		return err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address+"/health", nil)
 	if err != nil {
@@ -302,6 +285,33 @@ func (m *Manager) health(ctx context.Context) error {
 		return fmt.Errorf("embedding health returned %s", response.Status)
 	}
 	return nil
+}
+
+// serviceAddress resolves one Windows-reachable base URL. Production always
+// derives it from the exact private container and the authenticated machine
+// tunnel; tests may supply an isolated HTTP endpoint directly.
+func (m *Manager) serviceAddress(ctx context.Context) (string, error) {
+	if m.tunnel == nil {
+		if strings.TrimSpace(m.address) == "" {
+			return "", errors.New("embedding service endpoint is not configured")
+		}
+		return m.address, nil
+	}
+	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, RuntimeNetwork)
+	stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
+	if err != nil {
+		return "", fmt.Errorf("inspect embedding container address: %s", firstLine(stderr, err))
+	}
+	containerAddress := strings.TrimSpace(stdout)
+	if containerAddress == "" {
+		return "", fmt.Errorf("embedding container has no address on runtime network %s", RuntimeNetwork)
+	}
+	remote := net.JoinHostPort(containerAddress, fmt.Sprint(ContainerPort))
+	local, err := m.tunnel.Ensure(ctx, "inference", remote)
+	if err != nil {
+		return "", fmt.Errorf("open embedding machine tunnel: %w", err)
+	}
+	return "http://" + local, nil
 }
 
 func firstLine(stderr string, err error) string {
