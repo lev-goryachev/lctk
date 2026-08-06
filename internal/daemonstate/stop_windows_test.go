@@ -29,6 +29,23 @@ func TestStopRemovesAStaleStateEvenWhenOpenProcessReturnsAccessDenied(t *testing
 	}
 }
 
+func TestStopRequestsAWaitableProcessHandle(t *testing.T) {
+	home := writeDaemonState(t, 17248)
+	restoreDaemonProcessSeams(t)
+	var requestedAccess uint32
+	openDaemonProcess = func(access uint32, _ bool, _ uint32) (windows.Handle, error) {
+		requestedAccess = access
+		return 0, windows.ERROR_ACCESS_DENIED
+	}
+	daemonProcessExists = func(uint32) (bool, error) { return false, nil }
+	if err := Stop(home); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAccess&windows.SYNCHRONIZE == 0 {
+		t.Fatalf("OpenProcess access %#x omits SYNCHRONIZE", requestedAccess)
+	}
+}
+
 func TestStopDoesNotGuessWhenAnInaccessiblePIDStillExists(t *testing.T) {
 	home := writeDaemonState(t, 17248)
 	restoreDaemonProcessSeams(t)

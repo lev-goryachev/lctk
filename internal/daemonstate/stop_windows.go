@@ -28,15 +28,17 @@ func stop(home string) error {
 	if err != nil {
 		return err
 	}
-	handle, err := openDaemonProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE, false, uint32(state.PID))
+	// WaitForSingleObject requires SYNCHRONIZE access independently from query
+	// and termination rights. Without it Windows terminates the daemon and then
+	// reports ERROR_ACCESS_DENIED while setup waits, stranding a stale PID file.
+	handle, err := openDaemonProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, uint32(state.PID))
 	if err != nil {
 		exists, inventoryErr := daemonProcessExists(uint32(state.PID))
 		if inventoryErr != nil {
 			return errors.Join(fmt.Errorf("open recorded LCTK daemon process %d: %w", state.PID, err), inventoryErr)
 		}
 		if !exists {
-			_ = os.Remove(filepath.Join(home, FileName))
-			return nil
+			return removeState(home)
 		}
 		return fmt.Errorf("open recorded LCTK daemon process %d: %w", state.PID, err)
 	}
@@ -44,26 +46,33 @@ func stop(home string) error {
 	buffer := make([]uint16, 32768)
 	size := uint32(len(buffer))
 	if err := windows.QueryFullProcessImageName(handle, 0, &buffer[0], &size); err != nil {
-		return err
+		return fmt.Errorf("identify recorded LCTK daemon process %d: %w", state.PID, err)
 	}
 	actual := filepath.Clean(windows.UTF16ToString(buffer[:size]))
 	if !strings.EqualFold(actual, state.Executable) {
 		return errors.New("recorded daemon PID now belongs to another executable")
 	}
 	if err := windows.TerminateProcess(handle, 0); err != nil {
-		return err
+		return fmt.Errorf("terminate recorded LCTK daemon process %d: %w", state.PID, err)
 	}
 	// Activation must not race the old daemon's final file handles or listener.
 	// Wait on the verified process handle rather than polling an unrelated PID.
 	wait, err := windows.WaitForSingleObject(handle, 10_000)
 	if err != nil {
-		return err
+		return fmt.Errorf("wait for recorded LCTK daemon process %d: %w", state.PID, err)
 	}
 	if wait != windows.WAIT_OBJECT_0 {
 		return fmt.Errorf("LCTK daemon did not stop within 10 seconds (wait result %d)", wait)
 	}
-	_ = os.Remove(filepath.Join(home, FileName))
-	return nil
+	return removeState(home)
+}
+
+func removeState(home string) error {
+	err := os.Remove(filepath.Join(home, FileName))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("remove recorded LCTK daemon state: %w", err)
 }
 
 // processExists checks the Windows process inventory without requesting a
