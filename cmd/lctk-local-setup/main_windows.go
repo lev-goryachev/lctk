@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"golang.org/x/sys/windows"
 )
 
@@ -64,6 +65,26 @@ func run() (runErr error) {
 	if err := extractPayload(self, directory); err != nil {
 		return err
 	}
+	manifest := filepath.Join(directory, "release-manifest.json")
+	setup := filepath.Join(directory, "lctk-setup.exe")
+	arguments, err := setupArguments(manifest)
+	if err != nil {
+		return err
+	}
+	command := exec.Command(setup, arguments...)
+	// The embedded setup is built as a GUI executable, but explicitly applying
+	// the child-process contract also prevents a console flash if build flags
+	// are accidentally changed in a future local acceptance build.
+	windowsprocess.HideConsole(command)
+	if DefaultSetupMode == "uninstall" {
+		// Recovery needs only the extracted native uninstaller. It must not bind
+		// the setup artifact endpoint because an unrelated listener must never
+		// prevent cleanup of an already partially removed installation.
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("native recovery uninstaller failed: %w", err)
+		}
+		return nil
+	}
 	listener, err := net.Listen("tcp", localPackageAddress)
 	if err != nil {
 		return fmt.Errorf("open local package endpoint %s: %w", localPackageAddress, err)
@@ -77,13 +98,6 @@ func run() (runErr error) {
 		_ = server.Shutdown(ctx)
 	}()
 
-	manifest := filepath.Join(directory, "release-manifest.json")
-	setup := filepath.Join(directory, "lctk-setup.exe")
-	arguments, err := setupArguments(manifest)
-	if err != nil {
-		return err
-	}
-	command := exec.Command(setup, arguments...)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start native release-candidate setup: %w", err)
 	}
