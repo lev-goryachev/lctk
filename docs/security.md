@@ -17,7 +17,7 @@ Security boundaries are primarily intended to protect against:
 
 Mandatory rules:
 
-1. The authoritative `project_id` comes from the route and a validated client grant.
+1. The authoritative `project_id` comes from the route and a validated OAuth resource audience.
 2. `project_id`, `repository_root`, and absolute paths from model arguments are not considered authoritative.
 3. A tool operates only on the root obtained from the server-side registry.
 4. Project containers mount only their own project folder.
@@ -68,22 +68,22 @@ These measures protect against mistakes and runaway processes; they do not guara
 
 ## Client access
 
-The localhost endpoint is protected by automatically generated credentials. The user normally does not copy or enter them manually.
+The localhost endpoint is protected by owner-approved OAuth. The user never copies or enters a credential manually.
 
-A grant restricts:
+An authorization restricts:
 
 - a specific client;
-- one or more explicitly selected projects;
-- capability profile;
-- its expiration.
+- one exact project resource URL;
+- the minimal project scope;
+- access and refresh expiration.
 
-A grant can be revoked or replaced independently of other clients. One project's key does not open another project unless the grant policy explicitly permits it.
+An authorization can be revoked independently of other clients. A token for one exact project resource does not open another project.
 
-As implemented in Slice 1.3, a grant is issued automatically when a project is registered and is revoked when its only project is removed; a grant covering several projects loses just the removed one. Grants live in the per-user LCTK home with owner-only permissions, never in a repository. The token is stored recoverably rather than hashed, because LCTK must be able to place it into the environment of an editor it configures, and because Slice 0.4 measured that Codex refuses an inline credential and reads one from a named environment variable. Commands withhold the token unless it is explicitly revealed, and it is never written to a log.
+As implemented by [ADR-0026](adr/0026-owner-approved-oauth-for-project-mcp.md), project registration issues no credential. An IDE discovers the loopback authorization server, dynamically registers a public client, and uses authorization code with S256 PKCE. The pending request shows the machine owner the client, project, scope, callback, and expiry. Approval creates a single-use code, a 15-minute opaque access token, and a rotating refresh token. Only hashes are persisted in the owner-only LCTK home; bearer values exist only in the client response and are never displayed or logged.
 
 The endpoint checks the credential before consulting the registry, so an unauthenticated caller cannot learn which projects exist. A valid credential scoped to another project receives a distinct refusal from an unknown credential, so a client can correct itself without being told what else is registered. An unauthenticated probe of any project route receives the same typed `401` whether the project exists or not, so the diagnostic surface does not become a way to enumerate projects.
 
-Delivery of a credential to a client is decided in [ADR-0014](adr/0014-project-credential-delivery.md). The token is placed in the environment of a process LCTK starts and exists nowhere else outside the owner-only LCTK home: no generated file contains it, and LCTK makes no durable change to the machine to deliver it. A per-project variable is used rather than one shared value, because a shared value would let a client working in one project reach another, which is exactly the isolation this section states.
+Credential delivery is entirely the OAuth client's responsibility. LCTK does not launch an editor, write client configuration, inject environment variables, or reveal tokens. The authorization code, client, exact callback, PKCE challenge, and RFC 8707 resource are bound together; refresh tokens rotate and revocation invalidates every token in the authorization.
 
 ## Browser access
 
@@ -102,7 +102,7 @@ The native Admin UI uses a separate local session, as amended by [ADR-0025](adr/
 
 Every request must still carry a `Host` header naming loopback and every state-changing request must echo the session's CSRF token. These checks keep the loopback API fail-closed if a non-native client attempts to reach it.
 
-No admin handler reads a project grant and no project route reads an admin session. A coding agent holding a project token cannot administer the machine, and the admin surface never serves a grant token to the native client.
+No admin handler accepts a project OAuth token and no project route accepts an admin session. A coding agent holding a project token cannot administer the machine, and the admin surface never serves an OAuth credential to the native client.
 
 ## Manifest trust
 

@@ -3,6 +3,8 @@ package adminapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,11 +15,10 @@ import (
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/adminsession"
-	"github.com/lev-goryachev/lctk/internal/codexsetup"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/logring"
-	"github.com/lev-goryachev/lctk/internal/projectgrant"
+	"github.com/lev-goryachev/lctk/internal/projectauth"
 	"github.com/lev-goryachev/lctk/internal/projectregistration"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -57,14 +58,15 @@ type fixture struct {
 	server            *httptest.Server
 	sessions          *adminsession.Store
 	stack             *stack
-	grants            *projectgrant.Set
+	authorizations    *projectauth.Store
+	projectToken      string
+	authorizationID   string
+	pendingRequestID  string
 	csrf              string
 	client            *http.Client
 	session           string
 	registeredPath    string
 	uninstallerOpened bool
-	codexConfigured   bool
-	codexLaunched     bool
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -77,10 +79,11 @@ func newFixture(t *testing.T) *fixture {
 		Key: "alpha", Profile: projectregistry.ProfileMinimal, RegisteredAt: testNow,
 	})
 
-	grants := projectgrant.New()
-	if _, err := grants.Issue("codex", []string{"alpha-aaaaaaaa"}, time.Time{}, testNow); err != nil {
+	authorizations, err := projectauth.OpenAt(filepath.Join(home, projectauth.FileName))
+	if err != nil {
 		t.Fatal(err)
 	}
+	projectToken, authorizationID, pendingRequestID := seedOAuth(t, authorizations)
 
 	sessions, err := adminsession.New(adminsession.Options{Path: filepath.Join(home, adminsession.FileName)})
 	if err != nil {
@@ -91,11 +94,11 @@ func newFixture(t *testing.T) *fixture {
 	runtimeStack := &stack{state: projectstack.StateStopped}
 	fixture := &fixture{}
 	server := New(Options{
-		Sessions: sessions,
-		Registry: func() (*projectregistry.Registry, error) { return registry, nil },
-		Grants:   func() (*projectgrant.Set, error) { return grants, nil },
-		Stack:    runtimeStack,
-		Settings: func() (hostsettings.Settings, error) { return hostsettings.Defaults, nil },
+		Sessions:       sessions,
+		Registry:       func() (*projectregistry.Registry, error) { return registry, nil },
+		Authorizations: authorizations,
+		Stack:          runtimeStack,
+		Settings:       func() (hostsettings.Settings, error) { return hostsettings.Defaults, nil },
 		Probe: func(context.Context) (runtimeapi.Status, error) {
 			return runtimeapi.Status{Available: true, Provider: "podman", Version: "5.8.2", OSType: "linux"}, nil
 		},
@@ -103,19 +106,11 @@ func newFixture(t *testing.T) *fixture {
 			return []logring.Record{{At: testNow, Level: "INFO", Message: "watching project"}}
 		},
 		Now: func() time.Time { return testNow },
-		Register: func(path string, profile projectregistry.Profile, now time.Time) (projectregistration.Result, error) {
+		Register: func(path string, profile projectregistry.Profile) (projectregistration.Result, error) {
 			fixture.registeredPath = path
-			return projectregistration.Result{Project: projectregistry.Project{ID: "beta-bbbbbbbb", Name: "beta", Path: path, Profile: profile, RegisteredAt: now}}, nil
+			return projectregistration.Result{Project: projectregistry.Project{ID: "beta-bbbbbbbb", Name: "beta", Path: path, Profile: profile, RegisteredAt: testNow}}, nil
 		},
 		LaunchUninstaller: func() error { fixture.uninstallerOpened = true; return nil },
-		ConfigureCodex: func(project projectregistry.Project, _ time.Time) (codexsetup.Result, error) {
-			fixture.codexConfigured = project.ID == "alpha-aaaaaaaa"
-			return codexsetup.Result{ConfigPath: "config.toml"}, nil
-		},
-		LaunchCodex: func(project projectregistry.Project) error {
-			fixture.codexLaunched = project.ID == "alpha-aaaaaaaa"
-			return nil
-		},
 	})
 
 	mux := http.NewServeMux()
@@ -126,9 +121,42 @@ func newFixture(t *testing.T) *fixture {
 	fixture.server = httpServer
 	fixture.sessions = sessions
 	fixture.stack = runtimeStack
-	fixture.grants = grants
+	fixture.authorizations = authorizations
+	fixture.projectToken, fixture.authorizationID, fixture.pendingRequestID = projectToken, authorizationID, pendingRequestID
 	fixture.client = &http.Client{}
 	return fixture
+}
+
+func seedOAuth(t *testing.T, store *projectauth.Store) (string, string, string) {
+	t.Helper()
+	redirect := "http://127.0.0.1:39001/callback"
+	client, err := store.RegisterClient(projectauth.Registration{Name: "Codex test client", RedirectURIs: []string{redirect}}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := strings.Repeat("a", 43)
+	sum := sha256.Sum256([]byte(verifier))
+	begin := func() projectauth.Request {
+		request, err := store.Begin(projectauth.BeginRequest{ClientID: client.ID, ProjectID: "alpha-aaaaaaaa", Resource: "http://127.0.0.1:4444/projects/alpha-aaaaaaaa/mcp", RedirectURI: redirect, Scopes: []string{projectauth.ScopeProject}, CodeChallenge: base64.RawURLEncoding.EncodeToString(sum[:])}, testNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return request
+	}
+	approved := begin()
+	if _, err := store.Approve(approved.ID, testNow); err != nil {
+		t.Fatal(err)
+	}
+	_, code, _, err := store.RequestState(approved.ID, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := store.ExchangeCode(code, client.ID, redirect, "http://127.0.0.1:4444/projects/alpha-aaaaaaaa/mcp", verifier, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := store.List()
+	return pair.AccessToken, listed[0].ID, begin().ID
 }
 
 func registryWith(t *testing.T, home string, projects ...projectregistry.Project) *projectregistry.Registry {
@@ -203,7 +231,7 @@ func (f *fixture) signIn(t *testing.T) {
 
 func TestEveryEndpointRefusesWithoutASession(t *testing.T) {
 	f := newFixture(t)
-	for _, path := range []string{"/admin/api/overview", "/admin/api/projects", "/admin/api/grants", "/admin/api/logs"} {
+	for _, path := range []string{"/admin/api/overview", "/admin/api/projects", "/admin/api/authorizations", "/admin/api/oauth/requests", "/admin/api/logs"} {
 		response, _ := f.do(t, http.MethodGet, path, "")
 		if response.StatusCode != http.StatusUnauthorized {
 			t.Errorf("GET %s without a session returned %d, want 401", path, response.StatusCode)
@@ -220,15 +248,14 @@ func TestEveryEndpointRefusesWithoutASession(t *testing.T) {
 
 // The credential that opens a project must not open the machine. This is the
 // separation the whole surface is built around.
-func TestAProjectGrantDoesNotOpenTheAdminSurface(t *testing.T) {
+func TestAProjectOAuthTokenDoesNotOpenTheAdminSurface(t *testing.T) {
 	f := newFixture(t)
-	token := f.grants.List()[0].Token
 
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.server.URL+"/admin/api/projects", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+f.projectToken)
 	response, err := f.client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +263,7 @@ func TestAProjectGrantDoesNotOpenTheAdminSurface(t *testing.T) {
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("a project grant reached the admin surface: %d", response.StatusCode)
+		t.Fatalf("a project OAuth token reached the admin surface: %d", response.StatusCode)
 	}
 }
 
@@ -301,15 +328,6 @@ func TestUninstallChoiceCanBeOpenedFromTheAdminUI(t *testing.T) {
 	}
 }
 
-func TestCodexCanBeConfiguredFromTheAdminUI(t *testing.T) {
-	f := newFixture(t)
-	f.signIn(t)
-	response, _ := f.do(t, http.MethodPost, "/admin/api/projects/alpha-aaaaaaaa/codex", "")
-	if response.StatusCode != http.StatusOK || !f.codexConfigured || !f.codexLaunched {
-		t.Fatalf("status=%d configured=%t launched=%t", response.StatusCode, f.codexConfigured, f.codexLaunched)
-	}
-}
-
 func TestLifecycleActionsReachTheRuntime(t *testing.T) {
 	f := newFixture(t)
 	f.signIn(t)
@@ -363,40 +381,48 @@ func TestTheResourceModeCanBeSetAndCleared(t *testing.T) {
 	}
 }
 
-// The surface exists to manage grants, not to hand them out. A page that
-// displayed a token would leave it in a screenshot and a browser cache.
-func TestGrantsAreListedWithoutTheirTokens(t *testing.T) {
+func TestAuthorizationsAreListedWithoutTokens(t *testing.T) {
 	f := newFixture(t)
 	f.signIn(t)
 
-	response, body := f.do(t, http.MethodGet, "/admin/api/grants", "")
+	response, body := f.do(t, http.MethodGet, "/admin/api/authorizations", "")
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("grants returned %d", response.StatusCode)
+		t.Fatalf("authorizations returned %d", response.StatusCode)
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := f.grants.List()[0].Token
-	if strings.Contains(string(encoded), token) {
-		t.Fatal("a grant token was served to the admin page")
+	if strings.Contains(string(encoded), f.projectToken) {
+		t.Fatal("an OAuth token was served to the admin page")
 	}
-	if !strings.Contains(string(encoded), "codex") {
-		t.Fatalf("the grant was not listed at all: %s", encoded)
+	if !strings.Contains(string(encoded), "Codex test client") {
+		t.Fatalf("the authorization was not listed at all: %s", encoded)
 	}
 }
 
-func TestAGrantCanBeRevoked(t *testing.T) {
+func TestAuthorizationCanBeRevoked(t *testing.T) {
 	f := newFixture(t)
 	f.signIn(t)
 
-	id := f.grants.List()[0].ID
-	response, body := f.do(t, http.MethodDelete, "/admin/api/grants/"+id, "")
+	response, body := f.do(t, http.MethodDelete, "/admin/api/authorizations/"+f.authorizationID, "")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("revoke returned %d: %v", response.StatusCode, body)
 	}
-	if !f.grants.List()[0].Revoked {
-		t.Fatal("the grant was not revoked")
+	if !f.authorizations.List()[0].Revoked {
+		t.Fatal("the authorization was not revoked")
+	}
+}
+
+func TestPendingAuthorizationCanBeApproved(t *testing.T) {
+	f := newFixture(t)
+	f.signIn(t)
+	response, body := f.do(t, http.MethodPost, "/admin/api/oauth/requests/"+f.pendingRequestID+"/approve", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("approve returned %d: %v", response.StatusCode, body)
+	}
+	if pending := f.authorizations.Pending(testNow); len(pending) != 0 {
+		t.Fatalf("pending requests after approval = %d", len(pending))
 	}
 }
 

@@ -2,7 +2,7 @@
 //
 // Host state is deliberately outside any repository. The registry binds a
 // project_id to an authoritative host path, and per docs/security.md that
-// binding, together with credentials and grants, must never live in Git where a
+// binding, together with credentials and OAuth authorization state, must never live in Git where a
 // repository author could influence it.
 package lctkhome
 
@@ -93,7 +93,7 @@ func RuntimeDataDir() (string, error) {
 // EnsureDir returns the LCTK home directory, creating it when absent.
 //
 // The directory is private to the user because it will hold client credentials
-// and grants. On Windows the mode is advisory and inherited ACLs apply.
+// and OAuth authorization state. On Windows the mode is advisory and inherited ACLs apply.
 func EnsureDir() (string, error) {
 	dir, err := Dir()
 	if err != nil {

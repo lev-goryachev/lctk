@@ -15,8 +15,8 @@ The current implementation includes the Windows one-click product path:
 - a read-only identity probe for LCTK's private Podman client and explicit `lctk-runtime-root` connection;
 - the local project registry from Slice 1.1: canonical host paths, stable project identities, `lctk project add/status/remove`, and manifest parsing, none of which start a service;
 - the per-project runtime from Slice 1.2 and ADR-0023: a deterministic JSON plan, explicit Podman operations, a reusable versioned image, an isolated network and persistent volume, a read-only source mount, lifecycle commands, and typed health;
-- the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, automatic per-project grants, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs;
-- the client integration from Slice 1.4: generated Codex configuration written into a marker-delimited region of the user's own file, credential delivery through a process LCTK starts, and `lctk codex status/config/env/launch`;
+- the project-scoped MCP endpoint from Slice 1.3: `/projects/{project_id}/mcp` inside the host daemon, owner-approved per-project OAuth, the `project_info` tool, typed lifecycle and authorization errors, and request-correlated local logs;
+- the client integration amended by ADR-0026: IDE-owned Streamable HTTP configuration, OAuth discovery, dynamic public-client registration, S256 PKCE, native owner approval, short-lived access tokens, and rotating refresh tokens;
 - persistent exact search from Slice 1.5: a per-project search service in the project container, a staged generation store published atomically, the project's own ignore rules honoured, and the `exact_search` tool behind a stable host-side adapter;
 - the host change journal from Slice 2.1: a native filesystem watcher per running project, normalized project-relative events, a configurable debounce, a persistent per-project journal that is either complete since its checkpoint or explicitly incomplete, and freshness reported through `project_info`;
 - the constrained runner from Slice 3.2: `run_command` executing only what the machine owner approved, one container per run with the project mounted writable and everything else denied, and an append-only audit record;
@@ -84,7 +84,7 @@ A small per-user daemon is installed on Windows and starts at sign-in. It is the
 - registers arbitrary host paths;
 - canonicalizes paths using host OS facilities;
 - manages its private Podman client and the `lctk-runtime` WSL machine;
-- stores the local registry and client grants;
+- stores the local registry, registered OAuth clients, and hashed project authorizations;
 - serves the shared project-scoped MCP gateway;
 - watches for file changes;
 - serves the Admin API and `lctk` CLI;
@@ -97,7 +97,7 @@ The embedded gateway does not expose the daemon's runtime client or administrati
 The shared control plane is an LCTK-owned Go component inside the host daemon, as accepted in [ADR-0009](adr/0009-embedded-go-gateway-and-project-runtime.md). It continuously provides a stable localhost endpoint. Its responsibilities are:
 
 - Streamable HTTP MCP transport;
-- authentication and client grants;
+- OAuth discovery, owner approval, token validation, and revocation;
 - extracting `project_id` from server-side route context;
 - capability filtering;
 - virtual project servers;
@@ -165,18 +165,18 @@ memory_delete
 - source commit and dirty state, where applicable;
 - bounded snippets and a pagination cursor.
 
-## Client grants
+## Client authorization
 
-Access to the localhost MCP endpoint is not globally open. LCTK creates a separate grant for each client:
+Access to the localhost MCP endpoint is not globally open. A client independently starts standard OAuth and LCTK creates an authorization only after native owner approval. Each authorization binds:
 
 - client name;
-- permitted project IDs;
-- capability profile (`read`, `code`, and a separate `admin` profile);
-- expiration;
-- revoke/rotate state;
-- last-used metadata.
+- one exact project resource URL;
+- the `lctk:project` scope;
+- short-lived access-token hashes;
+- one rotating refresh-token hash and expiration;
+- revocation state.
 
-Codex receives a grant automatically when project-local configuration is generated. The user adds any other CLI or desktop client through the Admin UI or CLI. A browser origin receives a separate short-lived session only after explicit confirmation of the domain, project, and permissions.
+Registering a project grants nothing. The user adds the displayed URL to Codex or another compatible client, starts that client's OAuth action, and approves or denies the pending request in the native window. LCTK never edits client configuration and never displays or stores recoverable bearer values.
 
 ## Admin UI
 
@@ -187,11 +187,11 @@ The minimal native Windows administrator must support:
 - index progress and freshness;
 - logs/doctor;
 - runner network, resource mode, and capability policies;
-- client grants and revocation.
+- pending OAuth approvals and authorized-client revocation.
 
 The Admin API is not exposed through the regular project `code` endpoint.
 
-As amended by [ADR-0025](adr/0025-native-windows-admin-and-complete-uninstall.md), `lctk-setup.exe --admin` renders native Win32 controls and calls the daemon's loopback JSON Admin API. It lists projects with their state, index, and change record; registers, starts, stops, restarts, and reindexes them; sets a project's resource mode; configures and opens Codex; lists and revokes client grants; shows runtime diagnostics and recent logs; and opens the registered uninstaller. Grant tokens are never served to it. The independent session boundary originates in [ADR-0016](adr/0016-admin-surface-and-local-session.md), but no credential travels in a URL and no browser receives an admin session.
+As amended by [ADR-0025](adr/0025-native-windows-admin-and-complete-uninstall.md) and [ADR-0026](adr/0026-owner-approved-oauth-for-project-mcp.md), `lctk-setup.exe --admin` renders native Win32 controls and calls the daemon's loopback JSON Admin API. It lists projects with their state, index, and change record; registers, starts, stops, restarts, and reindexes them; sets a project's resource mode; shows exact IDE connection steps; approves or denies pending OAuth connections; revokes authorized clients; shows runtime diagnostics and recent logs; and opens the registered uninstaller. OAuth credentials are never served to it. The independent session boundary originates in [ADR-0016](adr/0016-admin-surface-and-local-session.md); the IDE-owned browser page can only wait for a native decision and never receives an admin session.
 
 ## Runtime modes
 

@@ -43,18 +43,13 @@ These commands are foundation evidence, not the complete project lifecycle descr
 
 ## Connecting a client
 
-`lctk codex` generates the client configuration for a registered project and delivers its grant, following [ADR-0014](adr/0014-project-credential-delivery.md).
+LCTK does not configure or launch a client. After registering a project, obtain its endpoint from `lctk project add` output or the native administrator:
 
 ```sh
-./lctk codex config PROJECT            # print the entry
-./lctk codex config --apply PROJECT    # write it into CODEX_HOME/config.toml
-./lctk codex launch PROJECT            # start the editor with the grant in its environment
-./lctk codex status                    # where the entry is, and whether the variable is set
+http://127.0.0.1:4444/projects/{project_id}/mcp
 ```
 
-`config` writes only inside a marker-delimited region of a file LCTK does not own, takes a backup, and refuses to overwrite a same-named entry it did not generate. No generated file contains a token.
-
-`launch` is how the credential arrives. Codex reads the token from an environment variable, and an editor that is already running keeps the environment it started with, so the editor must be closed first. To set the variable durably instead, `lctk codex env --reveal PROJECT` prints the command; LCTK does not run it.
+Add it as a Streamable HTTP MCP server in the client, restart the client when its UI requests that, and select **Authenticate**. The client starts OAuth; approve the resulting pending connection in the native LCTK window. LCTK stores only credential hashes and never edits the client configuration or exposes a token. See [ADR-0026](adr/0026-owner-approved-oauth-for-project-mcp.md).
 
 ## Watching a project
 

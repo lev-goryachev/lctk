@@ -1,8 +1,8 @@
 // Package adminsession authenticates the local administrator.
 //
 // The admin surface is a different thing from a project endpoint and is
-// deliberately built as one. A project grant opens a project's tools; it must
-// never open the administrator's. Nothing here reads a project grant, and
+// deliberately built as one. A project OAuth token opens a project's tools; it
+// must never open the administrator's. Nothing here reads a project token, and
 // internal/gateway never reads an admin session, so the separation is structural
 // rather than a check somebody has to remember.
 //

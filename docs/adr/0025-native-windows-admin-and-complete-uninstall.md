@@ -20,7 +20,7 @@ The installed `lctk-setup.exe` owns two native GUI modes in addition to setup:
 
 The Start-menu `LCTK` shortcut targets `lctk-setup.exe --admin`. `lctk admin open` starts that same installed GUI process. Neither path opens a browser, starts a WebView, or serves an HTML page. The stable `lctk.exe` remains a console program for scripts and automation.
 
-The native administrator is a client of the daemon's existing loopback Admin API. It exchanges the daemon's owner-only one-time code directly in process, keeps the session credential and CSRF token only in memory, and supports project registration, project lifecycle, reindexing, resource mode, Codex launch, grant revocation, runtime diagnostics, recent logs, refresh, and uninstall. Project grants remain structurally unable to authorize Admin API requests, and grant tokens are never returned to the window.
+The native administrator is a client of the daemon's existing loopback Admin API. It exchanges the daemon's owner-only one-time code directly in process, keeps the session credential and CSRF token only in memory, and supports project registration, project lifecycle, reindexing, resource mode, MCP connection instructions, OAuth request approval or denial, client revocation, runtime diagnostics, recent logs, refresh, and uninstall. Project OAuth tokens remain structurally unable to authorize Admin API requests, and credentials are never returned to the window.
 
 Setup registers all of the following per-user Windows integration:
 

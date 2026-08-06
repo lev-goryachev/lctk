@@ -96,7 +96,7 @@ Linux is planned for later. The architecture must not deliberately block Linux o
 - multi-user tenancy;
 - cloud control plane and Kubernetes deployment;
 - mandatory support for every MCP client;
-- a complex OAuth provider;
+- an external, multi-user, or cloud identity provider beyond the loopback owner-approved OAuth required for MCP clients;
 - dozens of external integrations;
 - an automatic hostile-repository sandbox;
 - direct control of Docker by the coding agent.
@@ -106,7 +106,8 @@ Linux is planned for later. The architecture must not deliberately block Linux o
 ```text
 register a project folder
 → start the project container
-→ connect the project-scoped MCP endpoint
+→ add the project-scoped MCP URL to Codex
+→ approve Codex's OAuth request in the native LCTK window
 → call project_info and exact_search from Codex
 → confirm that another project is inaccessible
 → stop the stack

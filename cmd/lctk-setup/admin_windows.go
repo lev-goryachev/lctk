@@ -18,6 +18,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/adminclient"
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/localapi"
 	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"golang.org/x/sys/windows"
 )
@@ -26,27 +27,32 @@ const (
 	adminWindowWidth  = 1120
 	adminWindowHeight = 790
 
-	idAdminProjectPath = 2001
-	idAdminBrowse      = 2002
-	idAdminProfile     = 2003
-	idAdminAdd         = 2004
-	idAdminProjects    = 2005
-	idAdminStart       = 2006
-	idAdminStop        = 2007
-	idAdminRestart     = 2008
-	idAdminReindex     = 2009
-	idAdminCodex       = 2010
-	idAdminMode        = 2011
-	idAdminApplyMode   = 2012
-	idAdminGrants      = 2013
-	idAdminRevoke      = 2014
-	idAdminRefresh     = 2015
-	idAdminUninstall   = 2016
+	idAdminProjectPath    = 2001
+	idAdminBrowse         = 2002
+	idAdminProfile        = 2003
+	idAdminAdd            = 2004
+	idAdminProjects       = 2005
+	idAdminStart          = 2006
+	idAdminStop           = 2007
+	idAdminRestart        = 2008
+	idAdminReindex        = 2009
+	idAdminCopyURL        = 2010
+	idAdminMode           = 2011
+	idAdminApplyMode      = 2012
+	idAdminRequests       = 2013
+	idAdminApprove        = 2014
+	idAdminRefresh        = 2015
+	idAdminUninstall      = 2016
+	idAdminDeny           = 2017
+	idAdminAuthorizations = 2018
+	idAdminRevoke         = 2019
 
 	wsVScroll       = 0x00200000
 	esMultiline     = 0x0004
 	esAutoVScroll   = 0x0040
 	esReadOnly      = 0x0800
+	emSetSel        = 0x00B1
+	wmCopy          = 0x0301
 	lbsNotify       = 0x0001
 	cbsDropDownList = 0x0003
 	wmAppAdminState = 0x8002
@@ -74,16 +80,17 @@ type nativeAdminWindow struct {
 	context context.Context
 	cancel  context.CancelFunc
 
-	statusLabel uintptr
-	projectPath uintptr
-	profile     uintptr
-	projectList uintptr
-	projectInfo uintptr
-	mode        uintptr
-	grantList   uintptr
-	logs        uintptr
-	controls    []uintptr
-	buttons     map[uint16]uintptr
+	statusLabel       uintptr
+	projectPath       uintptr
+	profile           uintptr
+	projectList       uintptr
+	projectInfo       uintptr
+	mode              uintptr
+	requestList       uintptr
+	authorizationList uintptr
+	logs              uintptr
+	controls          []uintptr
+	buttons           map[uint16]uintptr
 
 	mu       sync.RWMutex
 	snapshot adminclient.Snapshot
@@ -115,6 +122,7 @@ func runAdminWindow(parent context.Context, address string) error {
 	}
 	defer window.cancel()
 	window.refresh("Loading LCTK status...")
+	go window.pollOAuth()
 	procShowWindow.Call(window.window, swShow)
 	procUpdateWindow.Call(window.window)
 
@@ -129,6 +137,31 @@ func runAdminWindow(parent context.Context, address string) error {
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&current)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&current)))
+	}
+}
+
+// pollOAuth keeps incoming approval requests and completed client exchanges
+// visible without making the owner press Refresh. It touches only the two OAuth
+// lists, so a slow runtime probe cannot delay an approval prompt.
+func (window *nativeAdminWindow) pollOAuth() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-window.context.Done():
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(window.context, 1500*time.Millisecond)
+			authorizations, requests, err := window.client.LoadOAuth(ctx)
+			cancel()
+			if err != nil {
+				continue
+			}
+			window.mu.Lock()
+			window.snapshot.Authorizations, window.snapshot.Requests = authorizations, requests
+			window.mu.Unlock()
+			window.postState()
+		}
 	}
 }
 
@@ -262,7 +295,7 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	if err != nil {
 		return err
 	}
-	window.projectInfo, err = create("STATIC", "Select a project.", wsChild|wsVisible|ssLeft, 470, 160, 612, 88, 0)
+	window.projectInfo, err = create("EDIT", "Select a project.", wsChild|wsVisible|wsBorder|esMultiline|esAutoVScroll|esReadOnly, 470, 160, 612, 88, 0)
 	if err != nil {
 		return err
 	}
@@ -273,7 +306,7 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	}{
 		{"Start", idAdminStart, 470, 260, 82}, {"Stop", idAdminStop, 560, 260, 82},
 		{"Restart", idAdminRestart, 650, 260, 82}, {"Reindex", idAdminReindex, 740, 260, 82},
-		{"Configure & Open Codex", idAdminCodex, 830, 260, 252},
+		{"Copy MCP setup", idAdminCopyURL, 830, 260, 252},
 	}
 	for _, spec := range buttonSpecs {
 		button, createErr := create("BUTTON", spec.text, wsChild|wsVisible|wsTabStop|bsPushButton, spec.x, spec.y, spec.width, 31, spec.id)
@@ -298,28 +331,46 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	window.controls = append(window.controls, applyMode)
 	window.buttons[idAdminApplyMode] = applyMode
 
-	if err := label("Client grants", 24, 392, 160, 22); err != nil {
+	if err := label("Pending connection requests", 24, 350, 250, 22); err != nil {
 		return err
 	}
-	window.grantList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 416, 822, 116, idAdminGrants)
+	window.requestList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 374, 822, 82, idAdminRequests)
 	if err != nil {
 		return err
 	}
-	revoke, err := create("BUTTON", "Revoke selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 416, 222, 32, idAdminRevoke)
+	approve, err := create("BUTTON", "Approve selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 374, 222, 32, idAdminApprove)
+	if err != nil {
+		return err
+	}
+	deny, err := create("BUTTON", "Deny selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 414, 222, 32, idAdminDeny)
+	if err != nil {
+		return err
+	}
+	window.controls = append(window.controls, approve, deny)
+	window.buttons[idAdminApprove], window.buttons[idAdminDeny] = approve, deny
+
+	if err := label("Authorized clients", 24, 468, 180, 22); err != nil {
+		return err
+	}
+	window.authorizationList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 492, 822, 76, idAdminAuthorizations)
+	if err != nil {
+		return err
+	}
+	revoke, err := create("BUTTON", "Revoke selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 492, 222, 32, idAdminRevoke)
 	if err != nil {
 		return err
 	}
 	window.controls = append(window.controls, revoke)
 	window.buttons[idAdminRevoke] = revoke
 
-	if err := label("Daemon log", 24, 550, 160, 22); err != nil {
+	if err := label("Daemon log", 24, 580, 160, 22); err != nil {
 		return err
 	}
-	window.logs, err = create("EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esAutoVScroll|esReadOnly, 24, 574, 822, 135, 0)
+	window.logs, err = create("EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esAutoVScroll|esReadOnly, 24, 604, 822, 105, 0)
 	if err != nil {
 		return err
 	}
-	refresh, err := create("BUTTON", "Refresh", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 574, 222, 34, idAdminRefresh)
+	refresh, err := create("BUTTON", "Refresh", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 604, 222, 34, idAdminRefresh)
 	if err != nil {
 		return err
 	}
@@ -346,7 +397,7 @@ func adminWindowProc(windowHandle uintptr, message uint32, wParam, lParam uintpt
 			window.renderSelection()
 			return 0
 		}
-		if id == idAdminGrants && notification == lbnSelChange {
+		if (id == idAdminRequests || id == idAdminAuthorizations) && notification == lbnSelChange {
 			window.renderSelection()
 			return 0
 		}
@@ -390,8 +441,17 @@ func (window *nativeAdminWindow) handleCommand(id uint16) {
 		window.projectAction("restart", "Restarting project...")
 	case idAdminReindex:
 		window.projectAction("reindex", "Reindexing project...")
-	case idAdminCodex:
-		window.projectAction("codex", "Configuring and opening Codex...")
+	case idAdminCopyURL:
+		if _, ok := window.selectedProject(); !ok {
+			window.fail("Select a project first.")
+			return
+		}
+		procSendMessageW.Call(window.projectInfo, emSetSel, 0, ^uintptr(0))
+		procSendMessageW.Call(window.projectInfo, wmCopy, 0, 0)
+		window.mu.Lock()
+		window.status, window.failure = "MCP connection instructions copied.", ""
+		window.mu.Unlock()
+		window.postState()
 	case idAdminApplyMode:
 		project, ok := window.selectedProject()
 		if !ok {
@@ -401,12 +461,30 @@ func (window *nativeAdminWindow) handleCommand(id uint16) {
 		mode := selectedComboText(window.mode, []string{"quiet", "normal", "fast"})
 		window.act("Changing resource mode...", func(ctx context.Context) error { return window.client.SetProjectMode(ctx, project.ID, mode) })
 	case idAdminRevoke:
-		grant, ok := window.selectedGrant()
+		authorization, ok := window.selectedAuthorization()
 		if !ok {
-			window.fail("Select a client grant first.")
+			window.fail("Select an authorized client first.")
 			return
 		}
-		window.act("Revoking client grant...", func(ctx context.Context) error { return window.client.RevokeGrant(ctx, grant.ID) })
+		window.act("Revoking client authorization...", func(ctx context.Context) error { return window.client.RevokeAuthorization(ctx, authorization.ID) })
+	case idAdminApprove, idAdminDeny:
+		request, ok := window.selectedAuthorizationRequest()
+		if !ok {
+			window.fail("Select a pending connection request first.")
+			return
+		}
+		decision := "approve"
+		status := "Approving connection..."
+		if id == idAdminApprove {
+			message := fmt.Sprintf("Authorize this exact MCP connection?\r\n\r\nClient: %s\r\nProject: %s\r\nCallback: %s\r\nScopes: %s\r\nExpires: %s", request.Client, request.Project, request.RedirectURI, strings.Join(request.Scopes, " "), request.ExpiresAt)
+			answer, _ := windows.MessageBox(windows.HWND(window.window), mustUTF16(message), mustUTF16("Approve MCP connection"), windows.MB_YESNO|windows.MB_ICONWARNING)
+			if answer != messageBoxYes {
+				return
+			}
+		} else {
+			decision, status = "deny", "Denying connection..."
+		}
+		window.act(status, func(ctx context.Context) error { return window.client.DecideAuthorization(ctx, request.ID, decision) })
 	case idAdminRefresh:
 		window.refresh("Refreshing LCTK status...")
 	case idAdminUninstall:
@@ -437,14 +515,24 @@ func (window *nativeAdminWindow) selectedProject() (adminclient.Project, bool) {
 	return window.snapshot.Projects[index], true
 }
 
-func (window *nativeAdminWindow) selectedGrant() (adminclient.Grant, bool) {
-	index, _, _ := procSendMessageW.Call(window.grantList, lbGetCurSel, 0, 0)
+func (window *nativeAdminWindow) selectedAuthorization() (adminclient.Authorization, bool) {
+	index, _, _ := procSendMessageW.Call(window.authorizationList, lbGetCurSel, 0, 0)
 	window.mu.RLock()
 	defer window.mu.RUnlock()
-	if int32(index) < 0 || int(index) >= len(window.snapshot.Grants) {
-		return adminclient.Grant{}, false
+	if int32(index) < 0 || int(index) >= len(window.snapshot.Authorizations) {
+		return adminclient.Authorization{}, false
 	}
-	return window.snapshot.Grants[index], true
+	return window.snapshot.Authorizations[index], true
+}
+
+func (window *nativeAdminWindow) selectedAuthorizationRequest() (adminclient.AuthorizationRequest, bool) {
+	index, _, _ := procSendMessageW.Call(window.requestList, lbGetCurSel, 0, 0)
+	window.mu.RLock()
+	defer window.mu.RUnlock()
+	if int32(index) < 0 || int(index) >= len(window.snapshot.Requests) {
+		return adminclient.AuthorizationRequest{}, false
+	}
+	return window.snapshot.Requests[index], true
 }
 
 func (window *nativeAdminWindow) act(status string, operation func(context.Context) error) {
@@ -570,14 +658,19 @@ func (window *nativeAdminWindow) render() {
 	if int32(selected) >= 0 && int(selected) < len(snapshot.Projects) {
 		procSendMessageW.Call(window.projectList, lbSetCurSel, selected, 0)
 	}
-	procSendMessageW.Call(window.grantList, lbResetContent, 0, 0)
-	for _, grant := range snapshot.Grants {
+	procSendMessageW.Call(window.requestList, lbResetContent, 0, 0)
+	for _, request := range snapshot.Requests {
+		text := fmt.Sprintf("%s  |  project %s  |  callback %s  |  expires %s", request.Client, request.Project, request.RedirectURI, request.ExpiresAt)
+		procSendMessageW.Call(window.requestList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
+	}
+	procSendMessageW.Call(window.authorizationList, lbResetContent, 0, 0)
+	for _, authorization := range snapshot.Authorizations {
 		state := "active"
-		if grant.Revoked {
+		if authorization.Revoked {
 			state = "revoked"
 		}
-		text := fmt.Sprintf("%s  |  %s  |  %s  |  %s", grant.Client, strings.Join(grant.Projects, ", "), grant.IssuedAt, state)
-		procSendMessageW.Call(window.grantList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
+		text := fmt.Sprintf("%s  |  project %s  |  %s  |  %s", authorization.Client, authorization.Project, authorization.IssuedAt, state)
+		procSendMessageW.Call(window.authorizationList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
 	}
 	setWindowText(window.logs, renderAdminLogs(snapshot))
 	setEnabled(window.projectPath, !busy)
@@ -610,7 +703,8 @@ func (window *nativeAdminWindow) renderSelection() {
 				changes += ", incomplete: " + project.Changes.GapReason
 			}
 		}
-		detail := fmt.Sprintf("%s\r\n%s\r\nState: %s; health: %s; index: %s; changes: %s; disk: %s", project.Name, project.Path, project.State, project.Health, index, changes, project.Disk.Human)
+		endpoint := fmt.Sprintf("http://%s/projects/%s/mcp", localapi.DefaultAddress, project.ID)
+		detail := fmt.Sprintf("%s\r\nMCP URL: %s\r\nCodex: remove any older LCTK entry, then Settings > MCP servers > Add server > Streamable HTTP > paste URL > Save/Restart > Authenticate.\r\nState: %s; health: %s; index: %s; changes: %s; disk: %s", project.Name, endpoint, project.State, project.Health, index, changes, project.Disk.Human)
 		if project.Detail != "" {
 			detail += "\r\n" + project.Detail
 		}
@@ -628,11 +722,14 @@ func (window *nativeAdminWindow) renderSelection() {
 	for _, id := range []uint16{idAdminStop, idAdminRestart, idAdminReindex} {
 		setEnabled(window.buttons[id], !busy && running)
 	}
-	setEnabled(window.buttons[idAdminCodex], !busy && ok)
+	setEnabled(window.buttons[idAdminCopyURL], !busy && ok)
 	setEnabled(window.buttons[idAdminApplyMode], !busy && ok)
 	setEnabled(window.mode, !busy && ok)
-	_, grantSelected := window.selectedGrant()
-	setEnabled(window.buttons[idAdminRevoke], !busy && grantSelected)
+	_, authorizationSelected := window.selectedAuthorization()
+	setEnabled(window.buttons[idAdminRevoke], !busy && authorizationSelected)
+	_, requestSelected := window.selectedAuthorizationRequest()
+	setEnabled(window.buttons[idAdminApprove], !busy && requestSelected)
+	setEnabled(window.buttons[idAdminDeny], !busy && requestSelected)
 }
 
 func addComboItems(handle uintptr, values []string, selected int) {

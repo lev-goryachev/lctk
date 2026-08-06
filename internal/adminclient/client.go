@@ -1,6 +1,6 @@
 // Package adminclient is the native desktop client's authenticated transport
 // to the loopback administrator API. The daemon remains the only authority for
-// project lifecycle, grants, and diagnostics; the Windows window only renders
+// project lifecycle, OAuth approvals, and diagnostics; the Windows window only renders
 // that authority and sends explicit operator actions.
 package adminclient
 
@@ -90,23 +90,34 @@ type Disk struct {
 	Human       string `json:"human"`
 }
 
-// Grant is a revocable client authorization. The credential itself is never
+// Authorization is a revocable OAuth client connection. Credentials are never
 // returned by the API and therefore cannot appear in the desktop process.
-type Grant struct {
+type Authorization struct {
 	ID       string   `json:"id"`
 	Client   string   `json:"client"`
-	Projects []string `json:"projects"`
+	Project  string   `json:"project"`
+	Scopes   []string `json:"scopes"`
 	IssuedAt string   `json:"issued_at,omitempty"`
-	Expires  string   `json:"expires,omitempty"`
 	Revoked  bool     `json:"revoked,omitempty"`
+}
+
+// AuthorizationRequest is an incoming OAuth connection awaiting the owner.
+type AuthorizationRequest struct {
+	ID          string   `json:"id"`
+	Client      string   `json:"client"`
+	Project     string   `json:"project"`
+	RedirectURI string   `json:"redirect_uri"`
+	Scopes      []string `json:"scopes"`
+	ExpiresAt   string   `json:"expires_at"`
 }
 
 // Snapshot is one internally consistent refresh result for the native window.
 type Snapshot struct {
-	Overview Overview
-	Projects []Project
-	Grants   []Grant
-	Logs     []logring.Record
+	Overview       Overview
+	Projects       []Project
+	Authorizations []Authorization
+	Requests       []AuthorizationRequest
+	Logs           []logring.Record
 }
 
 // Connect exchanges the daemon's current one-time code for an in-memory native
@@ -146,10 +157,8 @@ func (client *Client) Load(ctx context.Context) (Snapshot, error) {
 	if err := client.do(ctx, http.MethodGet, "/admin/api/projects", nil, &projects, true); err != nil {
 		return Snapshot{}, err
 	}
-	var grants struct {
-		Grants []Grant `json:"grants"`
-	}
-	if err := client.do(ctx, http.MethodGet, "/admin/api/grants", nil, &grants, true); err != nil {
+	authorizations, requests, err := client.LoadOAuth(ctx)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	var logs struct {
@@ -158,8 +167,26 @@ func (client *Client) Load(ctx context.Context) (Snapshot, error) {
 	if err := client.do(ctx, http.MethodGet, "/admin/api/logs", nil, &logs, true); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.Projects, snapshot.Grants, snapshot.Logs = projects.Projects, grants.Grants, logs.Records
+	snapshot.Projects, snapshot.Authorizations, snapshot.Requests, snapshot.Logs = projects.Projects, authorizations, requests, logs.Records
 	return snapshot, nil
+}
+
+// LoadOAuth retrieves the two sections that can change while the native window
+// is idle, allowing it to surface incoming requests without probing the runtime.
+func (client *Client) LoadOAuth(ctx context.Context) ([]Authorization, []AuthorizationRequest, error) {
+	var authorizations struct {
+		Authorizations []Authorization `json:"authorizations"`
+	}
+	if err := client.do(ctx, http.MethodGet, "/admin/api/authorizations", nil, &authorizations, true); err != nil {
+		return nil, nil, err
+	}
+	var requests struct {
+		Requests []AuthorizationRequest `json:"requests"`
+	}
+	if err := client.do(ctx, http.MethodGet, "/admin/api/oauth/requests", nil, &requests, true); err != nil {
+		return nil, nil, err
+	}
+	return authorizations.Authorizations, requests.Requests, nil
 }
 
 // AddProject registers one absolute project directory with an explicit profile.
@@ -169,7 +196,7 @@ func (client *Client) AddProject(ctx context.Context, path, profile string) erro
 	}, nil, true)
 }
 
-// ProjectAction performs a lifecycle, indexing, or Codex action against the
+// ProjectAction performs a lifecycle or indexing action against the
 // exact server-issued project identifier selected in the native list.
 func (client *Client) ProjectAction(ctx context.Context, projectID, action string) error {
 	path := "/admin/api/projects/" + url.PathEscape(projectID) + "/" + url.PathEscape(action)
@@ -182,9 +209,15 @@ func (client *Client) SetProjectMode(ctx context.Context, projectID, mode string
 	return client.do(ctx, http.MethodPost, path, map[string]string{"mode": mode}, nil, true)
 }
 
-// RevokeGrant invalidates one exact server-issued client grant.
-func (client *Client) RevokeGrant(ctx context.Context, grantID string) error {
-	return client.do(ctx, http.MethodDelete, "/admin/api/grants/"+url.PathEscape(grantID), nil, nil, true)
+// DecideAuthorization approves or denies one exact pending OAuth request.
+func (client *Client) DecideAuthorization(ctx context.Context, requestID, decision string) error {
+	path := "/admin/api/oauth/requests/" + url.PathEscape(requestID) + "/" + url.PathEscape(decision)
+	return client.do(ctx, http.MethodPost, path, map[string]string{}, nil, true)
+}
+
+// RevokeAuthorization invalidates one exact owner-approved connection.
+func (client *Client) RevokeAuthorization(ctx context.Context, authorizationID string) error {
+	return client.do(ctx, http.MethodDelete, "/admin/api/authorizations/"+url.PathEscape(authorizationID), nil, nil, true)
 }
 
 // LaunchUninstaller asks the daemon to start the installed GUI uninstaller in
