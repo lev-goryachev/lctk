@@ -216,11 +216,11 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		{stdout: "candidate\n"},
 		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
 		{args: []string{"inspect", CandidateContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
-		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", CandidateContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", CandidateContainerName}, stderr: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 		{args: []string{"rename", CandidateContainerName, ContainerName}},
 		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
 		{args: []string{"inspect", ContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
-		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", ContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", ContainerName}, stderr: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 	}}
 	manager := NewManagerForTest(runner, nvidiainstall.Image, model, server.URL)
 	manager.distribution = DistributionNVIDIAGPU

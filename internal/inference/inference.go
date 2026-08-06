@@ -525,6 +525,10 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "read llama.cpp CUDA diagnostics: " + firstLine(logStderr, err)}
 	}
+	// Podman preserves the container's stdout and stderr channels. llama.cpp
+	// writes structured startup diagnostics to stderr on the pinned image even
+	// when `podman logs` succeeds, so both successful streams are evidence.
+	logs += "\n" + logStderr
 	if len(logs) > 1<<20 {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "llama.cpp CUDA startup diagnostics exceed the bounded evidence limit"}
