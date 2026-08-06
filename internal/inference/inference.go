@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,11 +21,11 @@ import (
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
 
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/machinetunnel"
 )
 
 const (
 	ContainerName = "lctk-inference"
-	HostPort      = 4445
 	ContainerPort = 8080
 	ModelName     = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 	ModelAlias    = ModelName
@@ -35,11 +36,14 @@ const (
 	Dimensions    = 768
 	// ConfigRevision forces replacement when runtime arguments change while the
 	// immutable image and model remain the same.
-	ConfigRevision = "4"
+	ConfigRevision = "6"
 
-	// ProjectEndpoint is reached from a Linux project container through Podman's
-	// host gateway. It is not published on a non-loopback host interface.
-	ProjectEndpoint = "http://host.containers.internal:4445/v1/embeddings"
+	// ProjectEndpoint is reached after the inference container joins the one
+	// requesting project's isolated network. No Windows host port is involved.
+	ProjectEndpoint = "http://lctk-inference:8080/v1/embeddings"
+	// RuntimeNetwork is Podman's rootful default network. The shared inference
+	// container remains attached to it while also serving isolated projects.
+	RuntimeNetwork = "podman"
 )
 
 var (
@@ -54,6 +58,10 @@ type Runner interface {
 	Run(ctx context.Context, args ...string) (stdout string, stderr string, err error)
 }
 
+type tunnel interface {
+	Ensure(context.Context, string, string) (string, error)
+}
+
 // Manager owns the shared container lifecycle. Configuration fields are private
 // so production always uses pinned identities; tests use NewManagerForTest.
 type Manager struct {
@@ -65,6 +73,7 @@ type Manager struct {
 	downloadURL string
 	address     string
 	httpClient  *http.Client
+	tunnel      tunnel
 }
 
 // Status is the observable shared inference state.
@@ -94,8 +103,8 @@ func NewManager(runner Runner) (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{runner: runner, image: Image, modelPath: path, modelBytes: ModelBytes,
-		modelSHA: ModelSHA256, downloadURL: ModelURL, address: fmt.Sprintf("http://127.0.0.1:%d", HostPort),
-		httpClient: &http.Client{Timeout: 2 * time.Second}}, nil
+		modelSHA: ModelSHA256, downloadURL: ModelURL, httpClient: &http.Client{Timeout: 2 * time.Second},
+		tunnel: machinetunnel.Default}, nil
 }
 
 // NewManagerForTest supplies isolated endpoints and artifacts without weakening
@@ -175,7 +184,6 @@ func (m *Manager) Ensure(ctx context.Context, wait time.Duration) (Status, error
 			"run", "--detach", "--name", ContainerName, "--restart", "unless-stopped",
 			"--label", "tech.lctk.managed=true", "--label", "tech.lctk.component=inference",
 			"--label", "tech.lctk.inference-config=" + ConfigRevision,
-			"--publish", fmt.Sprintf("127.0.0.1:%d:%d", HostPort, ContainerPort),
 			"--mount", mount, m.image,
 			"--model", "/models/" + ModelName, "--alias", ModelAlias,
 			"--embedding", "--pooling", "mean", "--host", "0.0.0.0",
@@ -251,12 +259,37 @@ func fileIdentity(path string) (int64, string) {
 }
 
 func (m *Manager) baseStatus() Status {
+	endpoint := ProjectEndpoint
+	if m.address != "" {
+		endpoint = m.address + "/v1/embeddings"
+	}
 	return Status{Container: ContainerName, Image: m.image, Model: ModelAlias,
-		ModelPath: m.modelPath, Endpoint: m.address + "/v1/embeddings"}
+		ModelPath: m.modelPath, Endpoint: endpoint}
 }
 
 func (m *Manager) health(ctx context.Context) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.address+"/health", nil)
+	address := m.address
+	if m.tunnel != nil {
+		format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, RuntimeNetwork)
+		stdout, stderr, err := m.runner.Run(ctx, "inspect", ContainerName, "--format", format)
+		if err != nil {
+			return fmt.Errorf("inspect embedding container address: %s", firstLine(stderr, err))
+		}
+		containerAddress := strings.TrimSpace(stdout)
+		if containerAddress == "" {
+			return fmt.Errorf("embedding container has no address on runtime network %s", RuntimeNetwork)
+		}
+		remote := net.JoinHostPort(containerAddress, fmt.Sprint(ContainerPort))
+		local, err := m.tunnel.Ensure(ctx, "inference", remote)
+		if err != nil {
+			return fmt.Errorf("open embedding machine tunnel: %w", err)
+		}
+		address = "http://" + local
+	}
+	if address == "" {
+		return errors.New("embedding health endpoint is not configured")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address+"/health", nil)
 	if err != nil {
 		return err
 	}

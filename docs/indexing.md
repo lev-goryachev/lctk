@@ -93,7 +93,7 @@ A failed update advances nothing. The batch stays pending and is tried again at 
 
 ### The project can move under the watcher
 
-A project restarted while the daemon is running comes back with a different published port. The host's observation is untouched by that: the watcher holds directories on the host, and the journal is in the LCTK home.
+A project restarted while the daemon is running can come back with a different private container address and loopback tunnel. The host's observation is untouched by that: the watcher holds directories on the host, and the journal is in the LCTK home.
 
 So the address is re-read rather than captured once — on the sweep, and on any client request, because a client using a project is the earliest evidence available that it came back somewhere else. Nothing is recorded as a gap: what failed was *applying* the record, not producing it, so the pending list is still complete and is simply applicable again. Discarding the journal here would turn a recoverable lag into a full reconciliation.
 

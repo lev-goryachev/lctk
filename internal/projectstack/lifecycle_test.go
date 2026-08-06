@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lev-goryachev/lctk/internal/inference"
 )
 
 // fakeRunner answers container-runtime commands from a script, so lifecycle logic
@@ -22,6 +24,12 @@ type fakeResponse struct {
 	stdout string
 	stderr string
 	err    error
+}
+
+type inferenceReadyStub struct{}
+
+func (inferenceReadyStub) Ensure(context.Context, time.Duration) (inference.Status, error) {
+	return inference.Status{Ready: true}, nil
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) (string, string, error) {
@@ -247,6 +255,20 @@ func TestStartWritesRuntimePlanAndPinsEveryResource(t *testing.T) {
 	}
 }
 
+func TestStartConnectsInferenceOnlyToTheProjectNetwork(t *testing.T) {
+	isolate(t)
+	runner := healthyRunner()
+	manager := NewManagerWithRunner(runner).WithInference(inferenceReadyStub{})
+	project := testProject("alpha-abcd1234", absPath("work", "alpha"))
+	if _, err := manager.Start(t.Context(), project, 0); err != nil {
+		t.Fatal(err)
+	}
+	connect := runner.callWith("network", "connect", "--alias", inference.ContainerName, "lctk-alpha-abcd1234-net")
+	if connect == nil || strings.Contains(strings.Join(connect, " "), "lctk-beta") {
+		t.Fatalf("inference was not bounded to the project's network: %v", runner.calls)
+	}
+}
+
 // TestStopPreservesTheProjectVolume guards the remove-versus-purge distinction: a
 // stop that deleted volumes would destroy indexes and memory.
 func TestStopPreservesTheProjectVolume(t *testing.T) {
@@ -266,6 +288,9 @@ func TestStopPreservesTheProjectVolume(t *testing.T) {
 	remove := runner.callWith("rm", "--force", "lctk-alpha-abcd1234-code-intel")
 	if remove == nil {
 		t.Fatalf("no container removal was made; calls: %v", runner.calls)
+	}
+	if disconnect := runner.callWith("network", "disconnect", "lctk-alpha-abcd1234-net", inference.ContainerName); disconnect == nil {
+		t.Fatalf("stop left inference attached to the project network: %v", runner.calls)
 	}
 	for _, call := range runner.calls {
 		joined := strings.Join(call, " ")

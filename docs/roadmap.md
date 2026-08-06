@@ -210,7 +210,7 @@ Implemented:
 - ignore rules from `.gitignore`, then `.lctkignore`, then an untracked `.lctkignore.local`, each honoured in nested directories and each able to re-include what an earlier one excluded, with a short overridable default list and unconditional exclusion of version-control metadata;
 - literal and regular-expression search, case sensitivity, path globs, language filters, bounded previews, pagination, and limits;
 - an `exact_search` tool on the project route behind [`internal/codeintel`](../internal/codeintel), the stable adapter [ADR-0004](adr/0004-stable-aggregated-tool-api.md) requires, reporting backend, schema version, index generation, index time, and file count as provenance;
-- the service published on an ephemeral loopback port assigned by the runtime, discovered from the same inspect call that reports lifecycle state, so many projects run at once with nothing to coordinate;
+- the service exposed through a process-owned SSH tunnel on an ephemeral Windows loopback port, derived from the private container address in the same inspect call that reports lifecycle state, so many projects run at once without shared WSL ports or number coordination;
 - `project_info` reporting the search capability and index freshness, and `lctk project reindex` for explicit catch-up and for the documented recovery from a corrupt index.
 
 Verified:
@@ -464,7 +464,7 @@ Not done here: an agent still cannot ask "what changed since I last looked". The
 
 Both defects here were found by running a slice against this repository rather than by testing, which is the habit paying for itself twice in one afternoon.
 
-**A project restarted while the daemon runs came back on a new published port, and the index never caught up again.** The worker captured the service address when it was created and nothing revisited it, so every drain posted to a port that no longer answered — for as long as the daemon lived.
+**A project restarted while the daemon runs came back on a new service address, and the index never caught up again.** The worker captured the address when it was created and nothing revisited it, so every drain posted to an endpoint that no longer answered — for as long as the daemon lived.
 
 What it got right is why the defect was findable at all: the failure was loud. The checkpoint refused to advance, the pending list grew, and the reason appeared in `lctk project watch` as well as the log. Nothing claimed to be fresh. What was missing was recovery.
 

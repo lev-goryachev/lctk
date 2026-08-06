@@ -28,6 +28,16 @@ type scriptedRunner struct {
 	seen  [][]string
 }
 
+type tunnelStub struct {
+	address string
+	remote  string
+}
+
+func (s *tunnelStub) Ensure(_ context.Context, _ string, remote string) (string, error) {
+	s.remote = remote
+	return s.address, nil
+}
+
 func (r *scriptedRunner) Run(_ context.Context, args ...string) (string, string, error) {
 	r.t.Helper()
 	r.seen = append(r.seen, append([]string(nil), args...))
@@ -47,7 +57,7 @@ func TestEnsureReusesThePinnedHealthyContainer(t *testing.T) {
 	health := healthyServer(t)
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{args: []string{"image", "inspect", "image@sha256:test", "--format", "{{.Id}}"}, stdout: "sha256:test\n"},
-		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Config.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|image@sha256:test|4\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.State.Status}}|{{.Config.Image}}|{{index .Config.Labels "tech.lctk.inference-config"}}`}, stdout: "running|image@sha256:test|" + ConfigRevision + "\n"},
 	}}
 	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
 	status, err := manager.Ensure(context.Background(), time.Second)
@@ -56,6 +66,27 @@ func TestEnsureReusesThePinnedHealthyContainer(t *testing.T) {
 	}
 	if !status.Ready || len(runner.calls) != 0 {
 		t.Fatalf("status = %+v, remaining calls = %d", status, len(runner.calls))
+	}
+}
+
+func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *testing.T) {
+	model := writeTestModel(t)
+	health := healthyServer(t)
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "sha256:test\n"},
+		{stdout: "running|image@sha256:test|" + ConfigRevision + "\n"},
+		{args: []string{"inspect", ContainerName, "--format", `{{(index .NetworkSettings.Networks "podman").IPAddress}}`}, stdout: "10.88.0.2\n"},
+	}}
+	manager := NewManagerForTest(runner, "image@sha256:test", model, health.URL)
+	manager.address = ""
+	tunnel := &tunnelStub{address: strings.TrimPrefix(health.URL, "http://")}
+	manager.tunnel = tunnel
+	status, err := manager.Ensure(t.Context(), time.Second)
+	if err != nil || !status.Ready {
+		t.Fatalf("Ensure status=%+v err=%v", status, err)
+	}
+	if tunnel.remote != "10.88.0.2:8080" {
+		t.Fatalf("machine tunnel remote=%q", tunnel.remote)
 	}
 }
 
@@ -82,7 +113,6 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 	run := strings.Join(runner.seen[2], " ")
 	for _, required := range []string{
 		"run --detach --name " + ContainerName,
-		"--publish 127.0.0.1:4445:8080",
 		"source=" + runtimeModel,
 		"target=/models/" + ModelName + ",readonly",
 		"--embedding --pooling mean",
@@ -92,6 +122,9 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 		if !strings.Contains(run, required) {
 			t.Errorf("run args are missing %q: %s", required, run)
 		}
+	}
+	if strings.Contains(run, "--publish") {
+		t.Errorf("inference run exposes a WSL port instead of using the authenticated machine tunnel: %s", run)
 	}
 }
 

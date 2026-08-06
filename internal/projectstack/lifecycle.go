@@ -14,6 +14,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/inference"
+	"github.com/lev-goryachev/lctk/internal/machinetunnel"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 )
 
@@ -58,13 +59,6 @@ var (
 	ErrImageMissing = errors.New("reusable code-intel image is not available")
 )
 
-// serviceHost is where a published project port is reachable. It is loopback
-// only: a project service must not be exposed to the network.
-const serviceHost = "127.0.0.1"
-
-// servicePortKey is how the runtime names the container port in its port map.
-var servicePortKey = strconv.Itoa(ServicePort) + "/tcp"
-
 // Status is the runtime view of one project stack.
 type Status struct {
 	ProjectID string `json:"project_id"`
@@ -74,10 +68,9 @@ type Status struct {
 	Image     string `json:"image"`
 	Network   string `json:"network"`
 	Volume    string `json:"volume"`
-	// ServiceAddress is the loopback host address the project's code-intel
-	// service is published on, empty when the project is not running. The port is
-	// assigned by the runtime rather than chosen by LCTK, so it changes across a
-	// restart and must be read rather than remembered.
+	// ServiceAddress is the process-owned loopback tunnel for the project's
+	// code-intel service, empty when the project is not running. Its dynamic port
+	// changes across daemon restarts and must be read rather than remembered.
 	ServiceAddress string `json:"service_address,omitempty"`
 	// Detail explains an error or transitional state in one line.
 	Detail string `json:"detail,omitempty"`
@@ -104,6 +97,11 @@ type inferenceLifecycle interface {
 	Ensure(context.Context, time.Duration) (inference.Status, error)
 }
 
+type serviceTunnel interface {
+	Ensure(context.Context, string, string) (string, error)
+	Close(string)
+}
+
 // Manager drives project stacks.
 type Manager struct {
 	runner Runner
@@ -112,6 +110,7 @@ type Manager struct {
 	// intentionally exercise container lifecycle behavior in isolation.
 	sharedInference inferenceLifecycle
 	inferenceErr    error
+	tunnel          serviceTunnel
 	// settings resolves the machine's background-load policy. It is a function so
 	// a change takes effect on the next start without restarting the daemon, and
 	// so a test can drive a policy without writing a file.
@@ -125,7 +124,8 @@ type Manager struct {
 func NewManager() *Manager {
 	runner := containerruntime.Runner{}
 	shared, err := inference.NewManager(runner)
-	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, settings: hostsettings.Load, version: buildinfo.Version}
+	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, tunnel: machinetunnel.Default,
+		settings: hostsettings.Load, version: buildinfo.Version}
 }
 
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
@@ -327,6 +327,11 @@ func (m *Manager) Start(ctx context.Context, project projectregistry.Project, wa
 	if err := m.ensureNetwork(ctx, plan); err != nil {
 		return Status{}, err
 	}
+	if m.sharedInference != nil {
+		if err := m.ensureInferenceAttachment(ctx, plan); err != nil {
+			return Status{}, err
+		}
+	}
 	if err := m.ensureVolume(ctx, plan); err != nil {
 		return Status{}, err
 	}
@@ -354,6 +359,12 @@ func (m *Manager) Stop(ctx context.Context, project projectregistry.Project) (St
 	// state volume intact. Purge remains a separate destructive operation.
 	if _, stderr, err := m.runner.Run(ctx, "rm", "--force", names.ContainerName); err != nil && !isNoSuchContainer("", stderr) {
 		return Status{}, fmt.Errorf("stop %s container: %s", project.ID, firstLine(stderr, err))
+	}
+	if m.tunnel != nil {
+		m.tunnel.Close(project.ID)
+	}
+	if _, stderr, err := m.runner.Run(ctx, "network", "disconnect", "--force", names.Network, inference.ContainerName); err != nil && !isNotConnected("", stderr) {
+		return Status{}, fmt.Errorf("disconnect inference from %s: %s", project.ID, firstLine(stderr, err))
 	}
 	if _, stderr, err := m.runner.Run(ctx, "network", "rm", names.Network); err != nil && !isNoSuchNetwork("", stderr) {
 		return Status{}, fmt.Errorf("stop %s network: %s", project.ID, firstLine(stderr, err))
@@ -412,11 +423,11 @@ func (m *Manager) inspect(ctx context.Context, names Names) (Status, error) {
 
 	// One inspect answers three questions, so a search does not cost an extra
 	// runtime call to find the service. Fields are separated explicitly rather
-	// than by whitespace because health and the published port are both allowed
+	// than by whitespace because health and the private address are both allowed
 	// to be empty, and positional parsing would silently shift.
 	format := "{{.State.Status}}|" +
 		"{{if .State.Health}}{{.State.Health.Status}}{{end}}|" +
-		`{{with index .NetworkSettings.Ports "` + servicePortKey + `"}}{{(index . 0).HostPort}}{{end}}`
+		fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, names.Network)
 	stdout, stderr, err := m.runner.Run(ctx, "inspect", names.ContainerName, "--format", format)
 	if err != nil {
 		if isNoSuchContainer(stdout, stderr) {
@@ -438,7 +449,18 @@ func (m *Manager) inspect(ctx context.Context, names Names) (Status, error) {
 		status.Health = fields[1]
 	}
 	if len(fields) > 2 && fields[2] != "" {
-		status.ServiceAddress = net.JoinHostPort(serviceHost, fields[2])
+		remote := net.JoinHostPort(fields[2], strconv.Itoa(ServicePort))
+		if m.tunnel == nil {
+			status.ServiceAddress = remote
+		} else {
+			local, tunnelErr := m.tunnel.Ensure(ctx, names.ProjectID, remote)
+			if tunnelErr != nil {
+				status.State = StateUnknown
+				status.Detail = tunnelErr.Error()
+				return status, fmt.Errorf("open project %s machine tunnel: %w", names.ProjectID, tunnelErr)
+			}
+			status.ServiceAddress = local
+		}
 	}
 
 	switch containerState {
@@ -525,6 +547,18 @@ func (m *Manager) ensureNetwork(ctx context.Context, plan RuntimePlan) error {
 	return nil
 }
 
+// ensureInferenceAttachment gives exactly one project network access to the
+// shared stateless inference container. The inference container joins each
+// isolated network, while project containers never join a network belonging to
+// another project and therefore cannot address one another.
+func (m *Manager) ensureInferenceAttachment(ctx context.Context, plan RuntimePlan) error {
+	args := []string{"network", "connect", "--alias", inference.ContainerName, plan.Network, inference.ContainerName}
+	if _, stderr, err := m.runner.Run(ctx, args...); err != nil && !isAlreadyConnected("", stderr) {
+		return fmt.Errorf("connect inference to project network %s: %s", plan.Network, firstLine(stderr, err))
+	}
+	return nil
+}
+
 // ensureVolume creates durable project state once and never replaces it during
 // ordinary start, restart, update, or runtime recovery.
 func (m *Manager) ensureVolume(ctx context.Context, plan RuntimePlan) error {
@@ -563,6 +597,15 @@ func isNoSuchNetwork(stdout, stderr string) bool {
 	combined := strings.ToLower(stdout + " " + stderr)
 	return strings.Contains(combined, "network not found") ||
 		strings.Contains(combined, "no such network")
+}
+
+func isAlreadyConnected(stdout, stderr string) bool {
+	return strings.Contains(strings.ToLower(stdout+" "+stderr), "already connected")
+}
+
+func isNotConnected(stdout, stderr string) bool {
+	combined := strings.ToLower(stdout + " " + stderr)
+	return strings.Contains(combined, "not connected") || isNoSuchContainer(stdout, stderr) || isNoSuchNetwork(stdout, stderr)
 }
 
 func isNoSuchVolume(stdout, stderr string) bool {

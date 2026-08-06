@@ -224,7 +224,7 @@ func TestIndexChangesTranslatesEveryObservation(t *testing.T) {
 }
 
 // A project restarted while the daemon is running comes back on a different
-// published port. Nothing about the host's observation changed, so the index has
+// service address. Nothing about the host's observation changed, so the index has
 // to catch up on the new address rather than stay behind on the old one forever.
 func TestAProjectThatMovedToANewPortIsCaughtUpRatherThanAbandoned(t *testing.T) {
 	first := newFakeService(t, []string{"."})
@@ -234,7 +234,7 @@ func TestAProjectThatMovedToANewPortIsCaughtUpRatherThanAbandoned(t *testing.T) 
 	h.Sweep(context.Background())
 	h.awaitView(t, "the starting gap being closed", func(v View) bool { return v.Gap == nil })
 
-	// The project is torn down and its published port stops answering.
+	// The project is torn down and its service address stops answering.
 	first.server.Close()
 	h.write(t, "after-restart.go", "package main\n")
 

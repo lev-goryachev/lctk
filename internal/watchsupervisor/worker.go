@@ -49,7 +49,7 @@ type worker struct {
 	lastUse time.Time
 	// index and address are the service this worker applies to. They are mutable
 	// because a project restarted while the daemon runs comes back on a different
-	// published port, and the watcher and the journal outlive that.
+	// service address, and the watcher and the journal outlive that.
 	index     indexClient
 	address   string
 	settledAt time.Time
