@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"golang.org/x/sys/windows"
 )
 
@@ -72,10 +71,9 @@ func run() (runErr error) {
 		return err
 	}
 	command := exec.Command(setup, arguments...)
-	// The embedded setup is built as a GUI executable, but explicitly applying
-	// the child-process contract also prevents a console flash if build flags
-	// are accidentally changed in a future local acceptance build.
-	windowsprocess.HideConsole(command)
+	// The embedded setup is a GUI-subsystem executable. Do not apply HideWindow:
+	// Windows uses that startup flag for the application's first ShowWindow call
+	// and would hide the real setup or uninstall surface together with a console.
 	if DefaultSetupMode == "uninstall" {
 		// Recovery needs only the extracted native uninstaller. It must not bind
 		// the setup artifact endpoint because an unrelated listener must never
