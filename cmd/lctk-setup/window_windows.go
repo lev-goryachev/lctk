@@ -197,7 +197,7 @@ func newNativeSetupWindow(request setupRequest) (*nativeSetupWindow, error) {
 	x := (int32(screenWidth) - windowWidth) / 2
 	y := (int32(screenHeight) - windowHeight) / 2
 	handle, _, callErr := procCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(setupWindowClass)), uintptr(unsafe.Pointer(mustUTF16("Install LCTK"))),
+		0, uintptr(unsafe.Pointer(setupWindowClass)), uintptr(unsafe.Pointer(mustUTF16(setupTitle(request.Action)))),
 		wsOverlappedWindow, uintptr(x), uintptr(y), windowWidth, windowHeight,
 		0, 0, instance, 0,
 	)
@@ -206,7 +206,7 @@ func newNativeSetupWindow(request setupRequest) (*nativeSetupWindow, error) {
 	}
 	ctx, cancel := context.WithCancel(request.Context)
 	window := &nativeSetupWindow{request: request, window: handle, context: ctx, cancel: cancel,
-		status: "Choose where LCTK and its container data will be stored."}
+		status: setupInitialStatus(request.Action)}
 	setupWindows.Store(handle, window)
 	if err := window.createControls(instance); err != nil {
 		setupWindows.Delete(handle)
@@ -235,7 +235,7 @@ func (window *nativeSetupWindow) createControls(instance uintptr) error {
 		text                string
 		x, y, width, height int32
 	}{
-		{"Install LCTK", 28, 22, 700, 34},
+		{setupTitle(window.request.Action), 28, 22, 700, 34},
 		{"One private runtime. No Docker Desktop or build tools.", 28, 60, 700, 24},
 		{fmt.Sprintf("Version %s  |  Windows build %d, %s  |  WSL2 %s", window.request.Manifest.Version, window.request.Host.Build, window.request.Host.Architecture, readyText(window.request.Host.WSLReady)), 28, 93, 700, 24},
 		{"Installation directory", 28, 132, 700, 22},
@@ -294,7 +294,7 @@ func (window *nativeSetupWindow) createControls(instance uintptr) error {
 	if err != nil {
 		return err
 	}
-	window.installButton, err = create("BUTTON", "Review and install", wsChild|wsVisible|wsTabStop|bsPushButton, 548, 407, 188, 38, idInstall)
+	window.installButton, err = create("BUTTON", setupButtonText(window.request.Action), wsChild|wsVisible|wsTabStop|bsPushButton, 548, 407, 188, 38, idInstall)
 	return err
 }
 
@@ -390,15 +390,12 @@ func (window *nativeSetupWindow) install(locations lctkhome.Locations) {
 		window.finish(errors.New("the selected locations do not have enough free space or the host is not ready"), false)
 		return
 	}
-	confirmation := fmt.Sprintf(
-		"Install LCTK %s?\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nDownload: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime",
-		plan.Version, locations.InstallDir, locations.RuntimeDataDir, diskspace.Human(plan.DownloadBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
-	)
-	answer, _ := windows.MessageBox(windows.HWND(window.window), mustUTF16(confirmation), mustUTF16("Review LCTK installation"), windows.MB_YESNO|windows.MB_ICONINFORMATION)
+	confirmation := setupConfirmation(plan, locations)
+	answer, _ := windows.MessageBox(windows.HWND(window.window), mustUTF16(confirmation), mustUTF16("Review LCTK "+string(plan.Action)), windows.MB_YESNO|windows.MB_ICONINFORMATION)
 	if answer != messageBoxYes {
 		window.mu.Lock()
 		window.installing = false
-		window.status = "Installation was not started. You can change the locations or close setup."
+		window.status = "No changes were made. You can review the plan again or close setup."
 		window.mu.Unlock()
 		window.postState()
 		return
@@ -427,10 +424,10 @@ func (window *nativeSetupWindow) finish(err error, complete bool) {
 	window.complete = complete
 	if err != nil {
 		window.failure = err.Error()
-		window.status = "Installation stopped without reporting success."
+		window.status = "Setup stopped without reporting success."
 	} else if complete {
 		window.failure = ""
-		window.status = "LCTK is installed. The application interface is opening."
+		window.status = setupCompleteStatus(window.request.Action)
 	}
 	window.mu.Unlock()
 	window.postState()
@@ -452,7 +449,7 @@ func (window *nativeSetupWindow) render() {
 	setEnabled(window.runtimeEdit, !window.request.RuntimeLocked && !installing && !complete)
 	setEnabled(window.browseRuntime, !window.request.RuntimeLocked && !installing && !complete)
 	setEnabled(window.installButton, !installing)
-	buttonText := "Review and install"
+	buttonText := setupButtonText(window.request.Action)
 	if complete {
 		buttonText = "Close"
 	}
@@ -461,6 +458,71 @@ func (window *nativeSetupWindow) render() {
 		procSendMessageW.Call(window.progress, pbmSetMarquee, 1, 30)
 	} else {
 		procSendMessageW.Call(window.progress, pbmSetMarquee, 0, 0)
+	}
+}
+
+// setupTitle keeps the native surface explicit about whether it will create,
+// update, or repair the recorded installation.
+func setupTitle(action setupflow.Action) string {
+	switch action {
+	case setupflow.ActionUpgrade:
+		return "Update LCTK"
+	case setupflow.ActionRepair:
+		return "Repair LCTK"
+	default:
+		return "Install LCTK"
+	}
+}
+
+// setupButtonText mirrors the accepted transaction instead of presenting every
+// repeated setup run as a fresh installation.
+func setupButtonText(action setupflow.Action) string {
+	switch action {
+	case setupflow.ActionUpgrade:
+		return "Review and update"
+	case setupflow.ActionRepair:
+		return "Review and repair"
+	default:
+		return "Review and install"
+	}
+}
+
+// setupInitialStatus explains why existing paths are locked before the user
+// opens the review dialog.
+func setupInitialStatus(action setupflow.Action) string {
+	switch action {
+	case setupflow.ActionUpgrade:
+		return "Review the in-place update. Existing locations and project data will be preserved."
+	case setupflow.ActionRepair:
+		return "Review the same-version repair. Existing locations and project data will be preserved."
+	default:
+		return "Choose where LCTK and its container data will be stored."
+	}
+}
+
+// setupConfirmation is the final plan boundary before any setup mutation.
+func setupConfirmation(plan setupflow.Plan, locations lctkhome.Locations) string {
+	versionLine := fmt.Sprintf("Install LCTK %s?", plan.Version)
+	if plan.Action == setupflow.ActionUpgrade {
+		versionLine = fmt.Sprintf("Update LCTK %s to %s in place?", plan.CurrentVersion, plan.Version)
+	} else if plan.Action == setupflow.ActionRepair {
+		versionLine = fmt.Sprintf("Repair LCTK %s in place?", plan.Version)
+	}
+	return fmt.Sprintf(
+		"%s\n\nInstallation directory:\n%s\n\nRuntime data directory:\n%s\n\nDownload: %s\nRuntime-data free space: %s\nRuntime: Podman %s in the managed WSL machine lctk-runtime\n\nProjects, indexes, memory, settings, and OAuth approvals are preserved.",
+		versionLine, locations.InstallDir, locations.RuntimeDataDir, diskspace.Human(plan.DownloadBytes), diskspace.Human(int64(plan.RuntimeDataAvailableBytes)), plan.Runtime.Version,
+	)
+}
+
+// setupCompleteStatus confirms the action that succeeded before Admin opens.
+func setupCompleteStatus(action setupflow.Action) string {
+	switch action {
+	case setupflow.ActionUpgrade:
+		return "LCTK was updated successfully. The application interface is opening."
+	case setupflow.ActionRepair:
+		return "LCTK was repaired successfully. The application interface is opening."
+	default:
+		return "LCTK is installed. The application interface is opening."
 	}
 }
 

@@ -35,6 +35,8 @@ type setupRequest struct {
 	ManifestSource string
 	Host           windowssetup.Status
 	Locations      lctkhome.Locations
+	Action         setupflow.Action
+	CurrentVersion string
 	InstallLocked  bool
 	RuntimeLocked  bool
 }
@@ -106,10 +108,18 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, activationErr := installation.Load(locations.InstallDir)
+	activation, activationErr := installation.Load(locations.InstallDir)
 	installLocked := activationErr == nil
 	if activationErr != nil && !errors.Is(activationErr, os.ErrNotExist) {
 		return activationErr
+	}
+	currentVersion := ""
+	if installLocked {
+		currentVersion = activation.ActiveVersion
+	}
+	action, err := setupflow.DecideAction(currentVersion, manifest.Version)
+	if err != nil {
+		return err
 	}
 	machineCtx, cancelMachine := context.WithTimeout(ctx, 15*time.Second)
 	defer cancelMachine()
@@ -119,7 +129,8 @@ func run(ctx context.Context, args []string) error {
 	}
 	return runSetupWindow(setupRequest{
 		Context: ctx, Manifest: manifest, ManifestSource: *manifestSource,
-		Host: host, Locations: locations, InstallLocked: installLocked, RuntimeLocked: runtimeLocked,
+		Host: host, Locations: locations, Action: action, CurrentVersion: currentVersion,
+		InstallLocked: installLocked, RuntimeLocked: runtimeLocked,
 	})
 }
 
@@ -158,6 +169,9 @@ func inspectSelection(ctx context.Context, request setupRequest, locations lctkh
 	plan, err := manager.Inspect(ctx, request.Manifest)
 	if err != nil {
 		return nil, setupflow.Plan{}, err
+	}
+	if plan.Action != request.Action || plan.CurrentVersion != request.CurrentVersion {
+		return nil, setupflow.Plan{}, errors.New("the installed LCTK version changed while setup was open; reopen setup to review the new plan")
 	}
 	available, err := diskspace.Available(locations.RuntimeDataDir)
 	if err != nil {

@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/lev-goryachev/lctk/internal/daemonstate"
 	"github.com/lev-goryachev/lctk/internal/desktopinstall"
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/runtimeinstall"
+	"github.com/lev-goryachev/lctk/internal/updateflow"
 	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"github.com/lev-goryachev/lctk/internal/windowssetup"
 )
@@ -21,13 +23,26 @@ import (
 // until Windows restarts.
 var ErrRebootRequired = errors.New("Windows must restart before LCTK setup can continue")
 
+// Action identifies the exact setup transaction presented to the user. The
+// installer never silently turns an older package into a downgrade.
+type Action string
+
+const (
+	ActionInstall Action = "install"
+	ActionUpgrade Action = "upgrade"
+	ActionRepair  Action = "repair"
+)
+
 // Plan is the complete read-only setup decision shown by setup.exe.
 type Plan struct {
+	Action                    Action              `json:"action"`
+	CurrentVersion            string              `json:"current_version,omitempty"`
 	Version                   string              `json:"version"`
 	Host                      windowssetup.Status `json:"host"`
 	Runtime                   runtimeinstall.Plan `json:"runtime"`
 	Core                      installation.Plan   `json:"core"`
 	Desktop                   desktopinstall.Plan `json:"desktop"`
+	Upgrade                   updateflow.Plan     `json:"upgrade,omitempty"`
 	DownloadBytes             int64               `json:"download_bytes"`
 	RuntimeDataRequiredBytes  int64               `json:"runtime_data_required_bytes"`
 	RuntimeDataAvailableBytes uint64              `json:"runtime_data_available_bytes"`
@@ -53,6 +68,14 @@ type desktopInstaller interface {
 	Install(context.Context, releasebundle.Manifest) (string, error)
 }
 
+// updateCoordinator is the same project and host transaction used by the CLI.
+// Setup supplies an already signature-verified manifest.
+type updateCoordinator interface {
+	Inspect(context.Context, releasebundle.Manifest) (updateflow.Plan, error)
+	Apply(context.Context, releasebundle.Manifest) (updateflow.Plan, error)
+	Rollback(context.Context) (updateflow.Plan, error)
+}
+
 // Manager wires the production installers while keeping the coordinator
 // independently testable.
 type Manager struct {
@@ -65,6 +88,9 @@ type Manager struct {
 	EnableWSL      func(context.Context) (bool, error)
 	RegisterResume func() error
 	Run            func(context.Context, string, ...string) ([]byte, error)
+	NewUpdate      func(string) updateCoordinator
+	StopDaemon     func(string) error
+	StartDaemon    func(string) error
 	Progress       Progress
 }
 
@@ -74,8 +100,29 @@ func NewManager(home, manifestSource string) *Manager {
 		Home: home, ManifestSource: manifestSource,
 		Runtime: runtimeinstall.NewManager(home), Core: installation.NewManager(home), Desktop: desktopinstall.NewManager(home),
 		ProbeHost: windowssetup.Probe, EnableWSL: windowssetup.EnableWSL, RegisterResume: windowssetup.RegisterResume,
-		Run: run,
+		Run: run, StopDaemon: daemonstate.Stop, StartDaemon: daemonstate.Start,
+		NewUpdate: func(currentVersion string) updateCoordinator {
+			return updateflow.NewManager(home, currentVersion, manifestSource)
+		},
 	}
+}
+
+// DecideAction compares strict numeric product versions. Re-running the exact
+// same immutable release is an explicit repair; an older package fails closed.
+func DecideAction(currentVersion, targetVersion string) (Action, error) {
+	if currentVersion == "" {
+		return ActionInstall, nil
+	}
+	if currentVersion == targetVersion {
+		return ActionRepair, nil
+	}
+	if releasebundle.VersionAtLeast(targetVersion, currentVersion) {
+		return ActionUpgrade, nil
+	}
+	if releasebundle.VersionAtLeast(currentVersion, targetVersion) {
+		return "", fmt.Errorf("setup %s cannot downgrade installed LCTK %s; use verified rollback instead", targetVersion, currentVersion)
+	}
+	return "", fmt.Errorf("installed LCTK version %q is invalid", currentVersion)
 }
 
 // Inspect completes every non-mutating prerequisite and component decision.
@@ -96,9 +143,27 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 	if err != nil {
 		return Plan{}, err
 	}
+	action, err := DecideAction(corePlan.CurrentVersion, manifest.Version)
+	if err != nil {
+		return Plan{}, err
+	}
+	var upgradePlan updateflow.Plan
+	if action == ActionUpgrade {
+		if m.NewUpdate == nil {
+			return Plan{}, errors.New("setup update coordinator is missing")
+		}
+		upgradePlan, err = m.NewUpdate(corePlan.CurrentVersion).Inspect(ctx, manifest)
+		if err != nil {
+			return Plan{}, err
+		}
+	}
 	ready := host.Supported && !host.RequiresEnablement && runtimePlan.Ready && corePlan.Ready
+	if action == ActionUpgrade {
+		ready = ready && upgradePlan.Ready
+	}
 	return Plan{
-		Version: manifest.Version, Host: host, Runtime: runtimePlan, Core: corePlan, Desktop: desktopPlan,
+		Action: action, CurrentVersion: corePlan.CurrentVersion, Version: manifest.Version,
+		Host: host, Runtime: runtimePlan, Core: corePlan, Desktop: desktopPlan, Upgrade: upgradePlan,
 		DownloadBytes: runtimePlan.DownloadBytes + corePlan.DownloadBytes + desktopPlan.DownloadBytes,
 		Ready:         ready,
 	}, nil
@@ -106,7 +171,7 @@ func (m *Manager) Inspect(ctx context.Context, manifest releasebundle.Manifest) 
 
 // Install applies the accepted plan in dependency order and runs the existing
 // signed bootstrap self-test before exposing the desktop launcher.
-func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) error {
+func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) (installErr error) {
 	plan, err := m.Inspect(ctx, manifest)
 	if err != nil {
 		return err
@@ -124,16 +189,56 @@ func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) 
 			return ErrRebootRequired
 		}
 	}
-	if !plan.Runtime.Ready || !plan.Core.Ready {
+	if !plan.Runtime.Ready || !plan.Core.Ready || plan.Action == ActionUpgrade && !plan.Upgrade.Ready {
 		return errors.New("setup plan does not have enough disk space")
+	}
+	if m.StopDaemon == nil || m.StartDaemon == nil {
+		return errors.New("setup daemon lifecycle is incomplete")
+	}
+	daemonStopped := false
+	if plan.Action != ActionInstall {
+		m.report("daemon", "Stopping the installed LCTK background service")
+		if err := m.StopDaemon(m.Home); err != nil {
+			return err
+		}
+		daemonStopped = true
+	}
+	var updater updateCoordinator
+	upgradeApplied := false
+	defer func() {
+		if installErr == nil {
+			return
+		}
+		if upgradeApplied && updater != nil {
+			// Cancellation of the forward transaction must not cancel recovery.
+			// Rollback gets its own bounded context so a timed-out download or
+			// health gate cannot strand migrated projects or host activation.
+			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
+			_, rollbackErr := updater.Rollback(rollbackCtx)
+			cancelRollback()
+			installErr = errors.Join(installErr, rollbackErr)
+		}
+		if daemonStopped {
+			installErr = errors.Join(installErr, m.StartDaemon(m.Home))
+		}
+	}()
+	if plan.Action == ActionUpgrade {
+		m.report("update", fmt.Sprintf("Updating LCTK %s to %s and checking running projects", plan.CurrentVersion, plan.Version))
+		updater = m.NewUpdate(plan.CurrentVersion)
+		if _, err := updater.Apply(ctx, manifest); err != nil {
+			return err
+		}
+		upgradeApplied = true
 	}
 	m.report("runtime", "Installing the verified private Podman runtime")
 	if err := m.Runtime.Install(ctx, manifest); err != nil {
 		return err
 	}
-	m.report("core", "Installing and verifying the LCTK host core")
-	if _, err := m.Core.Install(ctx, manifest); err != nil {
-		return err
+	if plan.Action != ActionUpgrade {
+		m.report("core", "Installing and verifying the LCTK host core")
+		if _, err := m.Core.Install(ctx, manifest); err != nil {
+			return err
+		}
 	}
 	executable, _, err := installation.ActiveExecutable(m.Home)
 	if err != nil {
@@ -150,6 +255,10 @@ func (m *Manager) Install(ctx context.Context, manifest releasebundle.Manifest) 
 	if _, err := m.Desktop.Install(ctx, manifest); err != nil {
 		return err
 	}
+	if err := m.StartDaemon(m.Home); err != nil {
+		return err
+	}
+	daemonStopped = false
 	m.report("complete", "LCTK is installed and ready")
 	return nil
 }

@@ -44,6 +44,8 @@ An extracted package starts through the stable `lctk` launcher. Before initial a
 
 Official setup, bootstrap, and update resolve the signed `release-manifest.json`, validate the embedded trust root, immutable image digests, artifact sizes and SHA-256 digests, model identity, host minimum, and project-schema range. Setup additionally requires the complete Windows launcher, installer, Podman client, and WSL machine set.
 
+Native setup classifies the authenticated manifest as install, in-place upgrade, or same-version repair. Upgrade preserves the recorded installation/runtime-data locations and all persistent project and OAuth state, then uses the same candidate project health gates and host activation transaction as `lctk update`. Repair accepts only the exact immutable component identities for that version. An older setup fails before mutation; downgrades remain the responsibility of verified rollback. Any changed release-candidate or published setup must therefore receive a higher product version.
+
 The Windows setup, launcher, and core are intentionally not Authenticode-signed. Windows can show an unknown-publisher or SmartScreen warning, and managed-device policy can refuse execution. The GitHub Release page must state this explicitly; release integrity is established by the tagged workflow, GitHub attestations, `SHA256SUMS`, launcher-to-core binding, and the Ed25519-signed manifest rather than a Windows publisher certificate.
 
 CLI bootstrap and update remain read-only unless `--yes` is present:
