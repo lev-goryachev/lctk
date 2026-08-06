@@ -405,7 +405,10 @@ func (m *Manager) startContainer(ctx context.Context, name string) error {
 		"--batch-size", "4096", "--ubatch-size", "4096",
 	)
 	if m.distribution == DistributionNVIDIAGPU {
-		args = append(args, "--n-gpu-layers", "99")
+		// b10257 emits its measured CUDA device and exact offloaded-layer count
+		// only at trace level. It does not log embedding input text; diagnostics
+		// read only the fixed two-minute startup window.
+		args = append(args, "--n-gpu-layers", "99", "--log-verbosity", "4")
 	}
 	if _, stderr, err := m.runner.Run(ctx, args...); err != nil {
 		return fmt.Errorf("start %s embedding inference candidate: %s", m.distribution, firstLine(stderr, err))
@@ -487,6 +490,8 @@ func isShortContainerID(value string) bool {
 
 var offloadPattern = regexp.MustCompile(`(?i)offloaded\s+([1-9][0-9]*)/([1-9][0-9]*)\s+layers\s+to\s+gpu`)
 
+const podmanStartedAtLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
+
 func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status *Status) error {
 	if m.distribution == DistributionCPU {
 		status.Backend = "cpu"
@@ -502,15 +507,30 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing, Detail: err.Error()}
 	}
-	// Backend evidence is contained near llama.cpp startup. Bound the log read
-	// so Admin polling and activation cannot copy an unbounded container log.
-	logs, logStderr, err := m.runner.Run(ctx, "logs", "--tail", "200", name)
+	startedRaw, startedStderr, err := m.runner.Run(ctx, "inspect", name, "--format", "{{.State.StartedAt}}")
+	if err != nil {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+			Detail: "inspect llama.cpp CUDA startup time: " + firstLine(startedStderr, err)}
+	}
+	started, err := time.Parse(podmanStartedAtLayout, strings.TrimSpace(startedRaw))
+	if err != nil {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+			Detail: "llama.cpp CUDA startup time is malformed"}
+	}
+	// The exact offload evidence is emitted during startup. A fixed time window
+	// stays available after later project traffic without reading unbounded logs.
+	logs, logStderr, err := m.runner.Run(ctx, "logs", "--since", started.Format(time.RFC3339Nano),
+		"--until", started.Add(2*time.Minute).Format(time.RFC3339Nano), name)
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "read llama.cpp CUDA diagnostics: " + firstLine(logStderr, err)}
 	}
+	if len(logs) > 1<<20 {
+		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+			Detail: "llama.cpp CUDA startup diagnostics exceed the bounded evidence limit"}
+	}
 	match := offloadPattern.FindStringSubmatch(logs)
-	if len(match) != 3 || !strings.Contains(strings.ToLower(logs), "cuda") {
+	if len(match) != 3 || match[1] != match[2] || !strings.Contains(strings.ToLower(logs), "cuda") {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "llama.cpp did not report CUDA initialization and offloaded model layers"}
 	}
@@ -622,6 +642,15 @@ func (m *Manager) healthFor(ctx context.Context, name string) error {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("embedding health returned %s", response.Status)
+	}
+	var health struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<10)).Decode(&health); err != nil {
+		return fmt.Errorf("decode embedding health: %w", err)
+	}
+	if health.Status != "ok" {
+		return fmt.Errorf("embedding health is %q, want ok", health.Status)
 	}
 	return nil
 }

@@ -87,6 +87,17 @@ func TestSelfTestUsesItsLongerEmbeddingClient(t *testing.T) {
 	}
 }
 
+func TestHealthRejectsHTTP200WhileModelIsStillLoading(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "loading model"})
+	}))
+	t.Cleanup(server.Close)
+	manager := NewManagerForTest(nil, "image@sha256:test", writeTestModel(t), server.URL)
+	if err := manager.health(t.Context()); err == nil || !strings.Contains(err.Error(), "loading model") {
+		t.Fatalf("health error = %v, want loading state", err)
+	}
+}
+
 func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *testing.T) {
 	model := writeTestModel(t)
 	health := healthyServer(t)
@@ -204,10 +215,12 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		{stderr: "No such container", err: errors.New("exit 1")},
 		{stdout: "candidate\n"},
 		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
-		{args: []string{"logs", "--tail", "200", CandidateContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"inspect", CandidateContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
+		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", CandidateContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 		{args: []string{"rename", CandidateContainerName, ContainerName}},
 		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
-		{args: []string{"logs", "--tail", "200", ContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"inspect", ContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
+		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", ContainerName}, stdout: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 	}}
 	manager := NewManagerForTest(runner, nvidiainstall.Image, model, server.URL)
 	manager.distribution = DistributionNVIDIAGPU
@@ -227,6 +240,20 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		if !strings.Contains(run, wanted) {
 			t.Errorf("GPU candidate args omit %q: %s", wanted, run)
 		}
+	}
+}
+
+func TestNVIDIABackendRejectsPartialLayerOffload(t *testing.T) {
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
+		{stdout: "CUDA0\nload_tensors: offloaded 12/13 layers to GPU\n"},
+	}}
+	manager := NewManagerForTest(runner, nvidiainstall.Image, writeTestModel(t), "http://127.0.0.1:1")
+	manager.distribution = DistributionNVIDIAGPU
+	err := manager.attachBackendEvidence(t.Context(), CandidateContainerName, &Status{})
+	if !nvidiainstall.IsCode(err, nvidiainstall.FailureCUDAOffloadMissing) {
+		t.Fatalf("partial offload error = %v, want CUDA offload failure", err)
 	}
 }
 
@@ -324,7 +351,7 @@ func healthyServer(t *testing.T) *httptest.Server {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
-			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		case "/v1/embeddings":
 			vector := make([]float64, Dimensions)
 			if err := json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"embedding": vector}}}); err != nil {
