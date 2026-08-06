@@ -64,27 +64,33 @@ try {
 
     $payload = Join-Path $resolvedArtifactRoot "payload.zip"
     Compress-Archive -LiteralPath $core,(Join-Path $package "lctk.exe"),(Join-Path $package "lctk-setup.exe"),$manifest -DestinationPath $payload
-    $bootstrap = Join-Path $resolvedArtifactRoot "bootstrap.exe"
-    go build -trimpath -ldflags "-s -w -H=windowsgui" -o $bootstrap ./cmd/lctk-local-setup
-
-    $output = Join-Path $repository ".artifacts\LCTK-Setup-local-RC.exe"
-    $stream = [IO.File]::Open($output, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try {
-        foreach ($source in @($bootstrap, $payload)) {
-            $input = [IO.File]::OpenRead($source)
-            try {
-                $input.CopyTo($stream)
+    $outputs = @()
+    foreach ($candidate in @(
+        @{ Name = "LCTK-Setup-local-RC.exe"; Bootstrap = "bootstrap-setup.exe"; LinkerFlags = "-s -w -H=windowsgui" },
+        @{ Name = "LCTK-Uninstall-local-RC.exe"; Bootstrap = "bootstrap-uninstall.exe"; LinkerFlags = "-s -w -H=windowsgui -X main.DefaultSetupMode=uninstall" }
+    )) {
+        $bootstrap = Join-Path $resolvedArtifactRoot $candidate.Bootstrap
+        go build -trimpath -ldflags $candidate.LinkerFlags -o $bootstrap ./cmd/lctk-local-setup
+        $output = Join-Path $repository (".artifacts\" + $candidate.Name)
+        $stream = [IO.File]::Open($output, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            foreach ($source in @($bootstrap, $payload)) {
+                $input = [IO.File]::OpenRead($source)
+                try {
+                    $input.CopyTo($stream)
+                }
+                finally {
+                    $input.Dispose()
+                }
             }
-            finally {
-                $input.Dispose()
-            }
+            $stream.Flush($true)
         }
-        $stream.Flush($true)
+        finally {
+            $stream.Dispose()
+        }
+        $outputs += Get-Item -LiteralPath $output
     }
-    finally {
-        $stream.Dispose()
-    }
-    Get-Item -LiteralPath $output | Select-Object FullName,Length,@{Name="SHA256";Expression={(Get-FileHash -Algorithm SHA256 $_.FullName).Hash}}
+    $outputs | Select-Object FullName,Length,@{Name="SHA256";Expression={(Get-FileHash -Algorithm SHA256 $_.FullName).Hash}}
 }
 finally {
     Remove-Item Env:LCTK_RELEASE_ED25519_PRIVATE_KEY -ErrorAction SilentlyContinue

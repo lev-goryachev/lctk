@@ -25,6 +25,12 @@ import (
 
 const localPackageAddress = "127.0.0.1:4466"
 
+// DefaultSetupMode is empty for the complete installer and is set to
+// "uninstall" only by the local recovery build. Keeping the mode in the native
+// wrapper lets a partially removed installation run the fixed uninstaller by
+// double-click without replacing installed files or opening a terminal.
+var DefaultSetupMode string
+
 var payloadNames = map[string]bool{
 	"release-manifest.json": true,
 	"lctk-core.exe":         true,
@@ -73,7 +79,11 @@ func run() (runErr error) {
 
 	manifest := filepath.Join(directory, "release-manifest.json")
 	setup := filepath.Join(directory, "lctk-setup.exe")
-	command := exec.Command(setup, "--manifest", manifest)
+	arguments, err := setupArguments(manifest)
+	if err != nil {
+		return err
+	}
+	command := exec.Command(setup, arguments...)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start native release-candidate setup: %w", err)
 	}
@@ -92,6 +102,19 @@ func run() (runErr error) {
 			return fmt.Errorf("serve local release-candidate package: %w", err)
 		}
 		return nil
+	}
+}
+
+// setupArguments limits the compile-time local wrapper mode to the two exact
+// native setup entry points used by acceptance and recovery.
+func setupArguments(manifest string) ([]string, error) {
+	switch DefaultSetupMode {
+	case "":
+		return []string{"--manifest", manifest}, nil
+	case "uninstall":
+		return []string{"--uninstall"}, nil
+	default:
+		return nil, fmt.Errorf("unsupported local setup mode %q", DefaultSetupMode)
 	}
 }
 

@@ -35,7 +35,7 @@ The GUI process starts its console-subsystem implementation helpers with `CREATE
 
 Desktop removal is idempotent after a partial attempt. The per-user Programs directory is resolved first through `FOLDERID_Programs` and then through Explorer's `User Shell Folders\Programs` registry contract if the known-folder API transiently fails. Startup, Start-menu, Apps & Features, runtime-residue, and installation-home cleanup are independent after the managed machine has been removed: every exact target is attempted and any failures are reported together.
 
-Local acceptance uses a one-file release-candidate bootstrapper built by `scripts/build-local-rc.ps1`. A ZIP containing the locally signed manifest plus the candidate setup, core, and launcher is appended to the bootstrapper executable. At runtime it extracts beside itself, serves only those four files on numeric loopback for the lifetime of the real setup process, and removes the extraction directory afterwards. Artifact URLs may use plain HTTP only for numeric loopback; the Ed25519 signature, byte length, and SHA-256 identity remain mandatory. Official publication continues to generate HTTPS artifact URLs exclusively. This permits a complete local candidate without creating a GitHub release or weakening production trust.
+Local acceptance uses setup and recovery release-candidate bootstrapper modes built by `scripts/build-local-rc.ps1`. A ZIP containing the locally signed manifest plus the candidate setup, core, and launcher is appended to both native executables. The setup mode opens the complete installation transaction; the recovery mode opens the candidate uninstaller directly for an existing partial installation. At runtime either mode extracts beside itself, serves only those four files on numeric loopback for the lifetime of the real native process, and removes the extraction directory afterwards. Artifact URLs may use plain HTTP only for numeric loopback; the Ed25519 signature, byte length, and SHA-256 identity remain mandatory. Official publication continues to generate HTTPS artifact URLs exclusively. This permits complete local install and recovery candidates without creating a GitHub release or weakening production trust.
 
 ## Alternatives considered
 
@@ -62,5 +62,5 @@ Rejected. The user selects that directory and it may contain unrelated data. Rem
 - The administrator UI and uninstaller share the already installed native executable and require no additional runtime.
 - Native GUI operations do not flash implementation-detail terminal windows.
 - A normal removal path is available in both Apps & Features and the Start menu.
-- A real one-file local RC can exercise the signed installer transaction before any GitHub publication.
+- Real one-file local setup and recovery RCs can exercise install and partial-uninstall repair before any GitHub publication.
 - ADR-0016 remains historical evidence for the Admin API's independent credential boundary, but its HTML page, URL delivery, and browser-specific UI conclusions no longer describe the product.

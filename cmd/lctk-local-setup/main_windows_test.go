@@ -73,3 +73,22 @@ func TestPackageHandlerDoesNotExposeNeighboringFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupArgumentsSelectExactLocalMode(t *testing.T) {
+	original := DefaultSetupMode
+	t.Cleanup(func() { DefaultSetupMode = original })
+	DefaultSetupMode = ""
+	arguments, err := setupArguments(`C:\candidate\release-manifest.json`)
+	if err != nil || len(arguments) != 2 || arguments[0] != "--manifest" {
+		t.Fatalf("installer arguments=%v err=%v", arguments, err)
+	}
+	DefaultSetupMode = "uninstall"
+	arguments, err = setupArguments("")
+	if err != nil || len(arguments) != 1 || arguments[0] != "--uninstall" {
+		t.Fatalf("uninstaller arguments=%v err=%v", arguments, err)
+	}
+	DefaultSetupMode = "unexpected"
+	if _, err := setupArguments(""); err == nil {
+		t.Fatal("unsupported local setup mode was accepted")
+	}
+}

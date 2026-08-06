@@ -134,7 +134,7 @@ The installed GUI process reads and spends the daemon's one-time code directly. 
 ./scripts/build-local-rc.ps1
 ```
 
-This creates `.artifacts/LCTK-Setup-local-RC.exe` without a tag, push, or GitHub Release. The executable contains the locally built setup, host core, stable launcher, and a locally signed manifest; the manifest retains the verified runtime, image, and model identities from the published template release. Running it starts only a temporary numeric-loopback file endpoint while the real native setup is open, then removes its extracted payload. The candidate is unsigned and is for local acceptance only.
+This creates `.artifacts/LCTK-Setup-local-RC.exe` and `.artifacts/LCTK-Uninstall-local-RC.exe` without a tag, push, or GitHub Release. Both executables contain the locally built setup, host core, stable launcher, and a locally signed manifest; the manifest retains the verified runtime, image, and model identities from the published template release. The first opens setup and the second directly opens the fixed uninstaller for recovery from a partial older removal. Running either starts only a temporary numeric-loopback file endpoint while the real native process is open, then removes its extracted payload. Both candidates are unsigned and are for local acceptance only.
 
 ## The code-intel service
 
