@@ -26,7 +26,7 @@ import (
 
 const (
 	adminWindowWidth  = 1120
-	adminWindowHeight = 790
+	adminWindowHeight = 890
 
 	idAdminProjectPath    = 2001
 	idAdminBrowse         = 2002
@@ -68,6 +68,8 @@ const (
 	cbAddString     = 0x0143
 	cbGetCurSel     = 0x0147
 	cbSetCurSel     = 0x014E
+	pbmSetPos       = wmUser + 2
+	pbmSetRange32   = wmUser + 6
 )
 
 var (
@@ -84,22 +86,28 @@ type nativeAdminWindow struct {
 	context context.Context
 	cancel  context.CancelFunc
 
-	statusLabel        uintptr
-	projectPath        uintptr
-	profile            uintptr
-	projectList        uintptr
-	projectInfo        uintptr
-	mode               uintptr
-	requestList        uintptr
-	authorizationList  uintptr
-	logs               uintptr
-	controls           []uintptr
-	buttons            map[uint16]uintptr
-	projectItems       []adminListItem
-	requestItems       []adminListItem
-	authorizationItems []adminListItem
-	projectInfoText    string
-	logsText           string
+	statusLabel           uintptr
+	projectPath           uintptr
+	profile               uintptr
+	projectList           uintptr
+	projectInfo           uintptr
+	exactProgress         uintptr
+	exactProgressLabel    uintptr
+	semanticProgress      uintptr
+	semanticProgressLabel uintptr
+	graphProgress         uintptr
+	graphProgressLabel    uintptr
+	mode                  uintptr
+	requestList           uintptr
+	authorizationList     uintptr
+	logs                  uintptr
+	controls              []uintptr
+	buttons               map[uint16]uintptr
+	projectItems          []adminListItem
+	requestItems          []adminListItem
+	authorizationItems    []adminListItem
+	projectInfoText       string
+	logsText              string
 
 	mu       sync.RWMutex
 	snapshot adminclient.Snapshot
@@ -114,6 +122,16 @@ type nativeAdminWindow struct {
 type adminListItem struct {
 	ID   string
 	Text string
+}
+
+// adminProgressState is a truthful rendering contract for one indexing layer.
+// Determinate bars require a measured numerator and denominator; operations
+// whose backend has no denominator use marquee mode instead of a fake percent.
+type adminProgressState struct {
+	Label         string
+	Current       int
+	Total         int
+	Indeterminate bool
 }
 
 // runAdminWindow ensures the background daemon is reachable, spends its
@@ -140,6 +158,7 @@ func runAdminWindow(parent context.Context, address string) error {
 	defer window.cancel()
 	window.refresh("Loading LCTK status...")
 	go window.pollOAuth()
+	go window.pollProjects()
 	procShowWindow.Call(window.window, swShow)
 	procUpdateWindow.Call(window.window)
 
@@ -176,6 +195,37 @@ func (window *nativeAdminWindow) pollOAuth() {
 			}
 			window.mu.Lock()
 			window.snapshot.Authorizations, window.snapshot.Requests = authorizations, requests
+			window.mu.Unlock()
+			window.postState()
+		}
+	}
+}
+
+// pollProjects refreshes live indexing state independently of owner actions.
+// A failed or slow probe is skipped rather than replacing the last trustworthy
+// snapshot, and the next tick retries without overlapping the previous probe.
+func (window *nativeAdminWindow) pollProjects() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-window.context.Done():
+			return
+		case <-ticker.C:
+			window.mu.RLock()
+			busy := window.busy
+			window.mu.RUnlock()
+			if busy {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(window.context, 5*time.Second)
+			projects, err := window.client.LoadProjects(ctx)
+			cancel()
+			if err != nil {
+				continue
+			}
+			window.mu.Lock()
+			window.snapshot.Projects = projects
 			window.mu.Unlock()
 			window.postState()
 		}
@@ -232,6 +282,8 @@ func newNativeAdminWindow(parent context.Context, client *adminclient.Client) (*
 		Instance: instance, Cursor: cursor, Background: colorWindow + 1, ClassName: adminWindowClass,
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&class)))
+	controls := initCommonControls{Size: uint32(unsafe.Sizeof(initCommonControls{})), ICC: 0x20}
+	procInitCommon.Call(uintptr(unsafe.Pointer(&controls)))
 	screenWidth, _, _ := procGetSystemMetrics.Call(0)
 	screenHeight, _, _ := procGetSystemMetrics.Call(1)
 	x := (int32(screenWidth) - adminWindowWidth) / 2
@@ -308,7 +360,7 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	if err := label("Projects", 24, 136, 160, 22); err != nil {
 		return err
 	}
-	window.projectList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 160, 430, 214, idAdminProjects)
+	window.projectList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 160, 430, 284, idAdminProjects)
 	if err != nil {
 		return err
 	}
@@ -316,14 +368,34 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	if err != nil {
 		return err
 	}
+	progressSpecs := []struct {
+		name  string
+		y     int32
+		label *uintptr
+		bar   *uintptr
+	}{
+		{name: "Exact", y: 252, label: &window.exactProgressLabel, bar: &window.exactProgress},
+		{name: "Semantic", y: 284, label: &window.semanticProgressLabel, bar: &window.semanticProgress},
+		{name: "Graph", y: 316, label: &window.graphProgressLabel, bar: &window.graphProgress},
+	}
+	for _, spec := range progressSpecs {
+		*spec.label, err = create("STATIC", spec.name+": unavailable", wsChild|wsVisible|ssLeft, 470, spec.y, 612, 16, 0)
+		if err != nil {
+			return err
+		}
+		*spec.bar, err = create("msctls_progress32", "", wsChild|wsVisible|pbsMarquee, 470, spec.y+17, 612, 12, 0)
+		if err != nil {
+			return err
+		}
+	}
 	buttonSpecs := []struct {
 		text        string
 		id          uintptr
 		x, y, width int32
 	}{
-		{"Start", idAdminStart, 470, 260, 82}, {"Stop", idAdminStop, 560, 260, 82},
-		{"Restart", idAdminRestart, 650, 260, 82}, {"Reindex", idAdminReindex, 740, 260, 82},
-		{"Copy MCP setup", idAdminCopyURL, 830, 260, 252},
+		{"Start", idAdminStart, 470, 352, 82}, {"Stop", idAdminStop, 560, 352, 82},
+		{"Restart", idAdminRestart, 650, 352, 82}, {"Reindex", idAdminReindex, 740, 352, 82},
+		{"Copy MCP setup", idAdminCopyURL, 830, 352, 252},
 	}
 	for _, spec := range buttonSpecs {
 		button, createErr := create("BUTTON", spec.text, wsChild|wsVisible|wsTabStop|bsPushButton, spec.x, spec.y, spec.width, 31, spec.id)
@@ -333,65 +405,65 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 		window.controls = append(window.controls, button)
 		window.buttons[uint16(spec.id)] = button
 	}
-	if err := label("Resource mode", 470, 311, 110, 22); err != nil {
+	if err := label("Resource mode", 470, 403, 110, 22); err != nil {
 		return err
 	}
-	window.mode, err = create("COMBOBOX", "", wsChild|wsVisible|wsTabStop|wsVScroll|cbsDropDownList, 585, 306, 120, 180, idAdminMode)
+	window.mode, err = create("COMBOBOX", "", wsChild|wsVisible|wsTabStop|wsVScroll|cbsDropDownList, 585, 398, 120, 180, idAdminMode)
 	if err != nil {
 		return err
 	}
 	addComboItems(window.mode, []string{"quiet", "normal", "fast"}, 1)
-	applyMode, err := create("BUTTON", "Apply mode", wsChild|wsVisible|wsTabStop|bsPushButton, 716, 305, 130, 31, idAdminApplyMode)
+	applyMode, err := create("BUTTON", "Apply mode", wsChild|wsVisible|wsTabStop|bsPushButton, 716, 397, 130, 31, idAdminApplyMode)
 	if err != nil {
 		return err
 	}
 	window.controls = append(window.controls, applyMode)
 	window.buttons[idAdminApplyMode] = applyMode
 
-	if err := label("Pending connection requests", 24, 350, 250, 22); err != nil {
+	if err := label("Pending connection requests", 24, 450, 250, 22); err != nil {
 		return err
 	}
-	window.requestList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 374, 822, 82, idAdminRequests)
+	window.requestList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 474, 822, 82, idAdminRequests)
 	if err != nil {
 		return err
 	}
-	approve, err := create("BUTTON", "Approve selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 374, 222, 32, idAdminApprove)
+	approve, err := create("BUTTON", "Approve selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 474, 222, 32, idAdminApprove)
 	if err != nil {
 		return err
 	}
-	deny, err := create("BUTTON", "Deny selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 414, 222, 32, idAdminDeny)
+	deny, err := create("BUTTON", "Deny selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 514, 222, 32, idAdminDeny)
 	if err != nil {
 		return err
 	}
 	window.controls = append(window.controls, approve, deny)
 	window.buttons[idAdminApprove], window.buttons[idAdminDeny] = approve, deny
 
-	if err := label("Authorized clients", 24, 468, 180, 22); err != nil {
+	if err := label("Authorized clients", 24, 568, 180, 22); err != nil {
 		return err
 	}
-	window.authorizationList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 492, 822, 76, idAdminAuthorizations)
+	window.authorizationList, err = create("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify, 24, 592, 822, 76, idAdminAuthorizations)
 	if err != nil {
 		return err
 	}
-	revoke, err := create("BUTTON", "Revoke selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 492, 222, 32, idAdminRevoke)
+	revoke, err := create("BUTTON", "Revoke selected", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 592, 222, 32, idAdminRevoke)
 	if err != nil {
 		return err
 	}
 	window.controls = append(window.controls, revoke)
 	window.buttons[idAdminRevoke] = revoke
 
-	if err := label("Daemon log", 24, 580, 160, 22); err != nil {
+	if err := label("Daemon log", 24, 680, 160, 22); err != nil {
 		return err
 	}
-	window.logs, err = create("EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esAutoVScroll|esReadOnly, 24, 604, 822, 105, 0)
+	window.logs, err = create("EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esAutoVScroll|esReadOnly, 24, 704, 822, 105, 0)
 	if err != nil {
 		return err
 	}
-	refresh, err := create("BUTTON", "Refresh", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 604, 222, 34, idAdminRefresh)
+	refresh, err := create("BUTTON", "Refresh", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 704, 222, 34, idAdminRefresh)
 	if err != nil {
 		return err
 	}
-	uninstallButton, err := create("BUTTON", "Uninstall LCTK", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 675, 222, 34, idAdminUninstall)
+	uninstallButton, err := create("BUTTON", "Uninstall LCTK", wsChild|wsVisible|wsTabStop|bsPushButton, 860, 775, 222, 34, idAdminUninstall)
 	if err != nil {
 		return err
 	}
@@ -719,6 +791,7 @@ func (window *nativeAdminWindow) renderSelection() {
 	project, ok := window.selectedProject()
 	if !ok {
 		updateReadOnlyEdit(window.projectInfo, &window.projectInfoText, "No project selected.")
+		window.renderIndexProgress(nil)
 	} else {
 		index := "exact unavailable"
 		if project.Index != nil {
@@ -756,6 +829,7 @@ func (window *nativeAdminWindow) renderSelection() {
 			detail += "\r\n" + project.Detail
 		}
 		updateReadOnlyEdit(window.projectInfo, &window.projectInfoText, detail)
+		window.renderIndexProgress(project.Index)
 		modes := []string{"quiet", "normal", "fast"}
 		for index, mode := range modes {
 			if mode == project.Mode {
@@ -777,6 +851,93 @@ func (window *nativeAdminWindow) renderSelection() {
 	_, requestSelected := window.selectedAuthorizationRequest()
 	setEnabled(window.buttons[idAdminApprove], !busy && requestSelected)
 	setEnabled(window.buttons[idAdminDeny], !busy && requestSelected)
+}
+
+// renderIndexProgress keeps exact, semantic, and graph status independently
+// visible. This prevents a ready exact index from visually masking an active or
+// failed derived-index build.
+func (window *nativeAdminWindow) renderIndexProgress(index *adminclient.Index) {
+	exact, semantic, graph := indexProgressStates(index)
+	setAdminProgress(window.exactProgressLabel, window.exactProgress, exact)
+	setAdminProgress(window.semanticProgressLabel, window.semanticProgress, semantic)
+	setAdminProgress(window.graphProgressLabel, window.graphProgress, graph)
+}
+
+func setAdminProgress(labelHandle, barHandle uintptr, state adminProgressState) {
+	setWindowText(labelHandle, state.Label)
+	if state.Indeterminate {
+		procSendMessageW.Call(barHandle, pbmSetMarquee, 1, 30)
+		return
+	}
+	procSendMessageW.Call(barHandle, pbmSetMarquee, 0, 0)
+	total := state.Total
+	if total <= 0 {
+		total = 1
+	}
+	current := state.Current
+	if current < 0 {
+		current = 0
+	}
+	if current > total {
+		current = total
+	}
+	procSendMessageW.Call(barHandle, pbmSetRange32, 0, uintptr(total))
+	procSendMessageW.Call(barHandle, pbmSetPos, uintptr(current), 0)
+}
+
+func indexProgressStates(index *adminclient.Index) (adminProgressState, adminProgressState, adminProgressState) {
+	unavailable := func(name string) adminProgressState { return adminProgressState{Label: name + ": unavailable"} }
+	if index == nil {
+		return unavailable("Exact"), unavailable("Semantic"), unavailable("Graph")
+	}
+
+	exact := adminProgressState{Label: fmt.Sprintf("Exact: ready — %d files, generation %d", index.FileCount, index.Generation), Current: 1, Total: 1}
+	if index.Indexing {
+		exact = adminProgressState{Label: "Exact: indexing — total is not reported", Indeterminate: true}
+	} else if !index.Ready {
+		exact = adminProgressState{Label: "Exact: not ready"}
+		if index.Reason != "" {
+			exact.Label += " — " + index.Reason
+		}
+	}
+
+	semantic := adminProgressState{Label: "Semantic: unavailable"}
+	if value := index.Semantic; value != nil {
+		completed := value.ChunksEmbedded + value.ChunksReused
+		switch {
+		case value.Stalled:
+			semantic = adminProgressState{Label: fmt.Sprintf("Semantic: STALLED for %ds — %d/%d chunks", value.StallSeconds, completed, value.ChunksTotal), Current: completed, Total: value.ChunksTotal}
+		case value.Indexing && value.ChunksTotal > 0:
+			semantic = adminProgressState{Label: fmt.Sprintf("Semantic: indexing — %d/%d chunks", completed, value.ChunksTotal), Current: completed, Total: value.ChunksTotal}
+		case value.Indexing:
+			semantic = adminProgressState{Label: "Semantic: preparing chunks", Indeterminate: true}
+		case value.Ready:
+			semantic = adminProgressState{Label: fmt.Sprintf("Semantic: %s — %d chunks, generation %d", value.Freshness, value.ChunkCount, value.Generation), Current: 1, Total: 1}
+		case value.LastError != "":
+			semantic = adminProgressState{Label: "Semantic: failed — " + value.LastError}
+		default:
+			semantic = adminProgressState{Label: "Semantic: not ready"}
+			if value.Reason != "" {
+				semantic.Label += " — " + value.Reason
+			}
+		}
+	}
+
+	graph := adminProgressState{Label: "Graph: unavailable"}
+	if value := index.Graph; value != nil {
+		switch {
+		case index.Indexing || (index.Semantic != nil && index.Semantic.Indexing):
+			graph = adminProgressState{Label: "Graph: building — progress total is not reported", Indeterminate: true}
+		case value.Ready:
+			graph = adminProgressState{Label: fmt.Sprintf("Graph: %s — %d nodes, generation %d", value.Freshness, value.NodeCount, value.Generation), Current: 1, Total: 1}
+		default:
+			graph = adminProgressState{Label: "Graph: not ready"}
+			if value.Reason != "" {
+				graph.Label += " — " + value.Reason
+			}
+		}
+	}
+	return exact, semantic, graph
 }
 
 func semanticDiagnostic(semantic *adminclient.SemanticIndex) string {

@@ -185,10 +185,8 @@ func (client *Client) Load(ctx context.Context) (Snapshot, error) {
 	if err := client.do(ctx, http.MethodGet, "/admin/api/overview", nil, &snapshot.Overview, true); err != nil {
 		return Snapshot{}, err
 	}
-	var projects struct {
-		Projects []Project `json:"projects"`
-	}
-	if err := client.do(ctx, http.MethodGet, "/admin/api/projects", nil, &projects, true); err != nil {
+	projects, err := client.LoadProjects(ctx)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	authorizations, requests, err := client.LoadOAuth(ctx)
@@ -201,8 +199,21 @@ func (client *Client) Load(ctx context.Context) (Snapshot, error) {
 	if err := client.do(ctx, http.MethodGet, "/admin/api/logs", nil, &logs, true); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.Projects, snapshot.Authorizations, snapshot.Requests, snapshot.Logs = projects.Projects, authorizations, requests, logs.Records
+	snapshot.Projects, snapshot.Authorizations, snapshot.Requests, snapshot.Logs = projects, authorizations, requests, logs.Records
 	return snapshot, nil
+}
+
+// LoadProjects retrieves only live project, index, watcher, and disk state.
+// The native window uses this narrow read for continuous progress updates so it
+// does not repeatedly fetch unrelated OAuth records and daemon logs.
+func (client *Client) LoadProjects(ctx context.Context) ([]Project, error) {
+	var response struct {
+		Projects []Project `json:"projects"`
+	}
+	if err := client.do(ctx, http.MethodGet, "/admin/api/projects", nil, &response, true); err != nil {
+		return nil, err
+	}
+	return response.Projects, nil
 }
 
 // LoadOAuth retrieves the two sections that can change while the native window

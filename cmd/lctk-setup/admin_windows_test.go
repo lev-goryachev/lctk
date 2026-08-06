@@ -60,3 +60,33 @@ func TestSemanticDiagnosticMakesProgressFailureAndStallExplicit(t *testing.T) {
 		t.Fatalf("stalled = %q, want visible stall", stalled)
 	}
 }
+
+func TestIndexProgressStatesKeepEveryLayerIndependent(t *testing.T) {
+	exact, semantic, graph := indexProgressStates(&adminclient.Index{
+		Ready: true, Generation: 3, FileCount: 353,
+		Semantic: &adminclient.SemanticIndex{Indexing: true, ChunksEmbedded: 96, ChunksReused: 4, ChunksTotal: 1161},
+		Graph:    &adminclient.GraphIndex{Reason: "The derived graph has not been built yet."},
+	})
+	if exact.Current != 1 || exact.Total != 1 || !strings.Contains(exact.Label, "353 files") {
+		t.Fatalf("exact = %+v, want a complete exact generation", exact)
+	}
+	if semantic.Current != 100 || semantic.Total != 1161 || !strings.Contains(semantic.Label, "100/1161") {
+		t.Fatalf("semantic = %+v, want measured chunk progress", semantic)
+	}
+	if !graph.Indeterminate || !strings.Contains(graph.Label, "total is not reported") {
+		t.Fatalf("graph = %+v, want an honest active graph state without a fabricated percent", graph)
+	}
+}
+
+func TestIndexProgressStatesExposeFailuresWithoutFakeProgress(t *testing.T) {
+	_, semantic, graph := indexProgressStates(&adminclient.Index{
+		Semantic: &adminclient.SemanticIndex{LastError: "identity collision"},
+		Graph:    &adminclient.GraphIndex{Reason: "graph publication failed"},
+	})
+	if semantic.Current != 0 || semantic.Indeterminate || !strings.Contains(semantic.Label, "identity collision") {
+		t.Fatalf("semantic = %+v, want a stopped explicit failure", semantic)
+	}
+	if graph.Current != 0 || graph.Indeterminate || !strings.Contains(graph.Label, "graph publication failed") {
+		t.Fatalf("graph = %+v, want a stopped explicit failure", graph)
+	}
+}

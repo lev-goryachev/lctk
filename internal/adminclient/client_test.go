@@ -35,6 +35,17 @@ func TestNativeSessionCarriesProcessMemoryHeadersWithoutABrowser(t *testing.T) {
 		}
 		_ = json.NewEncoder(writer).Encode(Overview{Version: "test"})
 	})
+	mux.HandleFunc("GET /admin/api/projects", func(writer http.ResponseWriter, request *http.Request) {
+		if _, err := store.Authenticate(request); err != nil {
+			http.Error(writer, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"projects": []Project{{
+			ID: "alpha-aaaaaaaa", Index: &Index{Semantic: &SemanticIndex{
+				Indexing: true, ChunksEmbedded: 96, ChunksReused: 4, ChunksTotal: 1161,
+			}},
+		}}})
+	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	client, err := Connect(t.Context(), strings.TrimPrefix(server.URL, "http://"), store.Code())
@@ -47,6 +58,17 @@ func TestNativeSessionCarriesProcessMemoryHeadersWithoutABrowser(t *testing.T) {
 	}
 	if overview.Version != "test" {
 		t.Fatalf("version=%q", overview.Version)
+	}
+	projects, err := client.LoadProjects(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || projects[0].Index == nil || projects[0].Index.Semantic == nil {
+		t.Fatalf("projects = %+v, want one semantic project", projects)
+	}
+	semantic := projects[0].Index.Semantic
+	if semantic.ChunksEmbedded+semantic.ChunksReused != 100 || semantic.ChunksTotal != 1161 {
+		t.Fatalf("semantic = %+v, want live progress fields", semantic)
 	}
 }
 
