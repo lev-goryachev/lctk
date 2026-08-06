@@ -85,8 +85,10 @@ Rejected. A CUDA-capable image can start without actually offloading model layer
 - GPU readiness has host, WSL, CDI, container, backend, and model gates, each of which must remain diagnosable.
 - A rollback to `0.1.11` temporarily operates CPU inference even when `inference.json` retains NVIDIA GPU for a later compatible version.
 
-### Follow-up
+### Acceptance evidence
 
-- Implement and test the immutable plan recorded in [the NVIDIA GPU inference dry run](../spikes/nvidia-gpu-inference-installer-dry-run.md).
-- Measure a fresh full semantic reindex on the GTX 1070 against the 30-minute-36-second CPU baseline.
-- Record installed-image size, real GPU diagnostics, update/rollback evidence, and Admin evidence in `docs/compatibility.md`.
+The follow-up gates were completed on the Windows 10 acceptance machine with local RC `0.1.12` built from commit `954da54e484ca87d50c32ef3f12b808c6a72c6fa`. Native setup upgraded installed `0.1.11` to the NVIDIA GPU distribution, an explicit rollback restored `0.1.11` with CPU inference and its own daemon, and a final native update restored `0.1.12` with the persisted GPU selection. The repeat GPU plan required zero download bytes because the signed RPM, model, and both image identities were retained locally.
+
+The final runtime measured the GeForce GTX 1070, driver `582.53`, 8,192 MiB VRAM, compute capability 6.1, exact RPM `nvidia-container-toolkit-base-1.19.1-1.x86_64`, CDI device `nvidia.com/gpu=all`, CUDA image digest `sha256:37dd122824e58af9ec861955242abdeeade5a1dcf0ad768bf2b37f903c2805c6`, and complete `13/13` layer offload. The installed Admin reported `inference cuda NVIDIA GeForce GTX 1070 | Ready.`
+
+A fresh full build embedded 2,568 chunks from 425 files with zero semantic reuse in 755.588 seconds. GPU telemetry sampled throughout the operation reached 100% utilization and 1,672 MiB. The earlier CPU baseline embedded 1,169 chunks from 356 files in 1,836 seconds, so the GPU run used a 2.197-times larger and non-identical corpus; elapsed time was 2.430 times shorter and observed chunk throughput was 5.338 times higher. These measurements characterize this machine and are not a general performance guarantee. Detailed artifact, transaction, indexing, and OAuth evidence is recorded in [compatibility.md](../compatibility.md) and [the completed dry run](../spikes/nvidia-gpu-inference-installer-dry-run.md).

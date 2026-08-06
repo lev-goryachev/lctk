@@ -129,3 +129,9 @@ Do not create a GitHub Release, tag, or pull request. Commit and push only to `c
 - `.artifacts/LCTK-Setup-local-RC.exe` is an ignored local `0.1.11` candidate. No temporary UI helper remains.
 
 After committing this document, replace the stable head above with the handover commit in the startup prompt and verify origin matches it.
+
+## Continuation result
+
+The delegated continuation completed the dry run, implementation, corrective acceptance loops, and real GTX 1070 acceptance. ADR-0029 and the immutable plan were committed before runtime mutation. The final accepted implementation commit is `954da54e484ca87d50c32ef3f12b808c6a72c6fa`; it includes the fixes discovered by real update, rollback, CUDA-log, and full-reindex acceptance. The exact measured result and RC checksums are recorded in [the completed dry run](../spikes/nvidia-gpu-inference-installer-dry-run.md) and [compatibility.md](../compatibility.md).
+
+Installed `0.1.12` is active from `C:\Users\Lev Goriachev\AppData\Local\lctk\versions\0.1.12\lctk-core.exe`; the previous verified version is `0.1.11`. The private Podman project and GPU inference containers are healthy, Admin reports the actual GTX 1070 CUDA backend as ready, a fresh 2,568-chunk GPU build completed in 755.588 seconds with zero reuse, and existing OAuth read-only calls returned fresh matching generation 54. No IDE was launched, no token was copied, and no GitHub Release, tag, or pull request was created.

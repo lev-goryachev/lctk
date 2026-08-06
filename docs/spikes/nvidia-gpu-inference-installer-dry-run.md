@@ -1,6 +1,6 @@
 # NVIDIA GPU inference installer dry run
 
-- Status: accepted implementation gate
+- Status: accepted and completed
 - Date: 2026-08-06
 - Target release: `0.1.12`
 - Architecture: [ADR-0029](../adr/0029-selectable-cpu-and-nvidia-gpu-inference.md)
@@ -152,3 +152,20 @@ Implementation may begin only after this document and ADR-0029 are committed. Th
 9. Update architecture, compatibility, release, security, third-party notices, and the handover evidence with measured facts.
 
 Acceptance fails if any evidence is inferred from configuration instead of measured runtime state, if embeddings are reused for the performance comparison, if project networks or OAuth authorization change, or if GPU failure results in an unreported CPU backend.
+
+## Acceptance result
+
+All gates completed on the Windows 10 acceptance machine. The final local RC was built from committed source `954da54e484ca87d50c32ef3f12b808c6a72c6fa`:
+
+- `LCTK-Setup-local-RC.exe`: 42,948,531 bytes, SHA-256 `5e5e2b5a550732363fa6a251e9fb14ba03509de86d3f3c7bd9434e3e0fc7d9b6`;
+- `LCTK-Uninstall-local-RC.exe`: 42,948,531 bytes, SHA-256 `0be582f239085377f76bf3f438c4604e9f05e20c5f531c9b4ea6c1321e4332c7`.
+
+Native setup preserved `C:\Users\Lev Goriachev\AppData\Local\lctk`, `D:\Programs\LCTK_data_store`, the registered project, its indexes, and the existing OAuth authorization. It upgraded installed `0.1.11` to the selected NVIDIA GPU distribution. An explicit rollback then ran `versions\0.1.11\lctk-core.exe` and the signed `0.1.11` project image with CPU inference even though the newer GPU selection remained persisted and inert. The final native update activated `versions\0.1.12\lctk-core.exe` and restored the NVIDIA GPU distribution. The final repeat setup plan reported `Download: 0 B`, proving use of the retained signed artifacts rather than an online repair path.
+
+The running private machine reported exact RPM `nvidia-container-toolkit-base-1.19.1-1.x86_64` and exactly one CDI device, `nvidia.com/gpu=all`. Podman ran CUDA image ID `1a8b5d7aeb67950d649c4c68dc7e8f70d7b81ab4070fdc7234350b5124ad40ef` at the pinned digest. `podman image inspect` measured 4,360,099,002 installed bytes. Runtime diagnostics identified the GTX 1070 and recorded `offloaded 13/13 layers to GPU`, a 66.92 MiB CUDA model buffer, and a 200.16 MiB CUDA compute buffer. Windows independently reported driver `582.53`, 8,192 MiB VRAM, and compute capability 6.1. The installed Admin window reported `LCTK 0.1.12 | podman 5.8.2 linux | inference cuda NVIDIA GeForce GTX 1070 | Ready.`
+
+The fresh full semantic build ran from `2026-08-06T23:13:45.6187191Z` through `2026-08-06T23:26:21.2582770Z`, or 755.588 seconds. It covered 425 files and 2,568 chunks; live status started with all chunks pending, reported zero reuse throughout, and the command completed successfully after embedding the complete corpus. Telemetry collected 676 samples, with peaks of 100% GPU utilization and 1,672 MiB GPU memory. The published full build used generation 52. Two user edits created watcher deltas immediately afterward; after they settled, exact, semantic, and graph were all fresh at generation 54 over 427 files, with watcher pending zero.
+
+The prior CPU baseline took 1,836 seconds for 1,169 chunks over 356 files. Because the repository changed, this is not a same-corpus latency comparison: the GPU corpus was 2.197 times larger. The measured GPU run nevertheless completed in 0.412 of the CPU elapsed time and increased observed chunk throughput from 0.637 to 3.399 chunks per second, a 5.338-times throughput ratio on this machine.
+
+The existing Codex OAuth integration called `project_info` and `repository_map` without configuration changes, token copying, or an IDE launch. It reported healthy installed `0.1.12`, route-and-registry scope for `lctk-cqv5dg6m` at `/workspace`, watcher pending zero, and fresh matching exact/semantic/graph generation 54. The active client rotated its own refresh state during the calls; the authorization remained usable throughout rollback and update acceptance.
