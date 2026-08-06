@@ -13,6 +13,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/installation"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
 	"github.com/lev-goryachev/lctk/internal/runtimeinstall"
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"github.com/lev-goryachev/lctk/internal/windowssetup"
 )
 
@@ -160,5 +161,7 @@ func (m *Manager) report(phase, detail string) {
 }
 
 func run(ctx context.Context, executable string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, executable, args...).CombinedOutput()
+	command := exec.CommandContext(ctx, executable, args...)
+	windowsprocess.HideConsole(command)
+	return command.CombinedOutput()
 }

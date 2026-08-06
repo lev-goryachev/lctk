@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 )
 
 const (
@@ -97,6 +98,7 @@ func Command(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	selected := []string{"--connection", ConnectionName}
 	selected = append(selected, args...)
 	command := exec.CommandContext(ctx, path, selected...)
+	windowsprocess.HideConsole(command)
 	if err := attachRuntimeDataHome(command); err != nil {
 		return nil, err
 	}
@@ -119,6 +121,7 @@ func MachineCommand(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	selected := []string{"machine"}
 	selected = append(selected, args...)
 	command := exec.CommandContext(ctx, path, selected...)
+	windowsprocess.HideConsole(command)
 	if err := attachRuntimeDataHome(command); err != nil {
 		return nil, err
 	}

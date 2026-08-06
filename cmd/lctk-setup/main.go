@@ -190,8 +190,8 @@ func applySelection(ctx context.Context, request setupRequest, locations lctkhom
 	if err := manager.Install(installCtx, request.Manifest); err != nil {
 		return err
 	}
-	launcher := filepath.Join(locations.InstallDir, "bin", "lctk.exe")
-	if err := exec.Command(launcher).Start(); err != nil {
+	setup := filepath.Join(locations.InstallDir, "bin", "lctk-setup.exe")
+	if err := exec.Command(setup, "--admin").Start(); err != nil {
 		return fmt.Errorf("open installed LCTK interface: %w", err)
 	}
 	return nil

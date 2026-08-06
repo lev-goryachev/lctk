@@ -89,24 +89,28 @@ func (m *Manager) Run(ctx context.Context, preserve bool) (string, error) {
 	if err != nil {
 		return backup, fmt.Errorf("resolve user profile for managed runtime cleanup: %w", err)
 	}
+	// The machine is already stopped and removed at this point, so the remaining
+	// cleanup targets are independent. Attempt every target and report their
+	// combined errors instead of leaving later registrations untouched.
+	var cleanupErrors []error
 	if err := m.Cleanup(runtimeData, userHome); err != nil {
-		return backup, err
+		cleanupErrors = append(cleanupErrors, err)
 	}
 	if err := m.Unregister(); err != nil {
-		return backup, err
+		cleanupErrors = append(cleanupErrors, err)
 	}
 	if preserve {
 		for _, name := range []string{"bin", "models", "runtime", "versions", "installation.json", "daemon.json"} {
 			if err := m.Remove(filepath.Join(m.Home, name)); err != nil {
-				return backup, err
+				cleanupErrors = append(cleanupErrors, err)
 			}
 		}
-		return backup, nil
+		return backup, errors.Join(cleanupErrors...)
 	}
 	if err := m.Remove(m.Home); err != nil {
-		return "", err
+		cleanupErrors = append(cleanupErrors, err)
 	}
-	return "", nil
+	return "", errors.Join(cleanupErrors...)
 }
 
 type machineCLI struct{}

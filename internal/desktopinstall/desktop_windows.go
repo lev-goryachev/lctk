@@ -3,6 +3,7 @@
 package desktopinstall
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,17 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+const (
+	runKeyPath          = `Software\Microsoft\Windows\CurrentVersion\Run`
+	userShellFoldersKey = `Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`
+)
+
+var (
+	resolveKnownPrograms = func() (string, error) {
+		return windows.KnownFolderPath(windows.FOLDERID_Programs, windows.KF_FLAG_DEFAULT)
+	}
+	resolveRegistryPrograms = startMenuProgramsFromRegistry
+)
 
 var procCoCreateInstance = windows.NewLazySystemDLL("ole32.dll").NewProc("CoCreateInstance")
 
@@ -84,33 +95,75 @@ func registerDesktop(launcher, uninstaller, version string) error {
 }
 
 func unregisterDesktop() error {
+	var cleanupErrors []error
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 	if err == nil {
 		if deleteErr := key.DeleteValue("LCTK"); deleteErr != nil && deleteErr != registry.ErrNotExist {
-			key.Close()
-			return fmt.Errorf("remove sign-in daemon registration: %w", deleteErr)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove sign-in daemon registration: %w", deleteErr))
 		}
 		_ = key.Close()
+	} else if err != registry.ErrNotExist {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("open sign-in daemon registration: %w", err))
 	}
 	programs, err := startMenuPrograms()
 	if err != nil {
-		return fmt.Errorf("locate Start menu: %w", err)
-	}
-	if err := os.RemoveAll(filepath.Join(programs, "LCTK")); err != nil {
-		return fmt.Errorf("remove Start-menu group: %w", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("locate Start menu: %w", err))
+	} else if err := os.RemoveAll(filepath.Join(programs, "LCTK")); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove Start-menu group: %w", err))
 	}
 	if err := registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\LCTK`); err != nil && err != registry.ErrNotExist {
-		return fmt.Errorf("remove uninstall registration: %w", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove uninstall registration: %w", err))
 	}
-	return nil
+	return errors.Join(cleanupErrors...)
 }
 
 // startMenuPrograms resolves the current user's physical Programs directory.
 // FOLDERID_StartMenuAllPrograms is a virtual aggregate and can legitimately
 // return ERROR_FILE_NOT_FOUND, while FOLDERID_Programs is the writable folder
-// that owns per-user shortcuts on every supported Windows release.
+// that normally owns per-user shortcuts. Windows can transiently fail that API
+// during uninstall, so the Explorer User Shell Folders value is the official
+// relocated-folder fallback instead of a guessed profile-relative path.
 func startMenuPrograms() (string, error) {
-	return windows.KnownFolderPath(windows.FOLDERID_Programs, windows.KF_FLAG_DEFAULT)
+	programs, knownErr := resolveKnownPrograms()
+	if knownErr == nil {
+		return validateProgramsPath(programs)
+	}
+	programs, registryErr := resolveRegistryPrograms()
+	if registryErr != nil {
+		return "", errors.Join(knownErr, registryErr)
+	}
+	return validateProgramsPath(programs)
+}
+
+// startMenuProgramsFromRegistry resolves relocated per-user shell folders from
+// the Windows Explorer contract used by the operating system itself.
+func startMenuProgramsFromRegistry() (string, error) {
+	key, err := registry.OpenKey(registry.CURRENT_USER, userShellFoldersKey, registry.QUERY_VALUE)
+	if err != nil {
+		return "", fmt.Errorf("open Explorer user shell folders: %w", err)
+	}
+	defer key.Close()
+	programs, valueType, err := key.GetStringValue("Programs")
+	if err != nil {
+		return "", fmt.Errorf("read Explorer Programs folder: %w", err)
+	}
+	if valueType == registry.EXPAND_SZ {
+		programs, err = registry.ExpandString(programs)
+		if err != nil {
+			return "", fmt.Errorf("expand Explorer Programs folder: %w", err)
+		}
+	}
+	return programs, nil
+}
+
+// validateProgramsPath rejects an empty or relative registry value before any
+// recursive removal can use it as a filesystem boundary.
+func validateProgramsPath(programs string) (string, error) {
+	programs = filepath.Clean(programs)
+	if programs == "." || !filepath.IsAbs(programs) {
+		return "", fmt.Errorf("Start-menu Programs path is not absolute: %q", programs)
+	}
+	return programs, nil
 }
 
 // createShortcut uses the operating system's IShellLinkW implementation

@@ -20,6 +20,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/diskspace"
 	"github.com/lev-goryachev/lctk/internal/releasebundle"
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 )
 
 const (
@@ -511,5 +512,7 @@ func coreName() string {
 }
 
 func runExecutable(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	command := exec.CommandContext(ctx, name, args...)
+	windowsprocess.HideConsole(command)
+	return command.Output()
 }

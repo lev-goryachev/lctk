@@ -2,6 +2,7 @@ package uninstall
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,24 @@ type machineStub struct{ calls [][]string }
 func (m *machineStub) Run(_ context.Context, args ...string) (string, string, error) {
 	m.calls = append(m.calls, append([]string(nil), args...))
 	return "", "", nil
+}
+
+func TestCleanupContinuesAfterIndependentUnregisterFailure(t *testing.T) {
+	home := t.TempDir()
+	unregisterErr := errors.New("Start menu unavailable")
+	var removed string
+	manager := &Manager{
+		Home: home, Registry: func() (*projectregistry.Registry, error) { return projectregistry.New(), nil }, Machine: &machineStub{},
+		StopDaemon: func(string) error { return nil }, Unregister: func() error { return unregisterErr }, Export: func(context.Context, string, string) error { return nil },
+		RuntimeData: func() (string, error) { return filepath.Join(home, "runtime-data"), nil }, UserHome: func() (string, error) { return filepath.Join(home, "user"), nil },
+		Cleanup: func(string, string) error { return nil }, Remove: func(path string) error { removed = path; return nil },
+	}
+	if _, err := manager.Run(t.Context(), false); !errors.Is(err, unregisterErr) {
+		t.Fatalf("error=%v want=%v", err, unregisterErr)
+	}
+	if removed != home {
+		t.Fatalf("home cleanup did not run after unregister failure: removed=%q", removed)
+	}
 }
 
 func TestPreservingUninstallExportsProjectStateBeforeRemovingRuntime(t *testing.T) {

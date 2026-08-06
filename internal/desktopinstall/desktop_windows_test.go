@@ -3,6 +3,7 @@
 package desktopinstall
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,6 +19,31 @@ func TestStartMenuProgramsResolvesAWritablePhysicalDirectory(t *testing.T) {
 	}
 	if info, err := os.Stat(programs); err != nil || !info.IsDir() {
 		t.Fatalf("Start-menu Programs path is not a directory: %q, %v", programs, err)
+	}
+}
+
+func TestStartMenuProgramsFallsBackToExplorerRegistry(t *testing.T) {
+	originalKnown, originalRegistry := resolveKnownPrograms, resolveRegistryPrograms
+	t.Cleanup(func() { resolveKnownPrograms, resolveRegistryPrograms = originalKnown, originalRegistry })
+	expected := filepath.Join(t.TempDir(), "Programs")
+	resolveKnownPrograms = func() (string, error) { return "", errors.New("known folder unavailable") }
+	resolveRegistryPrograms = func() (string, error) { return expected, nil }
+	programs, err := startMenuPrograms()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if programs != expected {
+		t.Fatalf("programs=%q want=%q", programs, expected)
+	}
+}
+
+func TestStartMenuProgramsRejectsUnsafeFallback(t *testing.T) {
+	originalKnown, originalRegistry := resolveKnownPrograms, resolveRegistryPrograms
+	t.Cleanup(func() { resolveKnownPrograms, resolveRegistryPrograms = originalKnown, originalRegistry })
+	resolveKnownPrograms = func() (string, error) { return "", errors.New("known folder unavailable") }
+	resolveRegistryPrograms = func() (string, error) { return `relative\Programs`, nil }
+	if _, err := startMenuPrograms(); err == nil {
+		t.Fatal("relative Start-menu fallback was accepted")
 	}
 }
 

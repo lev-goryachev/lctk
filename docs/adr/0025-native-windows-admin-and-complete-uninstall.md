@@ -31,6 +31,10 @@ Setup registers all of the following per-user Windows integration:
 
 Uninstall shows the recorded installation and runtime-data locations before mutation. It stops the daemon, optionally exports registered project state, removes the exact `lctk-runtime` Podman machine, removes only LCTK-named machine configuration and runtime residue, removes empty shared Podman parent directories only when no unrelated data is present, unregisters startup/shortcuts/Apps & Features, clears `HKCU\Software\LCTK`, and removes the installation home. Neighboring Podman machines and non-empty shared directories are never removed.
 
+The GUI process starts its console-subsystem implementation helpers with `CREATE_NO_WINDOW` and `HideWindow`. This applies to WSL and DISM probes, the private Podman client, host-core verification and bootstrap, background daemon operations, and internal administrator commands. It does not suppress UAC consent, the setup/admin/uninstall windows, the editor selected by the user, or interactive use of the public `lctk.exe` CLI.
+
+Desktop removal is idempotent after a partial attempt. The per-user Programs directory is resolved first through `FOLDERID_Programs` and then through Explorer's `User Shell Folders\Programs` registry contract if the known-folder API transiently fails. Startup, Start-menu, Apps & Features, runtime-residue, and installation-home cleanup are independent after the managed machine has been removed: every exact target is attempted and any failures are reported together.
+
 Local acceptance uses a one-file release-candidate bootstrapper built by `scripts/build-local-rc.ps1`. A ZIP containing the locally signed manifest plus the candidate setup, core, and launcher is appended to the bootstrapper executable. At runtime it extracts beside itself, serves only those four files on numeric loopback for the lifetime of the real setup process, and removes the extraction directory afterwards. Artifact URLs may use plain HTTP only for numeric loopback; the Ed25519 signature, byte length, and SHA-256 identity remain mandatory. Official publication continues to generate HTTPS artifact URLs exclusively. This permits a complete local candidate without creating a GitHub release or weakening production trust.
 
 ## Alternatives considered
@@ -56,6 +60,7 @@ Rejected. The user selects that directory and it may contain unrelated data. Rem
 - Installing and operating LCTK no longer opens a browser.
 - The CLI remains usable from a terminal without being compiled as a GUI subsystem.
 - The administrator UI and uninstaller share the already installed native executable and require no additional runtime.
+- Native GUI operations do not flash implementation-detail terminal windows.
 - A normal removal path is available in both Apps & Features and the Start menu.
 - A real one-file local RC can exercise the signed installer transaction before any GitHub publication.
 - ADR-0016 remains historical evidence for the Admin API's independent credential boundary, but its HTML page, URL delivery, and browser-specific UI conclusions no longer describe the product.

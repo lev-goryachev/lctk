@@ -40,6 +40,7 @@ import (
 	"github.com/lev-goryachev/lctk/internal/projectstack"
 	"github.com/lev-goryachev/lctk/internal/runtimeapi"
 	"github.com/lev-goryachev/lctk/internal/watchsupervisor"
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 )
 
 // actionTimeout bounds a lifecycle action started from the native window, so a
@@ -145,6 +146,7 @@ func launchUninstaller() error {
 		return err
 	}
 	command := exec.Command(filepath.Join(home, "bin", "lctk-setup.exe"), "--uninstall")
+	windowsprocess.HideConsole(command)
 	if err := command.Start(); err != nil {
 		return err
 	}
@@ -472,6 +474,7 @@ func launchCodex(project projectregistry.Project) error {
 		return err
 	}
 	command := exec.Command(executable, "codex", "launch", project.ID)
+	windowsprocess.HideConsole(command)
 	if err := command.Start(); err != nil {
 		return err
 	}

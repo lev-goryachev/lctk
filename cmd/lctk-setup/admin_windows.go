@@ -12,13 +12,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/lev-goryachev/lctk/internal/adminclient"
 	"github.com/lev-goryachev/lctk/internal/adminsession"
 	"github.com/lev-goryachev/lctk/internal/lctkhome"
+	"github.com/lev-goryachev/lctk/internal/windowsprocess"
 	"golang.org/x/sys/windows"
 )
 
@@ -142,7 +142,7 @@ func ensureAdminDaemon(parent context.Context, address string) error {
 	}
 	launcher := filepath.Join(home, "bin", "lctk.exe")
 	command := exec.Command(launcher, "daemon", "--listen", address)
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+	windowsprocess.HideConsole(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start LCTK daemon: %w", err)
 	}
