@@ -73,7 +73,7 @@ const (
 )
 
 var (
-	adminWindowClass = mustUTF16("LCTKNativeAdminWindow")
+	adminWindowClass = mustUTF16(adminWindowClassName)
 	adminWindows     sync.Map
 )
 

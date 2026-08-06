@@ -198,6 +198,9 @@ func applySelection(ctx context.Context, request setupRequest, locations lctkhom
 	if err := lctkhome.SaveLocations(locations); err != nil {
 		return err
 	}
+	if err := releaseInstalledAdminExecutable(locations.InstallDir); err != nil {
+		return err
+	}
 	manager.Progress = progress
 	installCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
