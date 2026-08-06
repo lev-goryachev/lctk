@@ -106,6 +106,63 @@ func TestSyncPublishesAtomicallyAndReusesUnchangedChunks(t *testing.T) {
 	}
 }
 
+func TestSyncFreshReembedsDerivedStateAndPreservesMemory(t *testing.T) {
+	ctx := context.Background()
+	source := &sourceStub{files: map[string][]byte{
+		"a.go": []byte("package a\n\nfunc Alpha() { helper() }\n"),
+	}}
+	embedder := &deterministicEmbedder{dimension: 16}
+	store := openTestStore(t, source, embedder)
+	first, err := store.Sync(ctx, exactState(1, source))
+	if err != nil {
+		t.Fatalf("first Sync: %v", err)
+	}
+	initialDocuments := embedder.documents
+	if initialDocuments == 0 {
+		t.Fatal("first Sync embedded no documents")
+	}
+	memory, err := store.MemoryPut(ctx, MemoryPutRequest{
+		Key: "acceptance/fresh", Kind: "decision", Content: "Preserve explicit memory.", Confidence: 1,
+	})
+	if err != nil {
+		t.Fatalf("MemoryPut: %v", err)
+	}
+	afterMemory := embedder.documents
+
+	embedder.fail = true
+	if _, err := store.SyncFresh(ctx, exactState(2, source)); err == nil {
+		t.Fatal("SyncFresh succeeded while inference failed")
+	}
+	failedStatus, err := store.Status()
+	if err != nil {
+		t.Fatalf("Status after failed SyncFresh: %v", err)
+	}
+	if failedStatus.Generation != 1 || failedStatus.ChunkCount != first.ChunkCount {
+		t.Fatalf("failed SyncFresh published %+v, want prior generation 1", failedStatus)
+	}
+	embedder.fail = false
+	status, err := store.SyncFresh(ctx, exactState(2, source))
+	if err != nil {
+		t.Fatalf("SyncFresh: %v", err)
+	}
+	if status.Generation != 2 || status.ChunkCount != first.ChunkCount {
+		t.Fatalf("fresh status = %+v, want generation 2 and %d chunks", status, first.ChunkCount)
+	}
+	if status.ChunksReused != 0 || status.ChunksEmbedded != first.ChunkCount {
+		t.Fatalf("fresh progress = %+v, want every chunk embedded and none reused", status)
+	}
+	if embedder.documents-afterMemory != first.ChunkCount {
+		t.Fatalf("fresh document embeddings = %d, want %d", embedder.documents-afterMemory, first.ChunkCount)
+	}
+	preserved, err := store.MemoryGet(ctx, MemoryGetRequest{Key: memory.Key})
+	if err != nil {
+		t.Fatalf("MemoryGet after SyncFresh: %v", err)
+	}
+	if preserved.Revision != memory.Revision || preserved.Content != memory.Content {
+		t.Fatalf("memory after SyncFresh = %+v, want %+v", preserved, memory)
+	}
+}
+
 func TestStableIDCollisionFailsBeforeEmbedding(t *testing.T) {
 	prepared := map[string][]preparedChunk{
 		"a.go": {{Chunk: Chunk{StableID: "duplicate"}}},

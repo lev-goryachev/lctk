@@ -287,10 +287,23 @@ func (s *Store) requireCompatibility(key, wanted string) error {
 	}
 }
 
-// Sync brings semantic state to one already-published exact generation. All
-// inference finishes before the transaction; a failed batch therefore leaves
-// the last complete semantic generation queryable and visibly stale.
+// Sync brings semantic state to one already-published exact generation while
+// reusing unchanged chunk embeddings. All inference finishes before the
+// transaction; a failed batch therefore leaves the last complete semantic
+// generation queryable and visibly stale.
 func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, error) {
+	return s.sync(ctx, exact, true)
+}
+
+// SyncFresh rebuilds every derived semantic vector and graph fact without
+// touching explicit memory records. It still publishes in one transaction
+// after inference succeeds, so a failed full rebuild cannot destroy the last
+// complete queryable generation.
+func (s *Store) SyncFresh(ctx context.Context, exact searchindex.State) (Status, error) {
+	return s.sync(ctx, exact, false)
+}
+
+func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setProgress(syncProgress{running: true})
@@ -306,7 +319,7 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 	}
 	changed := make([]string, 0)
 	for path, digest := range exact.Files {
-		if knownFiles[path] != digest {
+		if !reuse || knownFiles[path] != digest {
 			changed = append(changed, path)
 		}
 	}
@@ -330,7 +343,7 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 	graphDeleted := make([]string, 0)
 	if s.graph != nil {
 		for path, digest := range exact.Files {
-			if graphKnown[path] != digest {
+			if !reuse || graphKnown[path] != digest {
 				graphChanged = append(graphChanged, path)
 			}
 		}
@@ -366,9 +379,12 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 		if err != nil {
 			return Status{}, err
 		}
-		existing, err := s.chunksForPath(ctx, path)
-		if err != nil {
-			return Status{}, err
+		existing := map[string]existingChunk{}
+		if reuse {
+			existing, err = s.chunksForPath(ctx, path)
+			if err != nil {
+				return Status{}, err
+			}
 		}
 		items := make([]preparedChunk, len(chunks))
 		for i, chunk := range chunks {

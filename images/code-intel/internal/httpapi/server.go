@@ -62,6 +62,7 @@ type Outliner interface {
 // authority for project scope and generation order.
 type Semantic interface {
 	Sync(ctx context.Context, exact searchindex.State) (semantic.Status, error)
+	SyncFresh(ctx context.Context, exact searchindex.State) (semantic.Status, error)
 	Status() (semantic.Status, error)
 	Search(ctx context.Context, request semantic.Request) (semantic.Response, error)
 	GraphStatus() (semantic.GraphStatus, error)
@@ -778,7 +779,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	if err := s.syncSemantic(r.Context(), state); err != nil {
+	if err := s.syncSemantic(r.Context(), state, request.Mode == "full"); err != nil {
 		s.writeError(w, err)
 		return
 	}
@@ -809,7 +810,7 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.syncSemantic(ctx, state); err != nil {
+	if err := s.syncSemantic(ctx, state, false); err != nil {
 		return err
 	}
 	s.logger.Info("index ready",
@@ -820,12 +821,18 @@ func (s *Server) EnsureIndexed(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) syncSemantic(ctx context.Context, state searchindex.State) error {
+func (s *Server) syncSemantic(ctx context.Context, state searchindex.State, fresh bool) error {
 	if s.semantic == nil {
 		return nil
 	}
 	s.semanticProgress.start()
-	status, err := s.semantic.Sync(ctx, state)
+	var status semantic.Status
+	var err error
+	if fresh {
+		status, err = s.semantic.SyncFresh(ctx, state)
+	} else {
+		status, err = s.semantic.Sync(ctx, state)
+	}
 	s.semanticProgress.finish(err)
 	if err != nil {
 		return err
