@@ -71,6 +71,22 @@ func TestEnsureReusesThePinnedHealthyContainer(t *testing.T) {
 	}
 }
 
+func TestSelfTestUsesItsLongerEmbeddingClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": make([]float64, Dimensions)}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := NewManagerForTest(nil, "image@sha256:test", writeTestModel(t), server.URL)
+	manager.healthClient = &http.Client{Timeout: time.Millisecond}
+	manager.selfTestClient = &http.Client{Timeout: 100 * time.Millisecond}
+	if err := manager.SelfTest(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProductionHealthUsesThePrivateContainerAddressThroughMachineTunnel(t *testing.T) {
 	model := writeTestModel(t)
 	health := healthyServer(t)

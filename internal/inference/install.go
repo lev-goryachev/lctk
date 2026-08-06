@@ -150,7 +150,7 @@ func (m *Manager) selfTestFor(ctx context.Context, name string) error {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := m.httpClient.Do(request)
+	response, err := m.selfTestClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("embedding self-test request: %w", err)
 	}

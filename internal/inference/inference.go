@@ -54,6 +54,11 @@ const (
 	// context is cancelled. Recovery must continue independently, but it must
 	// never leave setup or update blocked indefinitely on a failed runtime.
 	RecoveryTimeout = 2 * time.Minute
+	// HealthTimeout keeps readiness polling responsive. SelfTestTimeout is
+	// separate because the first real embedding can initialize CUDA kernels and
+	// must not inherit the health probe's deliberately short deadline.
+	HealthTimeout   = 2 * time.Second
+	SelfTestTimeout = 30 * time.Second
 )
 
 var (
@@ -76,16 +81,17 @@ type tunnel interface {
 // Manager owns the shared container lifecycle. Configuration fields are private
 // so production always uses pinned identities; tests use NewManagerForTest.
 type Manager struct {
-	runner       Runner
-	image        string
-	modelPath    string
-	modelBytes   int64
-	modelSHA     string
-	downloadURL  string
-	distribution Distribution
-	address      string
-	httpClient   *http.Client
-	tunnel       tunnel
+	runner         Runner
+	image          string
+	modelPath      string
+	modelBytes     int64
+	modelSHA       string
+	downloadURL    string
+	distribution   Distribution
+	address        string
+	healthClient   *http.Client
+	selfTestClient *http.Client
+	tunnel         tunnel
 }
 
 // Status is the observable shared inference state.
@@ -136,7 +142,8 @@ func NewManagerForDistribution(runner Runner, distribution Distribution) (*Manag
 		image = nvidiainstall.Image
 	}
 	return &Manager{runner: runner, image: image, distribution: distribution, modelPath: path, modelBytes: ModelBytes,
-		modelSHA: ModelSHA256, downloadURL: ModelURL, httpClient: &http.Client{Timeout: 2 * time.Second},
+		modelSHA: ModelSHA256, downloadURL: ModelURL,
+		healthClient: &http.Client{Timeout: HealthTimeout}, selfTestClient: &http.Client{Timeout: SelfTestTimeout},
 		tunnel: machinetunnel.Default}, nil
 }
 
@@ -147,7 +154,7 @@ func NewManagerForTest(runner Runner, image, modelPath, address string) *Manager
 	return &Manager{runner: runner, image: image, modelPath: modelPath,
 		distribution: DistributionCPU,
 		modelBytes:   size, modelSHA: digest, downloadURL: ModelURL, address: address,
-		httpClient: &http.Client{Timeout: 2 * time.Second}}
+		healthClient: &http.Client{Timeout: HealthTimeout}, selfTestClient: &http.Client{Timeout: SelfTestTimeout}}
 }
 
 // VerifyModel streams the whole file through SHA-256 and checks size first. A
@@ -608,7 +615,7 @@ func (m *Manager) healthFor(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	response, err := m.httpClient.Do(request)
+	response, err := m.healthClient.Do(request)
 	if err != nil {
 		return err
 	}
