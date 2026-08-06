@@ -58,10 +58,12 @@ type Store struct {
 }
 
 type syncProgress struct {
-	running  bool
-	total    int
-	embedded int
-	reused   int
+	running   bool
+	total     int
+	embedded  int
+	reused    int
+	startedAt time.Time
+	updatedAt time.Time
 }
 
 // Status states exactly which exact-index generation the semantic database
@@ -79,6 +81,8 @@ type Status struct {
 	ChunksTotal    int    `json:"chunks_total,omitempty"`
 	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
 	ChunksReused   int    `json:"chunks_reused,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	ProgressAt     string `json:"progress_at,omitempty"`
 }
 
 // Open validates or creates one project's database. It fails closed on a newer
@@ -378,6 +382,9 @@ func (s *Store) Sync(ctx context.Context, exact searchindex.State) (Status, erro
 		}
 		prepared[path] = items
 	}
+	if err := validateStableIDs(prepared); err != nil {
+		return Status{}, err
+	}
 	for _, path := range graphChanged {
 		content, digest, err := s.source.ReadProjectFile(path, s.config.MaxFileBytes)
 		if err != nil {
@@ -471,6 +478,30 @@ type preparedChunk struct {
 	Chunk
 	ExistingID int64
 	Vector     []float32
+}
+
+// validateStableIDs is the fail-fast boundary before local inference. The
+// database enforces this invariant too, but discovering a deterministic
+// collision only after embedding an entire repository wastes minutes of CPU and
+// leaves an operator watching progress that can never be published.
+func validateStableIDs(prepared map[string][]preparedChunk) error {
+	paths := make([]string, 0, len(prepared))
+	for path := range prepared {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	seen := make(map[string]string)
+	for _, path := range paths {
+		for _, item := range prepared[path] {
+			if previous, exists := seen[item.StableID]; exists {
+				return fail(CodeInternalError,
+					fmt.Sprintf("Semantic chunk identity %s is duplicated by %q and %q before embedding.", item.StableID, previous, path),
+					false, nil)
+			}
+			seen[item.StableID] = path
+		}
+	}
+	return nil
 }
 
 func (s *Store) fileDigests(ctx context.Context) (map[string]string, error) {
@@ -638,6 +669,12 @@ func (s *Store) Status() (Status, error) {
 	status.ChunksTotal = s.progress.total
 	status.ChunksEmbedded = s.progress.embedded
 	status.ChunksReused = s.progress.reused
+	if !s.progress.startedAt.IsZero() {
+		status.StartedAt = s.progress.startedAt.Format(time.RFC3339Nano)
+	}
+	if !s.progress.updatedAt.IsZero() {
+		status.ProgressAt = s.progress.updatedAt.Format(time.RFC3339Nano)
+	}
 	s.progressMu.RUnlock()
 	var generation, indexedAt string
 	if err := s.db.QueryRow("SELECT value FROM semantic_meta WHERE key='generation'").Scan(&generation); err != nil {
@@ -668,6 +705,19 @@ func (s *Store) Status() (Status, error) {
 
 func (s *Store) setProgress(progress syncProgress) {
 	s.progressMu.Lock()
+	now := time.Now().UTC()
+	if progress.running {
+		if s.progress.running {
+			progress.startedAt = s.progress.startedAt
+		} else {
+			progress.startedAt = now
+		}
+		if s.progress.running && progress.total == s.progress.total && progress.embedded == s.progress.embedded && progress.reused == s.progress.reused {
+			progress.updatedAt = s.progress.updatedAt
+		} else {
+			progress.updatedAt = now
+		}
+	}
 	s.progress = progress
 	s.progressMu.Unlock()
 }

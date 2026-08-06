@@ -65,12 +65,46 @@ type Project struct {
 
 // Index is the latest code-intelligence status returned for a running project.
 type Index struct {
-	Ready      bool   `json:"ready"`
-	Indexing   bool   `json:"indexing"`
-	Generation uint64 `json:"generation"`
-	FileCount  int    `json:"file_count"`
-	IndexedAt  string `json:"indexed_at,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Ready      bool           `json:"ready"`
+	Indexing   bool           `json:"indexing"`
+	Generation uint64         `json:"generation"`
+	FileCount  int            `json:"file_count"`
+	IndexedAt  string         `json:"indexed_at,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Semantic   *SemanticIndex `json:"semantic,omitempty"`
+	Graph      *GraphIndex    `json:"graph,omitempty"`
+}
+
+// SemanticIndex carries both committed state and the current attempt. Keeping
+// progress and last error separate prevents an active retry from hiding why the
+// previous attempt failed.
+type SemanticIndex struct {
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	ChunkCount     int    `json:"chunk_count"`
+	Freshness      string `json:"freshness"`
+	Reason         string `json:"reason,omitempty"`
+	ChunksTotal    int    `json:"chunks_total,omitempty"`
+	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
+	ChunksReused   int    `json:"chunks_reused,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	ProgressAt     string `json:"progress_at,omitempty"`
+	Stalled        bool   `json:"stalled,omitempty"`
+	StallSeconds   int64  `json:"stall_seconds,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+}
+
+type GraphIndex struct {
+	Ready       bool   `json:"ready"`
+	Generation  uint64 `json:"generation"`
+	FileCount   int    `json:"file_count"`
+	NodeCount   int    `json:"node_count"`
+	ImportCount int    `json:"import_count"`
+	CallCount   int    `json:"call_count"`
+	Freshness   string `json:"freshness"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // Change is the native watcher and reconciliation status for one project.

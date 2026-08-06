@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.5",
+    [string]$Version = "0.1.6",
     [string]$TemplateVersion = "0.1.1",
     [string]$TemplateKeyID = "lctk-release-v1",
     [string]$TemplatePublicKey = "rSVhZIN82jXEG04WGzc9lAu5bszLjs//cSEO0bmJY8I="
@@ -11,6 +11,10 @@ $ErrorActionPreference = "Stop"
 # artifact directory. The guard keeps cleanup from ever following a changed
 # working directory into an unrelated path.
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$dirty = @(git -C $repository status --porcelain)
+if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) {
+    throw "Local RC construction requires a clean committed worktree."
+}
 $artifactRoot = Join-Path $repository ".artifacts\local-rc"
 $expectedPrefix = (Join-Path $repository ".artifacts") + [IO.Path]::DirectorySeparatorChar
 $resolvedArtifactRoot = [IO.Path]::GetFullPath($artifactRoot)
@@ -39,6 +43,40 @@ try {
     }
     $commit = (& git rev-parse HEAD).Trim()
     $publishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    # A local RC must carry the code-intel source from the same commit as its
+    # Windows binaries. The signed archive hash authenticates transport while
+    # the signed OCI manifest digest authenticates the runnable image.
+    $locations = Get-ItemProperty -LiteralPath "HKCU:\Software\LCTK" -ErrorAction Stop
+    if (-not [IO.Path]::IsPathFullyQualified($locations.RuntimeDataDir) -or -not [IO.Path]::IsPathFullyQualified($locations.InstallDir)) {
+        throw "The installed LCTK locations are incomplete."
+    }
+    $podman = Join-Path $locations.InstallDir "runtime\podman\5.8.2\bin\podman.exe"
+    if (-not (Test-Path -LiteralPath $podman -PathType Leaf)) {
+        throw "The private LCTK Podman client is not installed."
+    }
+    $previousDataHome = $env:XDG_DATA_HOME
+    $previousConfigHome = $env:XDG_CONFIG_HOME
+    try {
+        $env:XDG_DATA_HOME = $locations.RuntimeDataDir
+        $env:XDG_CONFIG_HOME = Join-Path $locations.InstallDir "runtime\podman\config"
+        $imageTag = "localhost/lctk/code-intel:$Version"
+        & $podman --connection lctk-runtime-root build --tag $imageTag images/code-intel
+        if ($LASTEXITCODE -ne 0) { throw "Building the local code-intel image failed." }
+        $imageDigest = (& $podman --connection lctk-runtime-root image inspect $imageTag --format '{{.Digest}}').Trim()
+        if ($LASTEXITCODE -ne 0 -or $imageDigest -notmatch '^sha256:[0-9a-f]{64}$') {
+            throw "The local code-intel image has no immutable manifest digest."
+        }
+        $imageArchive = Join-Path $package "lctk-code-intel.oci"
+        & $podman --connection lctk-runtime-root save --format oci-archive --output $imageArchive $imageTag
+        if ($LASTEXITCODE -ne 0) { throw "Saving the local code-intel image failed." }
+    }
+    finally {
+        $env:XDG_DATA_HOME = $previousDataHome
+        $env:XDG_CONFIG_HOME = $previousConfigHome
+    }
+    $imageReference = "localhost/lctk/code-intel@$imageDigest"
+    $imageBytes = (Get-Item -LiteralPath $imageArchive).Length
     $template = Join-Path $resolvedArtifactRoot "template-manifest.json"
     $templateURL = "https://github.com/lev-goryachev/lctk/releases/download/v$TemplateVersion/release-manifest.json"
     Invoke-WebRequest -UseBasicParsing -Uri $templateURL -OutFile $template
@@ -57,13 +95,15 @@ try {
         --version $Version --commit $commit --published-at $publishedAt `
         --base-url "http://127.0.0.1:4466" --key-id "lctk-local-rc" `
         --template-envelope $template --template-key-id $TemplateKeyID --template-public-key $TemplatePublicKey `
+        --code-image $imageReference --code-image-bytes $imageBytes `
         --artifact "lctk-core.exe,host-core,windows,amd64,$core" `
         --artifact "lctk.exe,host-launcher,windows,amd64,$package\lctk.exe" `
         --artifact "lctk-setup.exe,installer,windows,amd64,$package\lctk-setup.exe" `
+        --artifact "lctk-code-intel.oci,code-image-archive,linux,amd64,$imageArchive" `
         --output $manifest
 
     $payload = Join-Path $resolvedArtifactRoot "payload.zip"
-    Compress-Archive -LiteralPath $core,(Join-Path $package "lctk.exe"),(Join-Path $package "lctk-setup.exe"),$manifest -DestinationPath $payload
+    Compress-Archive -LiteralPath $core,(Join-Path $package "lctk.exe"),(Join-Path $package "lctk-setup.exe"),$imageArchive,$manifest -DestinationPath $payload
     $outputs = @()
     foreach ($candidate in @(
         @{ Name = "LCTK-Setup-local-RC.exe"; Bootstrap = "bootstrap-setup.exe"; LinkerFlags = "-s -w -H=windowsgui" },

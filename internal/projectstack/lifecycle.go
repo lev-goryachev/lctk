@@ -2,10 +2,16 @@ package projectstack
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +20,11 @@ import (
 	"github.com/lev-goryachev/lctk/internal/containerruntime"
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 	"github.com/lev-goryachev/lctk/internal/inference"
+	"github.com/lev-goryachev/lctk/internal/lctkhome"
 	"github.com/lev-goryachev/lctk/internal/machinetunnel"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
+	"github.com/lev-goryachev/lctk/internal/releasebundle"
+	"github.com/lev-goryachev/lctk/internal/verifieddownload"
 )
 
 // State is the observable lifecycle state of a project stack.
@@ -118,6 +127,10 @@ type Manager struct {
 	// version selects the code-intel tag. Production defaults to the host build;
 	// update sets a candidate explicitly before its health gate.
 	version string
+	// imageClient and loadImageArchive form the authenticated local-RC image
+	// path. Production releases keep using immutable registry pulls.
+	imageClient      *http.Client
+	loadImageArchive func(context.Context, io.Reader) (string, string, error)
 }
 
 // NewManager returns a manager backed by LCTK's private Podman connection.
@@ -125,7 +138,8 @@ func NewManager() *Manager {
 	runner := containerruntime.Runner{}
 	shared, err := inference.NewManager(runner)
 	return &Manager{runner: runner, sharedInference: shared, inferenceErr: err, tunnel: machinetunnel.Default,
-		settings: hostsettings.Load, version: buildinfo.Version}
+		settings: hostsettings.Load, version: buildinfo.Version, imageClient: http.DefaultClient,
+		loadImageArchive: containerruntime.Load}
 }
 
 // NewManagerWithRunner returns a manager backed by a supplied runner, for tests.
@@ -249,6 +263,65 @@ func (m *Manager) InstallImage(ctx context.Context, immutableReference, version 
 	tag := ImageRepository + ":" + version
 	if _, stderr, err := m.runner.Run(ctx, "tag", immutableReference, tag); err != nil {
 		return fmt.Errorf("tag code-intel image %s: %s", tag, firstLine(stderr, err))
+	}
+	return nil
+}
+
+// InstallImageArchive downloads the optional signed local-RC OCI artifact,
+// streams it into the private Podman machine, and verifies the loaded manifest
+// digest before the product version tag can be used. The archive SHA-256 binds
+// transport bytes; the OCI digest independently binds runnable image content.
+func (m *Manager) InstallImageArchive(ctx context.Context, immutableReference, version string, artifact releasebundle.Artifact) error {
+	if immutableReference == "" || version == "" || artifact.Kind != "code-image-archive" || artifact.OS != "linux" || artifact.Arch != "amd64" {
+		return errors.New("local code-intel image identity is incomplete")
+	}
+	if artifact.Name == "" || filepath.Base(artifact.Name) != artifact.Name || strings.ContainsAny(artifact.Name, `/\`) {
+		return errors.New("local code-intel image archive name is unsafe")
+	}
+	separator := strings.LastIndex(immutableReference, "@")
+	if separator < 0 {
+		return errors.New("local code-intel image reference has no sha256 digest")
+	}
+	expectedDigest, found := strings.CutPrefix(immutableReference[separator+1:], "sha256:")
+	decodedDigest, digestErr := hex.DecodeString(expectedDigest)
+	if !found || digestErr != nil || len(decodedDigest) != sha256.Size || expectedDigest != strings.ToLower(expectedDigest) {
+		return errors.New("local code-intel image reference has no sha256 digest")
+	}
+	if m.imageClient == nil || m.loadImageArchive == nil {
+		return errors.New("local code-intel image loader is not configured")
+	}
+	home, err := lctkhome.Dir()
+	if err != nil {
+		return err
+	}
+	workspace, err := os.MkdirTemp(home, ".code-image-")
+	if err != nil {
+		return fmt.Errorf("create local image workspace: %w", err)
+	}
+	defer os.RemoveAll(workspace)
+	archive := filepath.Join(workspace, artifact.Name)
+	if err := verifieddownload.Download(ctx, m.imageClient, artifact, archive); err != nil {
+		return err
+	}
+	input, err := os.Open(archive)
+	if err != nil {
+		return fmt.Errorf("open verified code-intel image: %w", err)
+	}
+	_, stderr, loadErr := m.loadImageArchive(ctx, input)
+	closeErr := input.Close()
+	if loadErr != nil {
+		return errors.Join(fmt.Errorf("load verified code-intel image: %s", firstLine(stderr, loadErr)), closeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close verified code-intel image: %w", closeErr)
+	}
+	tag := ImageRepository + ":" + version
+	stdout, stderr, err := m.runner.Run(ctx, "image", "inspect", tag, "--format", "{{.Digest}}")
+	if err != nil {
+		return fmt.Errorf("inspect loaded code-intel image %s: %s", tag, firstLine(stderr, err))
+	}
+	if actual := strings.TrimPrefix(strings.TrimSpace(stdout), "sha256:"); actual != expectedDigest {
+		return fmt.Errorf("loaded code-intel image digest sha256:%s differs from signed sha256:%s", actual, expectedDigest)
 	}
 	return nil
 }

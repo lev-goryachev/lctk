@@ -49,6 +49,7 @@ type Plan struct {
 type Stack interface {
 	RuntimeAvailable(context.Context) error
 	InstallImage(context.Context, string, string) error
+	InstallImageArchive(context.Context, string, string, releasebundle.Artifact) error
 	Status(context.Context, projectregistry.Project) (projectstack.Status, error)
 	Start(context.Context, projectregistry.Project, time.Duration) (projectstack.Status, error)
 	Stop(context.Context, projectregistry.Project) (projectstack.Status, error)
@@ -137,7 +138,13 @@ func (m *Manager) Apply(ctx context.Context, manifest releasebundle.Manifest) (P
 		return plan, err
 	}
 	targetStack := m.NewStack(manifest.Version)
-	if err := targetStack.InstallImage(ctx, manifest.CodeImage.Reference, manifest.Version); err != nil {
+	archive, archiveErr := manifest.ArtifactFor("code-image-archive", "linux", "amd64")
+	if archiveErr == nil {
+		err = targetStack.InstallImageArchive(ctx, manifest.CodeImage.Reference, manifest.Version, archive)
+	} else {
+		err = targetStack.InstallImage(ctx, manifest.CodeImage.Reference, manifest.Version)
+	}
+	if err != nil {
 		return plan, err
 	}
 	migrated, err := SwitchRunningProjects(ctx, currentStack, targetStack, running, m.CandidateWait)

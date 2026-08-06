@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/lev-goryachev/lctk/internal/adminclient"
@@ -51,7 +52,10 @@ const (
 	esMultiline     = 0x0004
 	esAutoVScroll   = 0x0040
 	esReadOnly      = 0x0800
+	emGetSel        = 0x00B0
 	emSetSel        = 0x00B1
+	emLineScroll    = 0x00B6
+	emGetFirstLine  = 0x00CE
 	wmCopy          = 0x0301
 	lbsNotify       = 0x0001
 	cbsDropDownList = 0x0003
@@ -80,23 +84,36 @@ type nativeAdminWindow struct {
 	context context.Context
 	cancel  context.CancelFunc
 
-	statusLabel       uintptr
-	projectPath       uintptr
-	profile           uintptr
-	projectList       uintptr
-	projectInfo       uintptr
-	mode              uintptr
-	requestList       uintptr
-	authorizationList uintptr
-	logs              uintptr
-	controls          []uintptr
-	buttons           map[uint16]uintptr
+	statusLabel        uintptr
+	projectPath        uintptr
+	profile            uintptr
+	projectList        uintptr
+	projectInfo        uintptr
+	mode               uintptr
+	requestList        uintptr
+	authorizationList  uintptr
+	logs               uintptr
+	controls           []uintptr
+	buttons            map[uint16]uintptr
+	projectItems       []adminListItem
+	requestItems       []adminListItem
+	authorizationItems []adminListItem
+	projectInfoText    string
+	logsText           string
 
 	mu       sync.RWMutex
 	snapshot adminclient.Snapshot
 	status   string
 	failure  string
 	busy     bool
+}
+
+// adminListItem keeps the stable server identity aligned with one rendered row.
+// A polling refresh may reorder or update labels, so an array index is never a
+// durable selection identity.
+type adminListItem struct {
+	ID   string
+	Text string
 }
 
 // runAdminWindow ensures the background daemon is reachable, spends its
@@ -295,7 +312,7 @@ func (window *nativeAdminWindow) createControls(instance uintptr) error {
 	if err != nil {
 		return err
 	}
-	window.projectInfo, err = create("EDIT", "Select a project.", wsChild|wsVisible|wsBorder|esMultiline|esAutoVScroll|esReadOnly, 470, 160, 612, 88, 0)
+	window.projectInfo, err = create("EDIT", "Select a project.", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esAutoVScroll|esReadOnly, 470, 160, 612, 88, 0)
 	if err != nil {
 		return err
 	}
@@ -506,33 +523,48 @@ func (window *nativeAdminWindow) projectAction(action, status string) {
 }
 
 func (window *nativeAdminWindow) selectedProject() (adminclient.Project, bool) {
-	index, _, _ := procSendMessageW.Call(window.projectList, lbGetCurSel, 0, 0)
-	window.mu.RLock()
-	defer window.mu.RUnlock()
-	if int32(index) < 0 || int(index) >= len(window.snapshot.Projects) {
+	id, ok := selectedListID(window.projectList, window.projectItems)
+	if !ok {
 		return adminclient.Project{}, false
 	}
-	return window.snapshot.Projects[index], true
+	window.mu.RLock()
+	defer window.mu.RUnlock()
+	for _, project := range window.snapshot.Projects {
+		if project.ID == id {
+			return project, true
+		}
+	}
+	return adminclient.Project{}, false
 }
 
 func (window *nativeAdminWindow) selectedAuthorization() (adminclient.Authorization, bool) {
-	index, _, _ := procSendMessageW.Call(window.authorizationList, lbGetCurSel, 0, 0)
-	window.mu.RLock()
-	defer window.mu.RUnlock()
-	if int32(index) < 0 || int(index) >= len(window.snapshot.Authorizations) {
+	id, ok := selectedListID(window.authorizationList, window.authorizationItems)
+	if !ok {
 		return adminclient.Authorization{}, false
 	}
-	return window.snapshot.Authorizations[index], true
+	window.mu.RLock()
+	defer window.mu.RUnlock()
+	for _, authorization := range window.snapshot.Authorizations {
+		if authorization.ID == id {
+			return authorization, true
+		}
+	}
+	return adminclient.Authorization{}, false
 }
 
 func (window *nativeAdminWindow) selectedAuthorizationRequest() (adminclient.AuthorizationRequest, bool) {
-	index, _, _ := procSendMessageW.Call(window.requestList, lbGetCurSel, 0, 0)
-	window.mu.RLock()
-	defer window.mu.RUnlock()
-	if int32(index) < 0 || int(index) >= len(window.snapshot.Requests) {
+	id, ok := selectedListID(window.requestList, window.requestItems)
+	if !ok {
 		return adminclient.AuthorizationRequest{}, false
 	}
-	return window.snapshot.Requests[index], true
+	window.mu.RLock()
+	defer window.mu.RUnlock()
+	for _, request := range window.snapshot.Requests {
+		if request.ID == id {
+			return request, true
+		}
+	}
+	return adminclient.AuthorizationRequest{}, false
 }
 
 func (window *nativeAdminWindow) act(status string, operation func(context.Context) error) {
@@ -649,30 +681,29 @@ func (window *nativeAdminWindow) render() {
 		header += "  Error: " + failure
 	}
 	setWindowText(window.statusLabel, header)
-	selected, _, _ := procSendMessageW.Call(window.projectList, lbGetCurSel, 0, 0)
-	procSendMessageW.Call(window.projectList, lbResetContent, 0, 0)
+	projects := make([]adminListItem, 0, len(snapshot.Projects))
 	for _, project := range snapshot.Projects {
 		text := fmt.Sprintf("%s  |  %s  |  %s  |  %s", project.Name, project.State, project.Mode, project.Path)
-		procSendMessageW.Call(window.projectList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
+		projects = append(projects, adminListItem{ID: project.ID, Text: text})
 	}
-	if int32(selected) >= 0 && int(selected) < len(snapshot.Projects) {
-		procSendMessageW.Call(window.projectList, lbSetCurSel, selected, 0)
-	}
-	procSendMessageW.Call(window.requestList, lbResetContent, 0, 0)
+	updateListBox(window.projectList, &window.projectItems, projects)
+	requests := make([]adminListItem, 0, len(snapshot.Requests))
 	for _, request := range snapshot.Requests {
 		text := fmt.Sprintf("%s  |  project %s  |  callback %s  |  expires %s", request.Client, request.Project, request.RedirectURI, request.ExpiresAt)
-		procSendMessageW.Call(window.requestList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
+		requests = append(requests, adminListItem{ID: request.ID, Text: text})
 	}
-	procSendMessageW.Call(window.authorizationList, lbResetContent, 0, 0)
+	updateListBox(window.requestList, &window.requestItems, requests)
+	authorizations := make([]adminListItem, 0, len(snapshot.Authorizations))
 	for _, authorization := range snapshot.Authorizations {
 		state := "active"
 		if authorization.Revoked {
 			state = "revoked"
 		}
 		text := fmt.Sprintf("%s  |  project %s  |  %s  |  %s", authorization.Client, authorization.Project, authorization.IssuedAt, state)
-		procSendMessageW.Call(window.authorizationList, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(text))))
+		authorizations = append(authorizations, adminListItem{ID: authorization.ID, Text: text})
 	}
-	setWindowText(window.logs, renderAdminLogs(snapshot))
+	updateListBox(window.authorizationList, &window.authorizationItems, authorizations)
+	updateReadOnlyEdit(window.logs, &window.logsText, renderAdminLogs(snapshot))
 	setEnabled(window.projectPath, !busy)
 	setEnabled(window.profile, !busy)
 	for _, control := range window.controls {
@@ -687,13 +718,26 @@ func (window *nativeAdminWindow) renderSelection() {
 	window.mu.RUnlock()
 	project, ok := window.selectedProject()
 	if !ok {
-		setWindowText(window.projectInfo, "No project selected.")
+		updateReadOnlyEdit(window.projectInfo, &window.projectInfoText, "No project selected.")
 	} else {
-		index := "not available"
+		index := "exact unavailable"
 		if project.Index != nil {
-			index = fmt.Sprintf("%d files, generation %d", project.Index.FileCount, project.Index.Generation)
+			index = fmt.Sprintf("exact %d files, generation %d", project.Index.FileCount, project.Index.Generation)
 			if project.Index.Indexing {
 				index += " (indexing)"
+			}
+			if semantic := project.Index.Semantic; semantic != nil {
+				index += "; semantic " + semanticDiagnostic(semantic)
+			}
+			if graph := project.Index.Graph; graph != nil {
+				if graph.Ready {
+					index += fmt.Sprintf("; graph %s generation %d, %d nodes", graph.Freshness, graph.Generation, graph.NodeCount)
+				} else {
+					index += "; graph not ready"
+					if graph.Reason != "" {
+						index += ": " + graph.Reason
+					}
+				}
 			}
 		}
 		changes := "not watched"
@@ -702,13 +746,16 @@ func (window *nativeAdminWindow) renderSelection() {
 			if !project.Changes.Complete {
 				changes += ", incomplete: " + project.Changes.GapReason
 			}
+			if project.Changes.LastError != "" {
+				changes += ", last error: " + project.Changes.LastError
+			}
 		}
 		endpoint := fmt.Sprintf("http://%s/projects/%s/mcp", localapi.DefaultAddress, project.ID)
 		detail := fmt.Sprintf("%s\r\nMCP URL: %s\r\nCodex: remove any older LCTK entry, then Settings > MCP servers > Add server > Streamable HTTP > paste URL > Save/Restart > Authenticate.\r\nState: %s; health: %s; index: %s; changes: %s; disk: %s", project.Name, endpoint, project.State, project.Health, index, changes, project.Disk.Human)
 		if project.Detail != "" {
 			detail += "\r\n" + project.Detail
 		}
-		setWindowText(window.projectInfo, detail)
+		updateReadOnlyEdit(window.projectInfo, &window.projectInfoText, detail)
 		modes := []string{"quiet", "normal", "fast"}
 		for index, mode := range modes {
 			if mode == project.Mode {
@@ -730,6 +777,130 @@ func (window *nativeAdminWindow) renderSelection() {
 	_, requestSelected := window.selectedAuthorizationRequest()
 	setEnabled(window.buttons[idAdminApprove], !busy && requestSelected)
 	setEnabled(window.buttons[idAdminDeny], !busy && requestSelected)
+}
+
+func semanticDiagnostic(semantic *adminclient.SemanticIndex) string {
+	if semantic.Stalled {
+		return fmt.Sprintf("STALLED for %ds at %d/%d chunks", semantic.StallSeconds, semantic.ChunksEmbedded+semantic.ChunksReused, semantic.ChunksTotal)
+	}
+	if semantic.Indexing {
+		progress := "indexing"
+		if semantic.ChunksTotal > 0 {
+			progress = fmt.Sprintf("indexing %d/%d chunks", semantic.ChunksEmbedded+semantic.ChunksReused, semantic.ChunksTotal)
+		}
+		if semantic.LastError != "" {
+			progress += ", previous error: " + semantic.LastError
+		}
+		return progress
+	}
+	if semantic.Ready {
+		return fmt.Sprintf("%s generation %d, %d chunks", semantic.Freshness, semantic.Generation, semantic.ChunkCount)
+	}
+	if semantic.LastError != "" {
+		return "failed: " + semantic.LastError
+	}
+	if semantic.Reason != "" {
+		return "not ready: " + semantic.Reason
+	}
+	return "not ready"
+}
+
+func selectedListID(handle uintptr, items []adminListItem) (string, bool) {
+	index, _, _ := procSendMessageW.Call(handle, lbGetCurSel, 0, 0)
+	if int32(index) < 0 || int(index) >= len(items) {
+		return "", false
+	}
+	return items[index].ID, true
+}
+
+// updateListBox avoids destructive redraws when a poll returned identical
+// content and restores changed lists by stable server ID rather than by index.
+// This is what keeps an OAuth request selected while the two-second poll runs.
+func updateListBox(handle uintptr, rendered *[]adminListItem, next []adminListItem) {
+	selectedID, _ := selectedListID(handle, *rendered)
+	if equalAdminListItems(*rendered, next) {
+		return
+	}
+	procSendMessageW.Call(handle, lbResetContent, 0, 0)
+	for _, item := range next {
+		procSendMessageW.Call(handle, lbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(item.Text))))
+	}
+	*rendered = append((*rendered)[:0], next...)
+	for index, item := range next {
+		if item.ID == selectedID {
+			procSendMessageW.Call(handle, lbSetCurSel, uintptr(index), 0)
+			break
+		}
+	}
+}
+
+func equalAdminListItems(first, second []adminListItem) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// updateReadOnlyEdit preserves both the selected text and the scroll position.
+// Polling identical content does no Win32 mutation at all; changed log content
+// restores the same UTF-16 selection when that text still exists.
+func updateReadOnlyEdit(handle uintptr, rendered *string, next string) {
+	if *rendered == next {
+		return
+	}
+	var start, end uint32
+	procSendMessageW.Call(handle, emGetSel, uintptr(unsafe.Pointer(&start)), uintptr(unsafe.Pointer(&end)))
+	firstLine, _, _ := procSendMessageW.Call(handle, emGetFirstLine, 0, 0)
+	nextStart, nextEnd := preservedUTF16Selection(*rendered, next, int(start), int(end))
+	setWindowText(handle, next)
+	procSendMessageW.Call(handle, emSetSel, uintptr(nextStart), uintptr(nextEnd))
+	currentLine, _, _ := procSendMessageW.Call(handle, emGetFirstLine, 0, 0)
+	delta := int64(firstLine) - int64(currentLine)
+	if delta != 0 {
+		procSendMessageW.Call(handle, emLineScroll, 0, uintptr(delta))
+	}
+	*rendered = next
+}
+
+func preservedUTF16Selection(previous, next string, start, end int) (int, int) {
+	previousUnits := utf16.Encode([]rune(previous))
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	if start > len(previousUnits) {
+		start = len(previousUnits)
+	}
+	if end > len(previousUnits) {
+		end = len(previousUnits)
+	}
+	if start != end {
+		selected := string(utf16.Decode(previousUnits[start:end]))
+		nextUnits := utf16.Encode([]rune(next))
+		if end <= len(nextUnits) && string(utf16.Decode(nextUnits[start:end])) == selected {
+			return start, end
+		}
+		if byteIndex := strings.Index(next, selected); byteIndex >= 0 {
+			nextStart := len(utf16.Encode([]rune(next[:byteIndex])))
+			return nextStart, nextStart + len(utf16.Encode([]rune(selected)))
+		}
+		end = start
+	}
+	nextLength := len(utf16.Encode([]rune(next)))
+	if start > nextLength {
+		start = nextLength
+	}
+	if end > nextLength {
+		end = nextLength
+	}
+	return start, end
 }
 
 func addComboItems(handle uintptr, values []string, selected int) {

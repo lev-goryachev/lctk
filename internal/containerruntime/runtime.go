@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,6 +167,26 @@ func (Runner) Run(ctx context.Context, args ...string) (string, string, error) {
 		return "", "", err
 	}
 	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err = command.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+// Load streams one already verified OCI archive into LCTK's private Podman
+// connection. Streaming through stdin is required for a remote Podman client:
+// an --input path would be interpreted inside the managed Linux machine rather
+// than on the Windows host that downloaded and authenticated the artifact.
+func Load(ctx context.Context, input io.Reader) (string, string, error) {
+	if input == nil {
+		return "", "", errors.New("OCI image archive input is nil")
+	}
+	command, err := Command(ctx, "load")
+	if err != nil {
+		return "", "", err
+	}
+	var stdout, stderr bytes.Buffer
+	command.Stdin = input
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	err = command.Run()

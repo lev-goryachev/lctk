@@ -49,17 +49,22 @@ func (s *updateInstallerStub) Rollback() (installation.Activation, error) {
 }
 
 type updateStackStub struct {
-	states         map[string]projectstack.State
-	failStart      string
-	imageInstalled bool
-	stopped        []string
-	started        []string
-	restored       []string
+	states           map[string]projectstack.State
+	failStart        string
+	imageInstalled   bool
+	archiveInstalled bool
+	stopped          []string
+	started          []string
+	restored         []string
 }
 
 func (s *updateStackStub) RuntimeAvailable(context.Context) error { return nil }
 func (s *updateStackStub) InstallImage(context.Context, string, string) error {
 	s.imageInstalled = true
+	return nil
+}
+func (s *updateStackStub) InstallImageArchive(context.Context, string, string, releasebundle.Artifact) error {
+	s.archiveInstalled = true
 	return nil
 }
 func (s *updateStackStub) Status(_ context.Context, project projectregistry.Project) (projectstack.Status, error) {
@@ -118,6 +123,9 @@ func TestUpdateRestoresEveryMigratedProjectBeforeHostActivationOnHealthFailure(t
 	}
 	if installer.installed {
 		t.Fatal("host core activated after a project health failure")
+	}
+	if !target.archiveInstalled || target.imageInstalled {
+		t.Fatalf("signed local image archive path was not selected: target=%+v", target)
 	}
 	if len(target.restored) != 2 || len(current.started) != 2 {
 		t.Fatalf("rollback incomplete: target=%+v current=%+v", target, current)
@@ -196,7 +204,10 @@ func testUpdateManifest() releasebundle.Manifest {
 		CodeImage:      releasebundle.Image{Reference: "registry/code@sha256:digest"},
 		InferenceImage: releasebundle.Image{Reference: inference.Image},
 		EmbeddingModel: releasebundle.Model{Bytes: inference.ModelBytes, SHA256: inference.ModelSHA256},
-		Artifacts:      []releasebundle.Artifact{{Kind: "host-core", OS: runtime.GOOS, Arch: runtime.GOARCH}},
+		Artifacts: []releasebundle.Artifact{
+			{Kind: "host-core", OS: runtime.GOOS, Arch: runtime.GOARCH},
+			{Kind: "code-image-archive", OS: "linux", Arch: "amd64"},
+		},
 	}
 }
 

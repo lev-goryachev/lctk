@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +103,18 @@ func TestSyncPublishesAtomicallyAndReusesUnchangedChunks(t *testing.T) {
 	}
 	if status.Generation != 2 {
 		t.Fatalf("failed Sync published generation %d, want prior generation 2", status.Generation)
+	}
+}
+
+func TestStableIDCollisionFailsBeforeEmbedding(t *testing.T) {
+	prepared := map[string][]preparedChunk{
+		"a.go": {{Chunk: Chunk{StableID: "duplicate"}}},
+		"b.go": {{Chunk: Chunk{StableID: "duplicate"}}},
+	}
+	err := validateStableIDs(prepared)
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != CodeInternalError || !strings.Contains(err.Error(), "before embedding") {
+		t.Fatalf("validateStableIDs error = %v, want fail-fast typed collision", err)
 	}
 }
 

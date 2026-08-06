@@ -84,30 +84,42 @@ func (c Chunker) Chunks(ctx context.Context, path string, content []byte, digest
 func structuralChunks(path string, content []byte, outline symbols.Outline, maximum int) []Chunk {
 	var chunks []Chunk
 	type group struct {
-		startByte int
-		endByte   int
-		startLine int
-		endLine   int
-		anchor    string
+		startByte    int
+		endByte      int
+		startLine    int
+		endLine      int
+		anchor       string
+		stableAnchor string
 	}
 	var current group
 	flush := func() {
 		if current.endByte <= current.startByte {
 			return
 		}
-		chunks = append(chunks, makeChunk(path, outline.Language, "syntax", current.anchor,
+		chunks = append(chunks, makeChunk(path, outline.Language, "syntax", current.anchor, current.stableAnchor,
 			0, current.startLine, current.endLine, content[current.startByte:current.endByte]))
 		current = group{}
 	}
+	// A language may legally declare the same method name on different receivers
+	// or overload the same function name. The visible anchor remains concise, but
+	// the persistent identity includes the complete syntax declaration plus its
+	// deterministic occurrence. This is the structural identity contract: two
+	// distinct declarations in one file must never reach the UNIQUE database key
+	// with the same value.
+	occurrences := map[string]int{}
 	for _, symbol := range outline.Symbols {
 		if symbol.Depth != 0 || symbol.StartByte < 0 || symbol.EndByte > len(content) || symbol.EndByte <= symbol.StartByte {
 			continue
 		}
 		anchor := string(symbol.Kind) + ":" + symbol.Name
+		structural := anchor + "\x00" + symbol.Signature
+		occurrence := occurrences[structural]
+		occurrences[structural] = occurrence + 1
+		stableAnchor := fmt.Sprintf("%s\x00%d", structural, occurrence)
 		if symbol.EndByte-symbol.StartByte <= maximum {
 			if current.endByte == 0 {
 				current = group{startByte: symbol.StartByte, endByte: symbol.EndByte,
-					startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor}
+					startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor}
 				continue
 			}
 			if symbol.EndByte-current.startByte <= maximum {
@@ -117,7 +129,7 @@ func structuralChunks(path string, content []byte, outline symbols.Outline, maxi
 			}
 			flush()
 			current = group{startByte: symbol.StartByte, endByte: symbol.EndByte,
-				startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor}
+				startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor}
 			continue
 		}
 		flush()
@@ -125,7 +137,7 @@ func structuralChunks(path string, content []byte, outline symbols.Outline, maxi
 		line := symbol.StartLine
 		for ordinal, piece := range pieces {
 			end := line + lineCount(piece) - 1
-			chunks = append(chunks, makeChunk(path, outline.Language, "syntax", anchor,
+			chunks = append(chunks, makeChunk(path, outline.Language, "syntax", anchor, stableAnchor,
 				ordinal, line, end, piece))
 			line = end + 1
 		}
@@ -140,7 +152,7 @@ func textChunks(path string, content []byte, language string, maximum, overlap i
 	line := 1
 	for ordinal, piece := range pieces {
 		end := line + lineCount(piece) - 1
-		chunks = append(chunks, makeChunk(path, language, "text", "file", ordinal, line, end, piece))
+		chunks = append(chunks, makeChunk(path, language, "text", "file", "file", ordinal, line, end, piece))
 		advance := lineCount(piece) - overlap
 		if advance < 1 {
 			advance = 1
@@ -150,8 +162,8 @@ func textChunks(path string, content []byte, language string, maximum, overlap i
 	return chunks
 }
 
-func makeChunk(path, language, precision, anchor string, ordinal, startLine, endLine int, content []byte) Chunk {
-	stable := digestString(fmt.Sprintf("%s\x00%s\x00%d", path, anchor, ordinal))
+func makeChunk(path, language, precision, anchor, stableAnchor string, ordinal, startLine, endLine int, content []byte) Chunk {
+	stable := digestString(fmt.Sprintf("%s\x00%s\x00%d", path, stableAnchor, ordinal))
 	text := strings.TrimSpace(string(content))
 	return Chunk{
 		StableID: stable, Path: path, Language: language, Precision: precision,

@@ -222,6 +222,11 @@ type SemanticStatus struct {
 	ChunksTotal    int    `json:"chunks_total,omitempty"`
 	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
 	ChunksReused   int    `json:"chunks_reused,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	ProgressAt     string `json:"progress_at,omitempty"`
+	Stalled        bool   `json:"stalled,omitempty"`
+	StallSeconds   int64  `json:"stall_seconds,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
 }
 
 // SemanticRequest is the host-owned request contract for conceptual retrieval.

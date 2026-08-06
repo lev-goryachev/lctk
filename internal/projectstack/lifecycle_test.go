@@ -2,13 +2,19 @@ package projectstack
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lev-goryachev/lctk/internal/inference"
+	"github.com/lev-goryachev/lctk/internal/releasebundle"
 )
 
 // fakeRunner answers container-runtime commands from a script, so lifecycle logic
@@ -155,6 +161,59 @@ func TestMissingImageIsDistinguishable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ImageRepository) {
 		t.Errorf("error should name the image: %v", err)
+	}
+}
+
+func TestInstallImageArchiveVerifiesTransportAndOCIDigest(t *testing.T) {
+	body := []byte("verified OCI archive")
+	digest := sha256.Sum256(body)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+	expectedOCI := strings.Repeat("a", 64)
+	runner := &fakeRunner{responses: []fakeResponse{{
+		match: "image inspect", stdout: "sha256:" + expectedOCI + "\n",
+	}}}
+	manager := NewManagerWithRunner(runner)
+	manager.imageClient = server.Client()
+	manager.loadImageArchive = func(_ context.Context, input io.Reader) (string, string, error) {
+		loaded, err := io.ReadAll(input)
+		if err != nil || string(loaded) != string(body) {
+			t.Fatalf("loaded archive = %q, err = %v", loaded, err)
+		}
+		return "Loaded image", "", nil
+	}
+	t.Setenv("LCTK_HOME", t.TempDir())
+	artifact := releasebundle.Artifact{
+		Name: "lctk-code-intel.oci", Kind: "code-image-archive", OS: "linux", Arch: "amd64",
+		URL: server.URL, Bytes: int64(len(body)), SHA256: hex.EncodeToString(digest[:]),
+	}
+	if err := manager.InstallImageArchive(t.Context(), "localhost/lctk/code-intel@sha256:"+expectedOCI, "0.1.6", artifact); err != nil {
+		t.Fatalf("InstallImageArchive: %v", err)
+	}
+	if runner.callWith("image", "inspect", ImageRepository+":0.1.6") == nil {
+		t.Fatal("loaded product tag was not verified")
+	}
+}
+
+func TestInstallImageArchiveRejectsLoadedDigestMismatch(t *testing.T) {
+	body := []byte("verified OCI archive")
+	digest := sha256.Sum256(body)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+	runner := &fakeRunner{responses: []fakeResponse{{match: "image inspect", stdout: "sha256:" + strings.Repeat("b", 64)}}}
+	manager := NewManagerWithRunner(runner)
+	manager.imageClient = server.Client()
+	manager.loadImageArchive = func(context.Context, io.Reader) (string, string, error) { return "", "", nil }
+	t.Setenv("LCTK_HOME", t.TempDir())
+	artifact := releasebundle.Artifact{Name: "lctk-code-intel.oci", Kind: "code-image-archive", OS: "linux", Arch: "amd64", URL: server.URL,
+		Bytes: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
+	err := manager.InstallImageArchive(t.Context(), "localhost/lctk/code-intel@sha256:"+strings.Repeat("a", 64), "0.1.6", artifact)
+	if err == nil || !strings.Contains(err.Error(), "differs from signed") {
+		t.Fatalf("digest mismatch error = %v", err)
 	}
 }
 

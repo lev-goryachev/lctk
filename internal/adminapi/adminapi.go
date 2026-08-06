@@ -305,12 +305,46 @@ type projectView struct {
 }
 
 type indexView struct {
-	Ready      bool   `json:"ready"`
-	Indexing   bool   `json:"indexing"`
-	Generation uint64 `json:"generation"`
-	FileCount  int    `json:"file_count"`
-	IndexedAt  string `json:"indexed_at,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Ready      bool               `json:"ready"`
+	Indexing   bool               `json:"indexing"`
+	Generation uint64             `json:"generation"`
+	FileCount  int                `json:"file_count"`
+	IndexedAt  string             `json:"indexed_at,omitempty"`
+	Reason     string             `json:"reason,omitempty"`
+	Semantic   *semanticIndexView `json:"semantic,omitempty"`
+	Graph      *graphIndexView    `json:"graph,omitempty"`
+}
+
+// semanticIndexView exposes durable publication, live progress, the last failed
+// attempt, and a server-detected stall independently. An exact index being ready
+// must never make the Admin window imply that semantic search is ready too.
+type semanticIndexView struct {
+	Ready          bool   `json:"ready"`
+	Indexing       bool   `json:"indexing"`
+	Generation     uint64 `json:"generation"`
+	FileCount      int    `json:"file_count"`
+	ChunkCount     int    `json:"chunk_count"`
+	Freshness      string `json:"freshness"`
+	Reason         string `json:"reason,omitempty"`
+	ChunksTotal    int    `json:"chunks_total,omitempty"`
+	ChunksEmbedded int    `json:"chunks_embedded,omitempty"`
+	ChunksReused   int    `json:"chunks_reused,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	ProgressAt     string `json:"progress_at,omitempty"`
+	Stalled        bool   `json:"stalled,omitempty"`
+	StallSeconds   int64  `json:"stall_seconds,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+}
+
+type graphIndexView struct {
+	Ready       bool   `json:"ready"`
+	Generation  uint64 `json:"generation"`
+	FileCount   int    `json:"file_count"`
+	NodeCount   int    `json:"node_count"`
+	ImportCount int    `json:"import_count"`
+	CallCount   int    `json:"call_count"`
+	Freshness   string `json:"freshness"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 type changeView struct {
@@ -375,6 +409,23 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					FileCount:  indexStatus.FileCount,
 					IndexedAt:  indexStatus.IndexedAt,
 					Reason:     indexStatus.Reason,
+				}
+				if semantic := indexStatus.Semantic; semantic != nil {
+					view.Index.Semantic = &semanticIndexView{
+						Ready: semantic.Ready, Indexing: semantic.Indexing, Generation: semantic.Generation,
+						FileCount: semantic.FileCount, ChunkCount: semantic.ChunkCount, Freshness: semantic.Freshness,
+						Reason: semantic.Reason, ChunksTotal: semantic.ChunksTotal,
+						ChunksEmbedded: semantic.ChunksEmbedded, ChunksReused: semantic.ChunksReused,
+						StartedAt: semantic.StartedAt, ProgressAt: semantic.ProgressAt,
+						Stalled: semantic.Stalled, StallSeconds: semantic.StallSeconds, LastError: semantic.LastError,
+					}
+				}
+				if graph := indexStatus.Graph; graph != nil {
+					view.Index.Graph = &graphIndexView{
+						Ready: graph.Ready, Generation: graph.Generation, FileCount: graph.FileCount,
+						NodeCount: graph.NodeCount, ImportCount: graph.ImportCount, CallCount: graph.CallCount,
+						Freshness: graph.Freshness, Reason: graph.Reason,
+					}
 				}
 				view.Disk = diskView{
 					SourceBytes: indexStatus.SourceBytes,

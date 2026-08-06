@@ -74,6 +74,19 @@ func main() {
 		}
 		manifest.Version, manifest.Commit, manifest.PublishedAt = *version, *commit, *published
 		manifest.Artifacts = replaceArtifacts(manifest.Artifacts, parsedArtifacts)
+		if *codeImage != "" {
+			if *codeBytes <= 0 {
+				fatal(errors.New("code image bytes are required with a local code image"))
+			}
+			codeDigest, digestErr := imageDigest(*codeImage)
+			if digestErr != nil {
+				fatal(digestErr)
+			}
+			manifest.CodeImage = releasebundle.Image{
+				Name: "code-intel", Reference: *codeImage, Digest: codeDigest,
+				CompressedBytes: *codeBytes, Platforms: []string{"linux/amd64"},
+			}
+		}
 	} else {
 		if *codeImage == "" || *codeBytes <= 0 || *inferenceBytes <= 0 {
 			fatal(errors.New("code and inference image sizes are required without --template-envelope"))
