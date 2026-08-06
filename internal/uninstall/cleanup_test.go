@@ -57,8 +57,8 @@ func TestRuntimeCleanupRemovesOnlyLCTKMachineResidue(t *testing.T) {
 	if content, err := os.ReadFile(neighbor); err != nil || string(content) != "keep" {
 		t.Fatalf("neighboring Podman configuration was changed: %q, %v", content, err)
 	}
-	if _, err := os.Stat(filepath.Join(runtimeData, "containers")); !os.IsNotExist(err) {
-		t.Fatalf("orphaned Podman scaffold still exists: %v", err)
+	if _, err := os.Stat(runtimeData); !os.IsNotExist(err) {
+		t.Fatalf("empty managed runtime root still exists: %v", err)
 	}
 }
 

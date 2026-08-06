@@ -45,7 +45,7 @@ func cleanupManagedRuntimeResidue(runtimeData, userHome string) error {
 		if err := os.RemoveAll(containersRoot); err != nil {
 			return fmt.Errorf("remove orphaned managed Podman scaffold %q: %w", containersRoot, err)
 		}
-		return nil
+		return removeDirectoryIfEmpty(runtimeData)
 	}
 	// These directories are all Podman-owned containers. Removing an empty one
 	// is cleanup; a non-empty one belongs to another machine and is preserved.
@@ -60,7 +60,7 @@ func cleanupManagedRuntimeResidue(runtimeData, userHome string) error {
 			return err
 		}
 	}
-	return nil
+	return removeDirectoryIfEmpty(runtimeData)
 }
 
 // onlyKnownPodmanScaffold identifies the exact empty Windows client residue
