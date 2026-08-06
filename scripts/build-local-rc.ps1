@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.7",
+    [string]$Version = "0.1.8",
     [string]$TemplateVersion = "0.1.1",
     [string]$TemplateKeyID = "lctk-release-v1",
     [string]$TemplatePublicKey = "rSVhZIN82jXEG04WGzc9lAu5bszLjs//cSEO0bmJY8I="
@@ -63,13 +63,60 @@ try {
         $imageTag = "localhost/lctk/code-intel:$Version"
         & $podman --connection lctk-runtime-root build --format docker --tag $imageTag images/code-intel
         if ($LASTEXITCODE -ne 0) { throw "Building the local code-intel image failed." }
-        $imageDigest = (& $podman --connection lctk-runtime-root image inspect $imageTag --format '{{.Digest}}').Trim()
-        if ($LASTEXITCODE -ne 0 -or $imageDigest -notmatch '^sha256:[0-9a-f]{64}$') {
+        $builtDigest = (& $podman --connection lctk-runtime-root image inspect $imageTag --format '{{.Digest}}').Trim()
+        if ($LASTEXITCODE -ne 0 -or $builtDigest -notmatch '^sha256:[0-9a-f]{64}$') {
             throw "The local code-intel image has no immutable manifest digest."
         }
         $imageArchive = Join-Path $package "lctk-code-intel.tar"
         & $podman --connection lctk-runtime-root save --format docker-archive --output $imageArchive $imageTag
         if ($LASTEXITCODE -ne 0) { throw "Saving the local code-intel image failed." }
+
+        # Docker archive import normalizes the manifest and can therefore have
+        # a different digest from the in-memory pre-save image. Stream the exact
+        # candidate bytes through the same remote Podman boundary used by setup,
+        # then sign the deterministic post-load digest that projects will run.
+        $loadStart = New-Object Diagnostics.ProcessStartInfo
+        $loadStart.FileName = $podman
+        $loadStart.Arguments = "--connection lctk-runtime-root load"
+        $loadStart.UseShellExecute = $false
+        $loadStart.CreateNoWindow = $true
+        $loadStart.RedirectStandardInput = $true
+        $loadStart.RedirectStandardOutput = $true
+        $loadStart.RedirectStandardError = $true
+        $loadStart.EnvironmentVariables["XDG_DATA_HOME"] = $locations.RuntimeDataDir
+        $loadStart.EnvironmentVariables["XDG_CONFIG_HOME"] = Join-Path $locations.InstallDir "runtime\podman\config"
+        $loadProcess = New-Object Diagnostics.Process
+        $loadProcess.StartInfo = $loadStart
+        $loadStarted = $false
+        try {
+            $loadStarted = $loadProcess.Start()
+            if (-not $loadStarted) { throw "Loading the local code-intel archive did not start." }
+            $archiveInput = [IO.File]::OpenRead($imageArchive)
+            try {
+                $archiveInput.CopyTo($loadProcess.StandardInput.BaseStream)
+                $loadProcess.StandardInput.Close()
+            }
+            finally {
+                $archiveInput.Dispose()
+            }
+            $loadOutput = $loadProcess.StandardOutput.ReadToEnd()
+            $loadError = $loadProcess.StandardError.ReadToEnd()
+            $loadProcess.WaitForExit()
+            if ($loadProcess.ExitCode -ne 0) {
+                throw "Loading the local code-intel archive failed: $loadError"
+            }
+        }
+        finally {
+            if ($loadStarted -and -not $loadProcess.HasExited) {
+                $loadProcess.Kill()
+                $loadProcess.WaitForExit()
+            }
+            $loadProcess.Dispose()
+        }
+        $imageDigest = (& $podman --connection lctk-runtime-root image inspect $imageTag --format '{{.Digest}}').Trim()
+        if ($LASTEXITCODE -ne 0 -or $imageDigest -notmatch '^sha256:[0-9a-f]{64}$') {
+            throw "The loaded local code-intel image has no immutable manifest digest."
+        }
     }
     finally {
         $env:XDG_DATA_HOME = $previousDataHome
