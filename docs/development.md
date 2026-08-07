@@ -16,6 +16,26 @@ On Windows PowerShell:
 ./scripts/check.ps1
 ```
 
+## Warm-index exploration benchmark
+
+The development-only `swe-explore-benchmark` command implements the fail-fast orchestration contract in [the SWE-Explore benchmark specification](benchmarks/swe-explore.md). Build it from source; it is not included in the installed LCTK product:
+
+```powershell
+go build -o .artifacts/swe-explore-benchmark.exe ./cmd/swe-explore-benchmark
+.artifacts/swe-explore-benchmark.exe validate --config .artifacts/swe-explore-config.json
+.artifacts/swe-explore-benchmark.exe prepare --config .artifacts/swe-explore-config.json --instance INSTANCE_ID
+.artifacts/swe-explore-benchmark.exe run --config .artifacts/swe-explore-config.json --instance INSTANCE_ID --arm ARM_ID --output .artifacts/results/INSTANCE_ID/ARM_ID.json
+.artifacts/swe-explore-benchmark.exe pair --config .artifacts/swe-explore-config.json --instance INSTANCE_ID --provider codex --output-dir .artifacts/results/INSTANCE_ID/codex
+.artifacts/swe-explore-benchmark.exe pair --config .artifacts/swe-explore-config.json --instance INSTANCE_ID --provider claude --output-dir .artifacts/results/INSTANCE_ID/claude
+.artifacts/swe-explore-benchmark.exe official-score --config .artifacts/swe-explore-config.json --result .artifacts/results/INSTANCE_ID/ARM_ID.json --python python
+```
+
+Keep datasets, client binaries, task checkouts, MCP endpoint-only configuration, and run artifacts under ignored `.artifacts/`. The issue-source JSONL must contain only `instance_id`, `repo`, `base_commit`, and `problem_statement`; the harness joins it to the unchanged public SWE-Explore JSONL by exact identifier and verifies both configured SHA-256 digests before every run.
+
+The configured workspace must be a dedicated clean Git checkout registered once as a full LCTK project. `prepare` refuses a dirty checkout, switches to the exact base commit, and waits outside the measured interval for matching fresh exact, semantic, graph, and watcher generations. The MCP JSON contains exactly one loopback server URL and no headers or credentials. OAuth remains owned by each client.
+
+Native Codex arms use the official non-interactive `exec --ephemeral --json --ignore-user-config` boundary with external context features disabled. Native Claude arms advertise only `Read`, `Glob`, and `Grep` under strict empty MCP configuration. Treatment arms add only the single configured project endpoint and the explicit read-only code-intelligence allowlist, and are rejected unless their trace proves a successful LCTK tool call. Do not interpret the repository-owned scorer as publication evidence; `official-score` imports `eval.py` from the configured commit-pinned SWE-Explore checkout. The accepted single-run evidence is in [the readiness report](benchmarks/swe-explore-single-run.md).
+
 On macOS or another POSIX shell:
 
 ```sh

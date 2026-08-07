@@ -1,0 +1,62 @@
+# SWE-Explore warm-index benchmark
+
+This document is the executable measurement contract for [ADR-0030](../adr/0030-warm-index-code-exploration-benchmark.md). It measures whether an already indexed LCTK project improves code exploration by the same agent. Index construction time is deliberately outside every measured arm.
+
+## Pinned inputs
+
+| Input | Required identity | License |
+|---|---|---|
+| SWE-Explore code | `https://github.com/Qiushao-E/SWE-Explore-Bench.git` at `3c12dc5a551937038afcbdb6eb6bbf19f3ddd8c1` | MIT |
+| SWE-Explore public data | `https://huggingface.co/datasets/SWE-Explore-Bench/SWE-Explore-Bench` at `bdb0ae45d7c337d9e1dc3ebfe2a0af6bc7c1fbd9`; `bench.final.public.jsonl` SHA-256 `dc4f114ececd0bfb987361c26ae5e2440456e2cccb36adfccb09ea5385aec202` | CC-BY-NC-ND-4.0 |
+| SWE-bench issue source | `https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified`; campaign configuration must pin a repository commit and source-file SHA-256 | Dataset card terms |
+
+The public SWE-Explore row supplies ground truth but not the issue text or base commit. The harness therefore joins it by exact `instance_id` with an independently pinned SWE-bench source JSONL containing `instance_id`, `repo`, `base_commit`, and `problem_statement`. Duplicate or missing identifiers are fatal.
+
+[`swe-explore-config.example.json`](swe-explore-config.example.json) documents the complete schema. Replace every marker, store the runnable copy under ignored `.artifacts/`, and pin the SHA-256 of the exact exported issue JSONL. The example is intentionally not runnable with placeholder identities.
+
+## Campaign matrix
+
+Run four arms while keeping provider-specific results separate:
+
+| Client | Native control | Warm LCTK treatment |
+|---|---|---|
+| Codex CLI | `codex exec --ephemeral --json --ignore-user-config` with read-only repository access and web, apps, remote plugins, multi-agent, and memory disabled | the same executable, model, effort, sandbox, prompt, timeout, and budget with only the approved LCTK MCP configuration added; its read-only tools use the documented server-scoped `default_tools_approval_mode="approve"` so non-interactive execution does not cancel them |
+| Claude Code | non-persistent print mode whose available built-ins are exactly `Read`, `Glob`, and `Grep`, with an empty strict MCP configuration | the same settings with only the approved project-bound LCTK MCP server and its explicit read-only code-intelligence allowlist added |
+
+The treatment trace must contain a successfully completed LCTK MCP tool call. A native trace containing one is invalid. The identical prompt requires both arms to call `lctk_benchmark.project_info` first and use LCTK as their primary exploration channel when that server is available; otherwise they use built-in read-only tools. It also requires exploration only, no changes, and exactly one final `RELEVANT_FILES:` block with at most `top_k` ordered `path:start-end` regions and no other final text.
+
+The treatment allowlist is exactly `project_info`, `exact_search`, `file_outline`, `find_definition`, `find_references`, `code_search_semantic`, `callers_find`, `callees_find`, `dependency_path`, `impact_analyze`, and `repository_map`. LCTK command, Git, and persistent-memory tools are not exposed.
+
+## Per-instance sequence
+
+1. Join the public benchmark record to the issue-source record by `instance_id`.
+2. Verify the clean benchmark repository and exact `base_commit` before changing it.
+3. If the object is absent, shallow-fetch exactly the declared commit from the validated public `https://github.com/<owner>/<repository>.git` source, then check it out while no arm is running.
+4. Wait outside the measured interval until the LCTK watcher has no pending paths and exact, semantic, graph, and watcher generations are fresh and equal.
+5. Run the first arm in a new non-persistent session, capture its complete machine-readable trace, and reject any repository change.
+6. Restore the identical clean commit if necessary, repeat freshness preflight, and run the paired arm in another new session.
+7. Alternate arm order deterministically from the instance identifier.
+8. Reject the pair if the client version or provider-reported actual model differs between arms.
+9. Parse and validate ordered regions against files in the exact checkout.
+10. Score the saved prediction through the pinned official SWE-Explore evaluator. A repository-owned parity scorer may test orchestration, but it is not the publication authority.
+
+## Primary and operational measures
+
+The official metric set is `precision`, `recall`, `f1_score`, `hit_file_rate`, `noise_file_rate`, `hit_region_rate`, `noise_region_rate`, `weighted_core_coverage`, `context_efficiency`, `optional_coverage`, `ndcg_at_100`, `ndcg_at_300`, `ndcg_at_500`, `recall_at_100`, `recall_at_300`, `recall_at_500`, and `first_useful_hit`.
+
+The primary product readout is the within-client paired delta for `weighted_core_coverage`, `context_efficiency`, `recall_at_300`, and `first_useful_hit`. Also retain elapsed agent seconds, input/output/cached/reasoning tokens when the client reports them, tool calls, invalid-output rate, timeout rate, and cost derived from a campaign-pinned price table. Indexing telemetry is reported separately and never added to agent latency or cost.
+
+## Single-run readiness gate
+
+Mass testing is allowed only after all of these pass:
+
+- configuration, dataset join, duplicate detection, path validation, output parsing, tool-isolation checks, scorer parity, timeout handling, and repository-mutation detection pass automated tests;
+- a deterministic synthetic agent completes one native and one LCTK-shaped arm through the full artifact pipeline;
+- each locally runnable real client completes one native arm and one authorized LCTK arm on the same single instance;
+- every treatment preflight records matching fresh generations and zero watcher pending paths;
+- the official scorer accepts the emitted prediction JSONL;
+- no OAuth token is copied, printed, or stored by the harness, and no IDE is launched.
+
+An unavailable client or unapproved OAuth connection is a failed readiness gate, not a skipped success.
+
+The accepted 2026-08-07 gate evidence is recorded in [the single-run readiness report](swe-explore-single-run.md).
