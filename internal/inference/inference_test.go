@@ -208,6 +208,7 @@ func TestEnsureStartsOneLoopbackOnlyStatelessContainer(t *testing.T) {
 func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 	model := writeTestModel(t)
 	server := healthyServer(t)
+	identity := "0123456789abcdef|sha256:gpu|2026-08-07 00:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{stdout: "sha256:gpu\n"},
 		{stderr: "No such container", err: errors.New("exit 1")},
@@ -215,15 +216,15 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		{stderr: "No such container", err: errors.New("exit 1")},
 		{stdout: "candidate\n"},
 		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
-		{args: []string{"inspect", CandidateContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
+		{args: []string{"inspect", CandidateContainerName, "--format", `{{.Id}}|{{.Image}}|{{.State.StartedAt}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: identity},
 		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", CandidateContainerName}, stderr: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 		{args: []string{"rename", CandidateContainerName, ContainerName}},
 		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
-		{args: []string{"inspect", ContainerName, "--format", "{{.State.StartedAt}}"}, stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
-		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", ContainerName}, stderr: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
+		{args: []string{"inspect", ContainerName, "--format", `{{.Id}}|{{.Image}}|{{.State.StartedAt}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: identity},
 	}}
 	manager := NewManagerForTest(runner, nvidiainstall.Image, model, server.URL)
 	manager.distribution = DistributionNVIDIAGPU
+	manager.evidencePath = filepath.Join(t.TempDir(), BackendEvidenceFileName)
 	status, err := manager.Ensure(t.Context(), time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +235,7 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 	run := strings.Join(runner.seen[4], " ")
 	for _, wanted := range []string{
 		"--device " + nvidiainstall.CDIDevice,
+		"--log-driver k8s-file --log-opt max-size=32mb",
 		"--n-gpu-layers 99",
 		"tech.lctk.inference-distribution=nvidia_gpu",
 	} {
@@ -246,7 +248,7 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 func TestNVIDIABackendRejectsPartialLayerOffload(t *testing.T) {
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
 		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
-		{stdout: "2026-08-07 00:07:42.409325154 +0200 CEST\n"},
+		{stdout: "0123456789abcdef|sha256:gpu|2026-08-07 00:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"},
 		{stdout: "CUDA0\nload_tensors: offloaded 12/13 layers to GPU\n"},
 	}}
 	manager := NewManagerForTest(runner, nvidiainstall.Image, writeTestModel(t), "http://127.0.0.1:1")
@@ -254,6 +256,73 @@ func TestNVIDIABackendRejectsPartialLayerOffload(t *testing.T) {
 	err := manager.attachBackendEvidence(t.Context(), CandidateContainerName, &Status{})
 	if !nvidiainstall.IsCode(err, nvidiainstall.FailureCUDAOffloadMissing) {
 		t.Fatalf("partial offload error = %v, want CUDA offload failure", err)
+	}
+}
+
+func TestNVIDIAEvidenceIsReusedOnlyForTheSameContainerStart(t *testing.T) {
+	firstIdentity := "0123456789abcdef|sha256:gpu|2026-08-07 00:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"
+	restartedIdentity := "0123456789abcdef|sha256:gpu|2026-08-07 01:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"
+	runner := &scriptedRunner{t: t, calls: []runnerCall{
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: firstIdentity},
+		{stderr: "CUDA0\nload_tensors: offloaded 13/13 layers to GPU\n"},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: firstIdentity},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: restartedIdentity},
+		{stdout: "CUDA0\nload_tensors: offloaded 12/13 layers to GPU\n"},
+	}}
+	manager := NewManagerForTest(runner, nvidiainstall.Image, writeTestModel(t), "http://127.0.0.1:1")
+	manager.distribution = DistributionNVIDIAGPU
+	manager.evidencePath = filepath.Join(t.TempDir(), BackendEvidenceFileName)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		status := Status{}
+		if err := manager.attachBackendEvidence(t.Context(), ContainerName, &status); err != nil {
+			t.Fatalf("same-start evidence attempt %d: %v", attempt, err)
+		}
+		if status.OffloadedLayers != "13/13" {
+			t.Fatalf("same-start status = %+v", status)
+		}
+	}
+	err := manager.attachBackendEvidence(t.Context(), ContainerName, &Status{})
+	if !nvidiainstall.IsCode(err, nvidiainstall.FailureCUDAOffloadMissing) {
+		t.Fatalf("restarted container error = %v, want fresh offload failure", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("unconsumed runtime calls: %+v", runner.calls)
+	}
+}
+
+func TestNVIDIAEvidenceRetainsCandidateAndRollbackRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), BackendEvidenceFileName)
+	identities := make([]backendEvidence, 0, backendEvidenceLimit+1)
+	for index := 0; index < backendEvidenceLimit+1; index++ {
+		identity, err := parseBackendEvidenceIdentity("container-" + string(rune('a'+index)) +
+			"|sha256:gpu|2026-08-07 0" + string(rune('0'+index)) + ":07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu")
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity.OffloadedLayers = "13/13"
+		if err := saveBackendEvidence(path, identity); err != nil {
+			t.Fatal(err)
+		}
+		identities = append(identities, identity)
+	}
+	document, found, err := loadBackendEvidenceDocument(path)
+	if err != nil || !found {
+		t.Fatalf("load evidence document: found=%t err=%v", found, err)
+	}
+	if len(document.Records) != backendEvidenceLimit {
+		t.Fatalf("records=%d want=%d", len(document.Records), backendEvidenceLimit)
+	}
+	if _, found, err := loadBackendEvidence(path, identities[0]); err != nil || found {
+		t.Fatalf("oldest record survived bound: found=%t err=%v", found, err)
+	}
+	for _, identity := range identities[1:] {
+		if _, found, err := loadBackendEvidence(path, identity); err != nil || !found {
+			t.Fatalf("rollback-window record missing: found=%t err=%v", found, err)
+		}
 	}
 }
 

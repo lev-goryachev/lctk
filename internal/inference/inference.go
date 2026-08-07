@@ -42,7 +42,7 @@ const (
 	Dimensions             = 768
 	// ConfigRevision forces replacement when runtime arguments change while the
 	// immutable image and model remain the same.
-	ConfigRevision = "7"
+	ConfigRevision = "8"
 
 	// ProjectEndpoint is reached after the inference container joins the one
 	// requesting project's isolated network. No Windows host port is involved.
@@ -88,6 +88,7 @@ type Manager struct {
 	modelSHA       string
 	downloadURL    string
 	distribution   Distribution
+	evidencePath   string
 	address        string
 	healthClient   *http.Client
 	selfTestClient *http.Client
@@ -141,8 +142,12 @@ func NewManagerForDistribution(runner Runner, distribution Distribution) (*Manag
 	if distribution == DistributionNVIDIAGPU {
 		image = nvidiainstall.Image
 	}
+	home, err := lctkhome.Dir()
+	if err != nil {
+		return nil, err
+	}
 	return &Manager{runner: runner, image: image, distribution: distribution, modelPath: path, modelBytes: ModelBytes,
-		modelSHA: ModelSHA256, downloadURL: ModelURL,
+		modelSHA: ModelSHA256, downloadURL: ModelURL, evidencePath: filepath.Join(home, BackendEvidenceFileName),
 		healthClient: &http.Client{Timeout: HealthTimeout}, selfTestClient: &http.Client{Timeout: SelfTestTimeout},
 		tunnel: machinetunnel.Default}, nil
 }
@@ -395,7 +400,11 @@ func (m *Manager) startContainer(ctx context.Context, name string) error {
 		"--label", "tech.lctk.inference-distribution=" + string(m.distribution),
 	}
 	if m.distribution == DistributionNVIDIAGPU {
-		args = append(args, "--device", nvidiainstall.CDIDevice)
+		// Trace verbosity is required for exact layer-offload evidence. Keep that
+		// high-volume diagnostic stream in a container-scoped bounded log instead
+		// of the installation-wide system journal.
+		args = append(args, "--device", nvidiainstall.CDIDevice,
+			"--log-driver", "k8s-file", "--log-opt", "max-size=32mb")
 	}
 	args = append(args,
 		"--mount", mount, m.image,
@@ -507,20 +516,34 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing, Detail: err.Error()}
 	}
-	startedRaw, startedStderr, err := m.runner.Run(ctx, "inspect", name, "--format", "{{.State.StartedAt}}")
+	identityRaw, identityStderr, err := m.runner.Run(ctx, "inspect", name, "--format",
+		`{{.Id}}|{{.Image}}|{{.State.StartedAt}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`)
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
-			Detail: "inspect llama.cpp CUDA startup time: " + firstLine(startedStderr, err)}
+			Detail: "inspect llama.cpp CUDA evidence identity: " + firstLine(identityStderr, err)}
 	}
-	started, err := time.Parse(podmanStartedAtLayout, strings.TrimSpace(startedRaw))
+	identity, err := parseBackendEvidenceIdentity(identityRaw)
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
-			Detail: "llama.cpp CUDA startup time is malformed"}
+			Detail: err.Error()}
+	}
+	if m.evidencePath != "" {
+		stored, found, loadErr := loadBackendEvidence(m.evidencePath, identity)
+		if loadErr != nil {
+			return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+				Detail: "read persisted llama.cpp CUDA evidence: " + loadErr.Error()}
+		}
+		if found && stored.matches(identity) {
+			status.Backend = "cuda"
+			status.GPU = &gpu
+			status.OffloadedLayers = stored.OffloadedLayers
+			return nil
+		}
 	}
 	// The exact offload evidence is emitted during startup. A fixed time window
 	// stays available after later project traffic without reading unbounded logs.
-	logs, logStderr, err := m.runner.Run(ctx, "logs", "--since", started.Format(time.RFC3339Nano),
-		"--until", started.Add(2*time.Minute).Format(time.RFC3339Nano), name)
+	logs, logStderr, err := m.runner.Run(ctx, "logs", "--since", identity.StartedAt.Format(time.RFC3339Nano),
+		"--until", identity.StartedAt.Add(2*time.Minute).Format(time.RFC3339Nano), name)
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "read llama.cpp CUDA diagnostics: " + firstLine(logStderr, err)}
@@ -538,9 +561,17 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
 			Detail: "llama.cpp did not report CUDA initialization and offloaded model layers"}
 	}
+	evidence := identity
+	evidence.OffloadedLayers = match[1] + "/" + match[2]
+	if m.evidencePath != "" {
+		if err := saveBackendEvidence(m.evidencePath, evidence); err != nil {
+			return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDAOffloadMissing,
+				Detail: "persist verified llama.cpp CUDA evidence: " + err.Error()}
+		}
+	}
 	status.Backend = "cuda"
 	status.GPU = &gpu
-	status.OffloadedLayers = match[1] + "/" + match[2]
+	status.OffloadedLayers = evidence.OffloadedLayers
 	return nil
 }
 

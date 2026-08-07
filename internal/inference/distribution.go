@@ -152,7 +152,7 @@ func SaveSelectionTo(path string, selection Selection) error {
 	if err := os.Chmod(tempPath, 0o600); err != nil {
 		return fmt.Errorf("restrict temporary inference selection: %w", err)
 	}
-	if err := replaceSelectionFile(tempPath, path); err != nil {
+	if err := replaceStateFile(tempPath, path); err != nil {
 		return fmt.Errorf("replace inference selection %q: %w", path, err)
 	}
 	stored, err := LoadSelectionFrom(path)

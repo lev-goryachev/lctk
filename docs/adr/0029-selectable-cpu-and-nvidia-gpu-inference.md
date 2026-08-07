@@ -42,6 +42,8 @@ An ordinary update installs and verifies all signed host artifacts, the selected
 
 Admin reports requested distribution, actual backend, immutable image identity, readiness, and typed failure. For NVIDIA GPU it also reports adapter name, driver, VRAM, compute capability, CDI device identity, CUDA backend, and offloaded-layer evidence. It must not infer GPU readiness solely from the selected value or container image name.
 
+The trace-only `offloaded N/N layers to GPU` result is captured immediately after the real embedding self-test and persisted as derived owner-only evidence in `inference-evidence.json`. Each record is bound to the container ID, immutable image ID, inference configuration revision, distribution, and exact process start time. Reusing a container may reuse only an exact matching record; a restart changes the start time and requires fresh startup proof. A bounded four-record document retains both candidate and rollback evidence across an activation transaction. The GPU container uses a container-scoped `k8s-file` log capped at 32 MiB so trace diagnostics cannot grow the private machine's shared journal without bound.
+
 ## Alternatives considered
 
 ### Replace the CPU distribution with CUDA everywhere

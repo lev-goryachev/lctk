@@ -4,9 +4,9 @@ package inference
 
 import "golang.org/x/sys/windows"
 
-// replaceSelectionFile uses replace-existing and write-through guarantees so a
-// setup interruption leaves either the preceding or the complete new choice.
-func replaceSelectionFile(staged, target string) error {
+// replaceStateFile uses replace-existing and write-through guarantees so a
+// setup interruption leaves either the preceding or one complete state file.
+func replaceStateFile(staged, target string) error {
 	stagedPath, err := windows.UTF16PtrFromString(staged)
 	if err != nil {
 		return err
