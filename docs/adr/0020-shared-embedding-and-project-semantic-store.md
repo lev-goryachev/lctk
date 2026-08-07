@@ -22,6 +22,8 @@ Supported source files are chunked on Tree-sitter declaration extents. Oversized
 
 Incremental indexing deletes chunks removed from a changed file, reuses unchanged content digests, embeds only new or changed chunks, and commits metadata and vectors atomically. A gap or failed batch leaves the previously published generation intact and reports it as stale or incomplete.
 
+The host watcher places no fixed wall-clock deadline around a whole repository reconcile. A full semantic rebuild is transactional and may legitimately take longer than an edit-sized drain on constrained hardware; canceling the aggregate operation would discard every prepared vector and make the next retry restart from zero. Individual embedding requests remain independently bounded and fail fast, and a stopped project service terminates the in-flight reconcile.
+
 ## Alternatives considered
 
 - **One model process in every project stack.** Rejected because model memory scales with active projects although inference is stateless.

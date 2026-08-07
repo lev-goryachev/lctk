@@ -91,6 +91,8 @@ The journal decides which of two paths is taken, and the choice is not the consu
 
 A failed update advances nothing. The batch stays pending and is tried again at the next settle, and the reason is reported in `lctk project watch` rather than only logged, because an index that has stopped advancing looks exactly like one with nothing to do.
 
+The watcher does not impose one fixed deadline on the complete drain. A gap may require a repository-wide semantic rebuild, whose duration depends on repository size and local inference hardware. Canceling that aggregate operation would discard the transactional semantic work and cause every retry to restart from zero. Individual embedding requests retain their own fail-fast timeout, and stopping the project service terminates its in-flight request.
+
 ### The project can move under the watcher
 
 A project restarted while the daemon is running can come back with a different private container address and loopback tunnel. The host's observation is untouched by that: the watcher holds directories on the host, and the journal is in the LCTK home.

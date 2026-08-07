@@ -13,14 +13,6 @@ import (
 	"github.com/lev-goryachev/lctk/internal/hostsettings"
 )
 
-// DrainTimeout bounds one attempt to bring an index up to date.
-//
-// It is generous because the operation it bounds is not fixed in size: a batch
-// the service escalates to a full rebuild costs what a rebuild costs. The point
-// of the bound is to stop a hung service from holding the drain lock forever, not
-// to express an expected duration.
-const DrainTimeout = 15 * time.Minute
-
 // worker observes one project, keeps its journal, and applies it to the index.
 type worker struct {
 	projectID string
@@ -262,8 +254,12 @@ func (w *worker) drain() {
 	w.draining.Store(true)
 	defer w.draining.Store(false)
 
-	ctx, cancel := context.WithTimeout(context.Background(), DrainTimeout)
-	defer cancel()
+	// A drain may escalate to a repository-wide semantic rebuild whose honest
+	// duration depends on the project and hardware. It therefore has no aggregate
+	// host deadline: canceling it discards the semantic store's transactional work
+	// and makes every retry restart from zero. Individual remote operations retain
+	// their own fail-fast timeouts, while a stopped service terminates the request.
+	ctx := context.Background()
 
 	var (
 		result codeintel.IndexResult
