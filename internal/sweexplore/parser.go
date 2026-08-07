@@ -51,7 +51,7 @@ func ParseTrace(provider Provider, raw []byte) (ParsedTrace, error) {
 // ParseRegions requires the benchmark's explicit final block. There is no
 // fallback regex sweep because accepting incidental paths makes malformed agent
 // output look successful.
-func ParseRegions(message, root string, topK int) ([]Region, error) {
+func ParseRegions(message, _ string, topK int) ([]Region, error) {
 	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
 	header := -1
 	for index, line := range lines {
@@ -79,7 +79,7 @@ func ParseRegions(message, root string, topK int) ([]Region, error) {
 		}
 		start, _ := strconv.Atoi(match[2])
 		end, _ := strconv.Atoi(match[3])
-		region, err := validateRegion(root, Region{Path: match[1], Start: start, End: end})
+		region, err := validateRegion(Region{Path: match[1], Start: start, End: end})
 		if err != nil {
 			return nil, err
 		}
@@ -94,25 +94,14 @@ func ParseRegions(message, root string, topK int) ([]Region, error) {
 	return regions, nil
 }
 
-func validateRegion(root string, region Region) (Region, error) {
+// validateRegion canonicalizes only the path safety boundary. SWE-Explore's
+// official evaluator intentionally preserves positive intervals outside a
+// file's line count and scores those nonexistent lines as prediction noise, so
+// the harness must not reject or clamp the model's measured output first.
+func validateRegion(region Region) (Region, error) {
 	path := filepath.Clean(filepath.FromSlash(strings.TrimSpace(region.Path)))
 	if path == "." || filepath.IsAbs(path) || strings.HasPrefix(path, ".."+string(filepath.Separator)) || path == ".." {
 		return Region{}, fmt.Errorf("region path %q is not project-relative", region.Path)
-	}
-	full := filepath.Join(root, path)
-	info, err := os.Stat(full)
-	if err != nil {
-		return Region{}, fmt.Errorf("region path %q is not a readable project file: %w", region.Path, err)
-	}
-	if !info.Mode().IsRegular() {
-		return Region{}, fmt.Errorf("region path %q is not a regular file", region.Path)
-	}
-	lineCount, err := countLines(full)
-	if err != nil {
-		return Region{}, fmt.Errorf("count lines in %q: %w", region.Path, err)
-	}
-	if region.Start < 1 || region.End < region.Start || region.End > lineCount {
-		return Region{}, fmt.Errorf("region %q:%d-%d is outside 1-%d", region.Path, region.Start, region.End, lineCount)
 	}
 	region.Path = filepath.ToSlash(path)
 	return region, nil

@@ -40,6 +40,21 @@ func TestScoreMatchesSyntheticExpectedValues(t *testing.T) {
 	assertNear(t, metrics.FirstUsefulHit, 1)
 }
 
+func TestScoreCountsPositiveLinesBeyondEOFAsOfficialNoise(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "core.go"), []byte("1\n2\n3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	truth := GroundTruth{ReadCoreFiles: []string{"core.go"}, ReadCoreRegions: []Region{{Path: "core.go", Start: 2, End: 3}}, MainFiles: []string{"core.go"}}
+	metrics, err := Score(root, []Region{{Path: "core.go", Start: 2, End: 5}}, truth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNear(t, metrics.Precision, 0.5)
+	assertNear(t, metrics.Recall, 1)
+	assertNear(t, metrics.ContextEfficiency, 0.5)
+}
+
 func assertNear(t *testing.T, actual, expected float64) {
 	t.Helper()
 	if math.Abs(actual-expected) > 1e-12 {

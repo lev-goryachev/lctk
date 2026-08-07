@@ -37,7 +37,7 @@ The treatment allowlist is exactly `project_info`, `exact_search`, `file_outline
 6. Restore the identical clean commit if necessary, repeat freshness preflight, and run the paired arm in another new session.
 7. Alternate arm order deterministically from the instance identifier.
 8. Reject the pair if the client version or provider-reported actual model differs between arms.
-9. Parse and validate ordered regions against files in the exact checkout.
+9. Parse ordered regions, reject unsafe non-project-relative paths, and preserve interval values exactly. The official evaluator treats positive lines beyond EOF or on an unknown path as prediction noise; the harness must not reject or clamp that measured model output.
 10. Score the saved prediction through the pinned official SWE-Explore evaluator. A repository-owned parity scorer may test orchestration, but it is not the publication authority.
 
 ## Primary and operational measures

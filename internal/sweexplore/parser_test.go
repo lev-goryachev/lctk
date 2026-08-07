@@ -22,13 +22,22 @@ func TestParseRegionsRequiresExactValidBlock(t *testing.T) {
 	for _, invalid := range []string{
 		"main.go:2-3",
 		"RELEVANT_FILES:\n- ../main.go:1-1\n",
-		"RELEVANT_FILES:\n- main.go:3-4\n",
-		"RELEVANT_FILES:\n- main.go:3-2\n",
 		"RELEVANT_FILES:\n- main.go:1-1\n- main.go:2-2\n",
 	} {
 		if _, err := ParseRegions(invalid, root, 1); err == nil {
 			t.Fatalf("ParseRegions(%q) succeeded", invalid)
 		}
+	}
+}
+
+func TestParseRegionsPreservesOfficialOutOfFileNoise(t *testing.T) {
+	regions, err := ParseRegions("RELEVANT_FILES:\n- missing.go:458-480\n", t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Region{Path: "missing.go", Start: 458, End: 480}
+	if len(regions) != 1 || regions[0] != want {
+		t.Fatalf("regions = %+v, want %+v", regions, want)
 	}
 }
 
