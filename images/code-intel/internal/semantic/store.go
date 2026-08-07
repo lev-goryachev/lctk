@@ -19,7 +19,10 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-const schemaVersion = 2
+const (
+	schemaVersion   = 2
+	chunkerRevision = "2"
+)
 
 // Source is the exact index's scoped reader. The semantic store deliberately
 // lacks a filesystem root, so only files accepted into the exact generation can
@@ -55,6 +58,9 @@ type Store struct {
 	mu         sync.Mutex
 	progressMu sync.RWMutex
 	progress   syncProgress
+	// forceChunkRefresh keeps a chunking-contract change transactional: the old
+	// generation remains queryable until every replacement vector is ready.
+	forceChunkRefresh bool
 }
 
 type syncProgress struct {
@@ -180,6 +186,11 @@ func (s *Store) initialize() error {
 	if err := s.requireCompatibility("dimensions", strconv.Itoa(s.config.Dimensions)); err != nil {
 		return err
 	}
+	refresh, err := s.chunkRefreshRequired()
+	if err != nil {
+		return err
+	}
+	s.forceChunkRefresh = refresh
 	return nil
 }
 
@@ -287,6 +298,22 @@ func (s *Store) requireCompatibility(key, wanted string) error {
 	}
 }
 
+// chunkRefreshRequired treats absent or older chunker metadata as a request for
+// a full semantic rebuild, not as schema corruption. The revision is published
+// only with the replacement generation, so a failed rebuild remains retryable.
+func (s *Store) chunkRefreshRequired() (bool, error) {
+	var current string
+	err := s.db.QueryRow("SELECT value FROM semantic_meta WHERE key = ?", "chunker_revision").Scan(&current)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil
+	case err != nil:
+		return false, fail(CodeCorrupt, "The semantic chunker revision could not be read.", false, err)
+	default:
+		return current != chunkerRevision, nil
+	}
+}
+
 // Sync brings semantic state to one already-published exact generation while
 // reusing unchanged chunk embeddings. All inference finishes before the
 // transaction; a failed batch therefore leaves the last complete semantic
@@ -306,6 +333,7 @@ func (s *Store) SyncFresh(ctx context.Context, exact searchindex.State) (Status,
 func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	reuseChunks := reuse && !s.forceChunkRefresh
 	s.setProgress(syncProgress{running: true})
 	defer func() {
 		s.progressMu.Lock()
@@ -319,7 +347,7 @@ func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (
 	}
 	changed := make([]string, 0)
 	for path, digest := range exact.Files {
-		if !reuse || knownFiles[path] != digest {
+		if !reuseChunks || knownFiles[path] != digest {
 			changed = append(changed, path)
 		}
 	}
@@ -380,7 +408,7 @@ func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (
 			return Status{}, err
 		}
 		existing := map[string]existingChunk{}
-		if reuse {
+		if reuseChunks {
 			existing, err = s.chunksForPath(ctx, path)
 			if err != nil {
 				return Status{}, err
@@ -465,8 +493,9 @@ func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (
 		}
 	}
 	metadata := map[string]string{
-		"generation": strconv.FormatUint(exact.Generation, 10),
-		"indexed_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"generation":       strconv.FormatUint(exact.Generation, 10),
+		"indexed_at":       time.Now().UTC().Format(time.RFC3339Nano),
+		"chunker_revision": chunkerRevision,
 	}
 	if s.graph != nil {
 		metadata["graph_generation"] = strconv.FormatUint(exact.Generation, 10)
@@ -482,6 +511,7 @@ func (s *Store) sync(ctx context.Context, exact searchindex.State, reuse bool) (
 	if err := tx.Commit(); err != nil {
 		return Status{}, fail(CodeInternalError, "The semantic generation could not be committed.", false, err)
 	}
+	s.forceChunkRefresh = false
 	return s.Status()
 }
 

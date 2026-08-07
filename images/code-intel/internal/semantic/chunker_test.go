@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/lev-goryachev/lctk/images/code-intel/internal/symbols"
@@ -98,5 +99,39 @@ func TestSameNamedMethodsOnDifferentReceiversHaveDistinctStableIDs(t *testing.T)
 	}
 	if chunks[0].Anchor != chunks[1].Anchor || chunks[0].StableID == chunks[1].StableID {
 		t.Fatalf("chunks = %+v, want one visible anchor and distinct persistent identities", chunks)
+	}
+}
+
+func TestEveryChunkFitsTheCompleteEmbeddingInputBudget(t *testing.T) {
+	path := strings.Repeat("deep/", 40) + "token_dense.py"
+	content := []byte(strings.Repeat("!", 10_000))
+	chunker := Chunker{Outliner: outlineStub{outline: symbols.Outline{
+		Language: symbols.LanguagePython,
+		Symbols: []symbols.Symbol{{
+			Name: "Dense", Kind: symbols.KindFunction, Signature: "def Dense()",
+			StartLine: 1, EndLine: 1, StartByte: 0, EndByte: len(content),
+		}},
+	}}}
+
+	chunks, err := chunker.Chunks(context.Background(), path, content, "digest")
+	if err != nil {
+		t.Fatalf("Chunks: %v", err)
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("len(chunks) = %d, want the oversized declaration split", len(chunks))
+	}
+	for _, chunk := range chunks {
+		input := embeddingInput(EmbeddingDocument, chunk.EmbeddingText)
+		if len(input) > maxEmbeddingInputBytes {
+			t.Fatalf("embedding input is %d bytes, want at most %d", len(input), maxEmbeddingInputBytes)
+		}
+	}
+}
+
+func TestChunkingRejectsMetadataThatCannotFitTheEmbeddingInput(t *testing.T) {
+	path := strings.Repeat("p", maxEmbeddingInputBytes)
+	chunker := Chunker{Outliner: outlineStub{err: &symbols.Error{Code: symbols.CodeUnsupportedLanguage}}}
+	if _, err := chunker.Chunks(context.Background(), path, []byte("content"), "digest"); err == nil {
+		t.Fatal("oversized embedding metadata was accepted")
 	}
 }

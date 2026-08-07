@@ -217,6 +217,63 @@ func TestOpeningWithAnotherModelFailsClosed(t *testing.T) {
 	}
 }
 
+func TestChunkerRevisionReembedsAtomicallyBeforePublishing(t *testing.T) {
+	ctx := context.Background()
+	source := &sourceStub{files: map[string][]byte{
+		"a.go": []byte("package a\n\nfunc Alpha() { helper() }\n"),
+	}}
+	embedder := &deterministicEmbedder{dimension: 16}
+	path := filepath.Join(t.TempDir(), "semantic.db")
+	config := Config{Path: path, Model: "test-model", Dimensions: 16, BatchSize: 2}
+	first, err := Open(config, source, outlineStub{outline: symbols.Outline{Language: symbols.LanguageGo}}, embedder)
+	if err != nil {
+		t.Fatalf("Open first store: %v", err)
+	}
+	initial, err := first.Sync(ctx, exactState(1, source))
+	if err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+	if _, err := first.db.Exec("UPDATE semantic_meta SET value = ? WHERE key = ?", "legacy", "chunker_revision"); err != nil {
+		t.Fatalf("set legacy chunker revision: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	embedder.documents = 0
+	second, err := Open(config, source, outlineStub{outline: symbols.Outline{Language: symbols.LanguageGo}}, embedder)
+	if err != nil {
+		t.Fatalf("Open revised store: %v", err)
+	}
+	t.Cleanup(func() { second.Close() })
+	embedder.fail = true
+	if _, err := second.Sync(ctx, exactState(2, source)); err == nil {
+		t.Fatal("revision rebuild succeeded while inference failed")
+	}
+	stale, err := second.Status()
+	if err != nil {
+		t.Fatalf("Status after failed revision rebuild: %v", err)
+	}
+	if stale.Generation != 1 || stale.ChunkCount != initial.ChunkCount {
+		t.Fatalf("failed revision rebuild published %+v, want prior generation", stale)
+	}
+	embedder.fail = false
+	updated, err := second.Sync(ctx, exactState(2, source))
+	if err != nil {
+		t.Fatalf("revision Sync: %v", err)
+	}
+	if updated.ChunksReused != 0 || updated.ChunksEmbedded != initial.ChunkCount || embedder.documents != initial.ChunkCount {
+		t.Fatalf("revision progress = %+v, documents = %d; want a complete re-embedding", updated, embedder.documents)
+	}
+	var revision string
+	if err := second.db.QueryRow("SELECT value FROM semantic_meta WHERE key = ?", "chunker_revision").Scan(&revision); err != nil {
+		t.Fatalf("read published chunker revision: %v", err)
+	}
+	if revision != chunkerRevision {
+		t.Fatalf("chunker revision = %q, want %q", revision, chunkerRevision)
+	}
+}
+
 func openTestStore(t *testing.T, source *sourceStub, embedder *deterministicEmbedder) *Store {
 	t.Helper()
 	store, err := Open(Config{

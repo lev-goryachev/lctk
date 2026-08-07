@@ -192,6 +192,8 @@ Early capabilities become available while heavyweight layers continue to build. 
 
 Semantic chunk identities must be unique before inference begins. Structural chunks retain a concise user-facing anchor, while their persistent identity also includes the complete syntax declaration and deterministic occurrence. This distinguishes same-named methods on different receivers and overloaded declarations. The complete prepared set is checked for collisions before any embedding request; a collision is a typed terminal error rather than a full repository computation that can only fail during SQLite publication.
 
+The chunk limit applies to the complete document input sent to inference, not only source content. The task prefix, project-relative path, anchor, separators, and content must fit the pinned runtime context together. The chunking algorithm carries its own persistent revision: a changed revision disables semantic reuse and publishes its replacement vectors and revision in one transaction, while the preceding generation remains queryable if inference fails.
+
 Semantic status reports total, embedded, and reused chunks together with start time, last progress time, the previous terminal error while a retry is active, and a `stalled` verdict after three minutes without counter movement. The Admin UI displays these fields and the derived graph state so slow work, stopped progress, and a failed generation are not presented as the same indefinite "indexing" state.
 
 ## Resource modes

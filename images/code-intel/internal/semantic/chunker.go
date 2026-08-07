@@ -13,10 +13,13 @@ import (
 )
 
 const (
-	// Three KiB keeps token-dense source comfortably below a 4096-token slot after
-	// path and structural context are added.
-	defaultChunkBytes   = 3 << 10
-	defaultOverlapLines = 8
+	// The source-content target preserves useful structural regions, while the
+	// complete input cap is the fail-closed contract with the pinned llama.cpp
+	// runtime. A tokenizer cannot emit more non-special tokens than the UTF-8
+	// bytes it consumes, and the 64-byte margin covers its special tokens.
+	defaultChunkBytes      = 3 << 10
+	maxEmbeddingInputBytes = 1984
+	defaultOverlapLines    = 8
 )
 
 // Outliner is the structural capability the chunker needs. Keeping the narrow
@@ -67,21 +70,24 @@ func (c Chunker) Chunks(ctx context.Context, path string, content []byte, digest
 	if c.Outliner != nil {
 		outline, err := c.Outliner.Outline(ctx, path, content, digest)
 		if err == nil {
-			chunks := structuralChunks(path, content, outline, maximum)
+			chunks, err := structuralChunks(path, content, outline, maximum)
+			if err != nil {
+				return nil, err
+			}
 			if len(chunks) > 0 {
 				return chunks, nil
 			}
-			return textChunks(path, content, outline.Language, maximum, overlap), nil
+			return textChunks(path, content, outline.Language, maximum, overlap)
 		}
 		var typed *symbols.Error
 		if !errors.As(err, &typed) || typed.Code != symbols.CodeUnsupportedLanguage {
 			return nil, err
 		}
 	}
-	return textChunks(path, content, "text", maximum, overlap), nil
+	return textChunks(path, content, "text", maximum, overlap)
 }
 
-func structuralChunks(path string, content []byte, outline symbols.Outline, maximum int) []Chunk {
+func structuralChunks(path string, content []byte, outline symbols.Outline, maximum int) ([]Chunk, error) {
 	var chunks []Chunk
 	type group struct {
 		startByte    int
@@ -90,6 +96,7 @@ func structuralChunks(path string, content []byte, outline symbols.Outline, maxi
 		endLine      int
 		anchor       string
 		stableAnchor string
+		maximum      int
 	}
 	var current group
 	flush := func() {
@@ -116,24 +123,28 @@ func structuralChunks(path string, content []byte, outline symbols.Outline, maxi
 		occurrence := occurrences[structural]
 		occurrences[structural] = occurrence + 1
 		stableAnchor := fmt.Sprintf("%s\x00%d", structural, occurrence)
-		if symbol.EndByte-symbol.StartByte <= maximum {
+		contentLimit, err := embeddingContentLimit(path, anchor, maximum)
+		if err != nil {
+			return nil, err
+		}
+		if symbol.EndByte-symbol.StartByte <= contentLimit {
 			if current.endByte == 0 {
 				current = group{startByte: symbol.StartByte, endByte: symbol.EndByte,
-					startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor}
+					startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor, maximum: contentLimit}
 				continue
 			}
-			if symbol.EndByte-current.startByte <= maximum {
+			if symbol.EndByte-current.startByte <= current.maximum {
 				current.endByte = symbol.EndByte
 				current.endLine = symbol.EndLine
 				continue
 			}
 			flush()
 			current = group{startByte: symbol.StartByte, endByte: symbol.EndByte,
-				startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor}
+				startLine: symbol.StartLine, endLine: symbol.EndLine, anchor: anchor, stableAnchor: stableAnchor, maximum: contentLimit}
 			continue
 		}
 		flush()
-		pieces := splitLines(content[symbol.StartByte:symbol.EndByte], maximum, 0)
+		pieces := splitLines(content[symbol.StartByte:symbol.EndByte], contentLimit, 0)
 		line := symbol.StartLine
 		for ordinal, piece := range pieces {
 			end := line + lineCount(piece) - 1
@@ -143,11 +154,15 @@ func structuralChunks(path string, content []byte, outline symbols.Outline, maxi
 		}
 	}
 	flush()
-	return chunks
+	return chunks, nil
 }
 
-func textChunks(path string, content []byte, language string, maximum, overlap int) []Chunk {
-	pieces := splitLines(content, maximum, overlap)
+func textChunks(path string, content []byte, language string, maximum, overlap int) ([]Chunk, error) {
+	contentLimit, err := embeddingContentLimit(path, "file", maximum)
+	if err != nil {
+		return nil, err
+	}
+	pieces := splitLines(content, contentLimit, overlap)
 	chunks := make([]Chunk, 0, len(pieces))
 	line := 1
 	for ordinal, piece := range pieces {
@@ -159,7 +174,24 @@ func textChunks(path string, content []byte, language string, maximum, overlap i
 		}
 		line += advance
 	}
-	return chunks
+	return chunks, nil
+}
+
+// embeddingContentLimit converts a requested source-content size into the
+// remaining complete document-input budget after the task prefix, path, anchor,
+// and separators are counted. Metadata is never silently truncated because it
+// is part of retrieval meaning and provenance.
+func embeddingContentLimit(path, anchor string, requested int) (int, error) {
+	overhead := len(embeddingInput(EmbeddingDocument, path+"\n"+anchor+"\n"))
+	available := maxEmbeddingInputBytes - overhead
+	if available <= 0 {
+		return 0, fail(CodeInternalError,
+			"Semantic chunk metadata exceeds the embedding input budget.", false, nil)
+	}
+	if requested < available {
+		return requested, nil
+	}
+	return available, nil
 }
 
 func makeChunk(path, language, precision, anchor, stableAnchor string, ordinal, startLine, endLine int, content []byte) Chunk {
