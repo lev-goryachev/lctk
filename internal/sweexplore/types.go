@@ -17,6 +17,11 @@ import (
 // changing meaning after a harness update.
 const SchemaVersion = 1
 
+// maxFreshnessTimeout bounds only unmeasured checkout/index preparation. Large
+// repositories on local hardware can legitimately exceed the paid arm limit;
+// twelve hours still prevents an abandoned campaign from waiting forever.
+const maxFreshnessTimeout = 12 * time.Hour
+
 // Mode identifies whether an arm is the native control or the LCTK treatment.
 type Mode string
 
@@ -235,8 +240,8 @@ func (config *Config) Validate(configDir string) error {
 	config.Benchmark.OfficialRoot = resolveConfigPath(configDir, config.Benchmark.OfficialRoot)
 	config.Workspace.Root = resolveConfigPath(configDir, config.Workspace.Root)
 	config.Workspace.LCTKExecutable = resolveConfigPath(configDir, config.Workspace.LCTKExecutable)
-	if config.Workspace.FreshnessTimeoutSeconds <= 0 || config.Workspace.FreshnessTimeoutSeconds > 7200 {
-		return errors.New("workspace.freshness_timeout_seconds must be between 1 and 7200")
+	if config.Workspace.FreshnessTimeoutSeconds <= 0 || time.Duration(config.Workspace.FreshnessTimeoutSeconds)*time.Second > maxFreshnessTimeout {
+		return errors.New("workspace.freshness_timeout_seconds must be between 1 and 43200")
 	}
 	seen := map[string]struct{}{}
 	for index := range config.Arms {

@@ -28,6 +28,15 @@ func TestConfigRequiresMatchedFourArmCampaign(t *testing.T) {
 	if err := config.Validate(t.TempDir()); err == nil {
 		t.Fatal("mismatched pair was accepted")
 	}
+	config.Arms[1].Model = "model"
+	config.Workspace.FreshnessTimeoutSeconds = 43200
+	if err := config.Validate(t.TempDir()); err != nil {
+		t.Fatalf("twelve-hour preparation bound was rejected: %v", err)
+	}
+	config.Workspace.FreshnessTimeoutSeconds++
+	if err := config.Validate(t.TempDir()); err == nil {
+		t.Fatal("preparation timeout above twelve hours was accepted")
+	}
 }
 
 func TestCounterbalancedPairIsStableAndContainsBothArms(t *testing.T) {
