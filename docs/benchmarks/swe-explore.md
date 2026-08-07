@@ -44,7 +44,24 @@ The treatment allowlist is exactly `project_info`, `exact_search`, `file_outline
 
 The official metric set is `precision`, `recall`, `f1_score`, `hit_file_rate`, `noise_file_rate`, `hit_region_rate`, `noise_region_rate`, `weighted_core_coverage`, `context_efficiency`, `optional_coverage`, `ndcg_at_100`, `ndcg_at_300`, `ndcg_at_500`, `recall_at_100`, `recall_at_300`, `recall_at_500`, and `first_useful_hit`.
 
-The primary product readout is the within-client paired delta for `weighted_core_coverage`, `context_efficiency`, `recall_at_300`, and `first_useful_hit`. Also retain elapsed agent seconds, input/output/cached/reasoning tokens when the client reports them, tool calls, invalid-output rate, timeout rate, and cost derived from a campaign-pinned price table. Indexing telemetry is reported separately and never added to agent latency or cost.
+The primary product readout is the within-client paired delta for `weighted_core_coverage`, `context_efficiency`, `recall_at_300`, and `first_useful_hit`. Also retain elapsed agent seconds, input/output/cached/cache-creation/reasoning tokens when the client reports them, tool calls, invalid-output rate, timeout rate, and provider-reported cost, API duration, and turns where available. Any API-list-price equivalent is derived later from a campaign-pinned price table and remains distinct from provider-reported cost. Indexing telemetry is reported separately and never added to agent latency or cost.
+
+## Paid campaign execution
+
+Build one exact harness executable, create a runnable configuration under ignored `.artifacts/`, and validate it before selecting instances. The `manifest` command deterministically selects a repository-stratified sample. For a 20-instance pilot it first includes one instance from every joined repository, then fills the remaining slots by global SHA-256 rank; execution order is grouped by repository to reduce avoidable checkout and indexing work. The full Git commit is explicit because an executable digest alone does not identify the reviewed source.
+
+```text
+swe-explore-benchmark manifest --config CONFIG --campaign-id ID --count 20 --seed TEXT --harness-commit FULL_SHA --output MANIFEST
+swe-explore-benchmark campaign --config CONFIG --manifest MANIFEST --output-dir OUTPUT --python PYTHON
+```
+
+The manifest pins the exact configuration, datasets, harness, clients, models, efforts, repositories, and base commits. Campaign startup rejects any digest, version, model, or effort drift before a paid arm starts.
+
+Each paid arm writes into a unique attempt directory. Its raw machine-readable trace, normalized result, and official score become complete only when an immutable arm receipt references all three SHA-256 digests and the repository-owned parity scorer matches all 17 official metrics within `1e-12`. A pair receipt is published only after native and LCTK arms have matching client versions and provider-reported actual models. Interrupted and failed attempts remain diagnostic artifacts but are never included in an aggregate.
+
+Resume validates every referenced digest and reuses a completed arm without calling the model again. Missing receipts cause a new attempt; malformed or modified receipts and artifacts are fatal. Progress reports are immutable snapshots rebuilt from receipts. They keep Codex and Claude separate and include all official means, all paired deltas, deterministic paired-bootstrap 95% intervals for the four primary metrics, elapsed time, token categories, LCTK calls, provider-specific cost and duration fields, and failed-attempt count. Raw traces and receipts remain the publication audit authority.
+
+One exact model and effort per provider is the primary campaign contract. Model-tier and effort comparisons are separate pre-registered sensitivity manifests so they cannot be selected after observing the primary result.
 
 ## Single-run readiness gate
 
@@ -52,6 +69,7 @@ Mass testing is allowed only after all of these pass:
 
 - configuration, dataset join, duplicate detection, path validation, output parsing, tool-isolation checks, scorer parity, timeout handling, and repository-mutation detection pass automated tests;
 - a deterministic synthetic agent completes one native and one LCTK-shaped arm through the full artifact pipeline;
+- a synthetic campaign proves immutable receipts, all-metric aggregation, resume without rerunning completed arms, and fatal digest verification after artifact modification;
 - each locally runnable real client completes one native arm and one authorized LCTK arm on the same single instance;
 - every treatment preflight records matching fresh generations and zero watcher pending paths;
 - the official scorer accepts the emitted prediction JSONL;

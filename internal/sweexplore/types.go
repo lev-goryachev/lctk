@@ -133,10 +133,21 @@ type Instance struct {
 // Usage preserves provider-reported token accounting without inventing missing
 // fields. Zero means the client did not report that category.
 type Usage struct {
-	InputTokens           int64 `json:"input_tokens,omitempty"`
-	CachedInputTokens     int64 `json:"cached_input_tokens,omitempty"`
-	OutputTokens          int64 `json:"output_tokens,omitempty"`
-	ReasoningOutputTokens int64 `json:"reasoning_output_tokens,omitempty"`
+	InputTokens              int64 `json:"input_tokens,omitempty"`
+	CachedInputTokens        int64 `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+	OutputTokens             int64 `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens    int64 `json:"reasoning_output_tokens,omitempty"`
+}
+
+// ProviderMetrics retains client-reported measurements whose meaning is not
+// identical across providers. Keeping them separate from wall-clock time and
+// normalized token usage prevents the aggregate report from inventing parity.
+type ProviderMetrics struct {
+	ReportedCostUSD float64 `json:"reported_cost_usd,omitempty"`
+	DurationMS      int64   `json:"duration_ms,omitempty"`
+	APIDurationMS   int64   `json:"api_duration_ms,omitempty"`
+	Turns           int64   `json:"turns,omitempty"`
 }
 
 // FreshnessProof records the exact pre-measurement state required by ADR-0030.
@@ -170,6 +181,7 @@ type Result struct {
 	LCTKToolCalls []string        `json:"lctk_tool_calls"`
 	ActualModels  []string        `json:"actual_models,omitempty"`
 	Usage         Usage           `json:"usage"`
+	ProviderStats ProviderMetrics `json:"provider_metrics,omitempty"`
 	Freshness     *FreshnessProof `json:"freshness,omitempty"`
 	RawTracePath  string          `json:"raw_trace_path"`
 }

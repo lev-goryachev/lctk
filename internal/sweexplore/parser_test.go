@@ -48,13 +48,13 @@ func TestParseProviderTraces(t *testing.T) {
 	}
 	claude := strings.Join([]string{
 		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"mcp__lctk-self__repository_map"}]}}`,
-		`{"type":"result","result":"RELEVANT_FILES:\n- main.go:1-1","usage":{"input_tokens":12,"cache_read_input_tokens":5,"output_tokens":4}}`,
+		`{"type":"result","result":"RELEVANT_FILES:\n- main.go:1-1","total_cost_usd":0.125,"duration_ms":900,"duration_api_ms":700,"num_turns":2,"usage":{"input_tokens":12,"cache_read_input_tokens":5,"cache_creation_input_tokens":6,"output_tokens":4}}`,
 	}, "\n")
 	parsed, err = ParseTrace(ProviderClaude, []byte(claude))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.LCTKToolCalls) != 1 || len(parsed.ActualModels) != 1 || parsed.ActualModels[0] != "claude-sonnet-4-6" || parsed.Usage.CachedInputTokens != 5 || parsed.Usage.OutputTokens != 4 {
+	if len(parsed.LCTKToolCalls) != 1 || len(parsed.ActualModels) != 1 || parsed.ActualModels[0] != "claude-sonnet-4-6" || parsed.Usage.CachedInputTokens != 5 || parsed.Usage.CacheCreationInputTokens != 6 || parsed.Usage.OutputTokens != 4 || parsed.ProviderStats.ReportedCostUSD != 0.125 || parsed.ProviderStats.APIDurationMS != 700 || parsed.ProviderStats.Turns != 2 {
 		t.Fatalf("Claude trace = %+v", parsed)
 	}
 }

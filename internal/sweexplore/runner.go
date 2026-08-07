@@ -104,7 +104,7 @@ func RunArm(ctx context.Context, config Config, arm ArmConfig, instance Instance
 		return Result{}, fmt.Errorf("create artifact directory: %w", err)
 	}
 	rawPath := filepath.Join(outputDir, arm.ID+".trace.jsonl")
-	if err := os.WriteFile(rawPath, stdout.Bytes(), 0o600); err != nil {
+	if err := WriteFileAtomic(rawPath, stdout.Bytes(), 0o600); err != nil {
 		return Result{}, fmt.Errorf("write raw trace: %w", err)
 	}
 	if exitCode != 0 {
@@ -132,7 +132,8 @@ func RunArm(ctx context.Context, config Config, arm ArmConfig, instance Instance
 		Provider: arm.Provider, Mode: arm.Mode, Model: arm.Model, ClientVersion: clientVersion, BaseCommit: instance.BaseCommit,
 		StartedAt: started.Format(time.RFC3339Nano), ElapsedMS: elapsed.Milliseconds(), ExitCode: exitCode,
 		Regions: regions, LCTKToolCalls: parsed.LCTKToolCalls, ActualModels: parsed.ActualModels, Usage: parsed.Usage,
-		Freshness: freshness, RawTracePath: filepath.ToSlash(rawPath),
+		ProviderStats: parsed.ProviderStats,
+		Freshness:     freshness, RawTracePath: filepath.ToSlash(rawPath),
 	}, nil
 }
 

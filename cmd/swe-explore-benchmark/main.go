@@ -28,6 +28,8 @@ const usage = `Usage:
   swe-explore-benchmark pair --config FILE --instance ID --provider codex|claude --output-dir DIR
   swe-explore-benchmark score --config FILE --result FILE
   swe-explore-benchmark official-score --config FILE --result FILE --python EXE
+  swe-explore-benchmark manifest --config FILE --campaign-id ID --count N --seed TEXT --harness-commit SHA --output FILE
+  swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE
 `
 
 func main() {
@@ -56,9 +58,86 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return scoreCommand(args[1:], stdout)
 	case "official-score":
 		return officialScoreCommand(ctx, args[1:], stdout)
+	case "manifest":
+		return manifestCommand(ctx, args[1:], stdout)
+	case "campaign":
+		return campaignCommand(ctx, args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
+}
+
+func manifestCommand(ctx context.Context, args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("manifest", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "campaign configuration")
+	campaignID := flags.String("campaign-id", "", "immutable campaign identifier")
+	count := flags.Int("count", 0, "repository-stratified instance count")
+	seed := flags.String("seed", "", "deterministic selection seed")
+	harnessCommit := flags.String("harness-commit", "", "full repository commit containing the harness")
+	outputPath := flags.String("output", "", "immutable manifest path")
+	if err := flags.Parse(args); err != nil || *configPath == "" || *campaignID == "" || *count <= 0 || *seed == "" || *harnessCommit == "" || *outputPath == "" || flags.NArg() != 0 {
+		return errors.New("usage: swe-explore-benchmark manifest --config FILE --campaign-id ID --count N --seed TEXT --harness-commit SHA --output FILE")
+	}
+	config, err := sweexplore.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	currentCommit, err := gitOutput(ctx, ".", "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("inspect harness source commit: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(currentCommit), *harnessCommit) {
+		return fmt.Errorf("harness source is at %s, want declared commit %s", strings.TrimSpace(currentCommit), *harnessCommit)
+	}
+	harness, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve benchmark executable: %w", err)
+	}
+	manifest, err := sweexplore.BuildCampaignManifest(ctx, *configPath, config, *campaignID, *count, *seed, harness, *harnessCommit)
+	if err != nil {
+		return err
+	}
+	if err := sweexplore.WriteJSONAtomic(*outputPath, manifest); err != nil {
+		return err
+	}
+	return writeJSON(stdout, manifest)
+}
+
+func campaignCommand(ctx context.Context, args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("campaign", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "campaign configuration")
+	manifestPath := flags.String("manifest", "", "immutable campaign manifest")
+	outputDir := flags.String("output-dir", "", "campaign artifact root")
+	python := flags.String("python", "python", "Python 3.12+ executable")
+	if err := flags.Parse(args); err != nil || *configPath == "" || *manifestPath == "" || *outputDir == "" || *python == "" || flags.NArg() != 0 {
+		return errors.New("usage: swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE")
+	}
+	config, err := sweexplore.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	harness, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve benchmark executable: %w", err)
+	}
+	manifest, err := sweexplore.LoadCampaignManifest(ctx, *manifestPath, *configPath, harness, config)
+	if err != nil {
+		return err
+	}
+	currentCommit, err := gitOutput(ctx, ".", "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("inspect harness source commit: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(currentCommit), manifest.HarnessCommit) {
+		return fmt.Errorf("harness source is at %s, manifest pins %s", strings.TrimSpace(currentCommit), manifest.HarnessCommit)
+	}
+	report, err := sweexplore.RunCampaign(ctx, config, manifest, *configPath, *manifestPath, *outputDir, *python)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
 }
 
 func pairCommand(ctx context.Context, args []string, stdout io.Writer) error {
@@ -316,15 +395,7 @@ func writeJSON(writer io.Writer, value any) error {
 }
 
 func writeJSONFile(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	body, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	body = append(body, '\n')
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := sweexplore.WriteJSONAtomic(path, value); err != nil {
 		return fmt.Errorf("write result: %w", err)
 	}
 	return nil

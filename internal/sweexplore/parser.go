@@ -22,6 +22,7 @@ type ParsedTrace struct {
 	LCTKToolCalls []string
 	ActualModels  []string
 	Usage         Usage
+	ProviderStats ProviderMetrics
 }
 
 // ParseTrace extracts the final message, usage, and LCTK tool evidence without
@@ -212,6 +213,12 @@ func parseClaudeTrace(raw []byte) (ParsedTrace, error) {
 			if usage, ok := event["usage"].(map[string]any); ok {
 				parsed.Usage = usageFromMap(usage)
 			}
+			parsed.ProviderStats = ProviderMetrics{
+				ReportedCostUSD: number(event, "total_cost_usd"),
+				DurationMS:      integer(event, "duration_ms"),
+				APIDurationMS:   integer(event, "duration_api_ms"),
+				Turns:           integer(event, "num_turns"),
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -257,10 +264,11 @@ func isLCTKServer(name string) bool {
 
 func usageFromMap(values map[string]any) Usage {
 	return Usage{
-		InputTokens:           integer(values, "input_tokens"),
-		CachedInputTokens:     integer(values, "cached_input_tokens", "cache_read_input_tokens"),
-		OutputTokens:          integer(values, "output_tokens"),
-		ReasoningOutputTokens: integer(values, "reasoning_output_tokens"),
+		InputTokens:              integer(values, "input_tokens"),
+		CachedInputTokens:        integer(values, "cached_input_tokens", "cache_read_input_tokens"),
+		CacheCreationInputTokens: integer(values, "cache_creation_input_tokens"),
+		OutputTokens:             integer(values, "output_tokens"),
+		ReasoningOutputTokens:    integer(values, "reasoning_output_tokens"),
 	}
 }
 
@@ -271,4 +279,9 @@ func integer(values map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+func number(values map[string]any, key string) float64 {
+	value, _ := values[key].(float64)
+	return value
 }

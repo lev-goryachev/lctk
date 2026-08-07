@@ -38,6 +38,10 @@ The benchmark code and the two source datasets are external, commit-pinned input
 
 The canonical prediction artifact is compatible with the official SWE-Explore evaluator: ordered `path`, `start`, and `end` regions per instance. Raw client JSONL, parsed predictions, tool-call evidence, elapsed time, exit status, model identity, client version, repository commit, LCTK freshness proof, and scorer identity are retained for audit. Aggregate reports must keep Codex and Claude separate and must report paired deltas with confidence intervals rather than one pooled headline score.
 
+Paid campaigns use an immutable repository-stratified manifest. The manifest pins the sampling seed and method, exact joined instance identities, dataset and configuration digests, harness commit and executable digest, and both client executable digests, versions, models, and efforts. A campaign processes the manifest sequentially and may resume only from immutable completion receipts whose SHA-256 references validate the raw trace, normalized result, and official score. The harness publishes an arm receipt only after the repository-owned scorer matches all 17 official metrics within `1e-12`; it publishes a pair receipt only after both arms have matching client and actual-model identities. Failed or interrupted attempts remain separate diagnostic evidence and never count as completed observations.
+
+Aggregate reports are reproducible views over receipts, not primary evidence. They retain all 17 official metric means, treatment-minus-native paired deltas, deterministic paired-bootstrap 95% confidence intervals for the four primary metrics, elapsed agent time, every provider-reported token category, LCTK tool-call counts, and provider-specific cost, API-duration, and turn fields when the client reports them. Materialization and freshness-settlement telemetry remains separate from agent latency.
+
 ## Alternatives considered
 
 ### Include indexing time in every LCTK arm
@@ -79,4 +83,5 @@ Rejected. Freshness is an explicit multi-generation contract. A successful query
 
 - Complete one synthetic pipeline test and one real single-instance pilot for every locally runnable client before a mass campaign.
 - Record the exact SWE-Explore, SWE-Explore dataset, SWE-bench source-data, client, model, and LCTK identities with every campaign.
+- Pre-register one primary model-and-effort profile per client. Additional model tiers or effort sweeps are separate sensitivity campaigns, never post-hoc substitutions in the primary campaign.
 - Add downstream patch-quality evaluation only after the exploration-only comparison is stable; do not mix it into the primary metric.
