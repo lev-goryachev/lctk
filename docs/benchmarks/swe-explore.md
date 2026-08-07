@@ -59,7 +59,7 @@ The manifest pins the exact configuration, datasets, harness, clients, models, e
 
 Each paid arm writes into a unique attempt directory. Its raw machine-readable trace, normalized result, and official score become complete only when an immutable arm receipt references all three SHA-256 digests and the repository-owned parity scorer matches all 17 official metrics within `1e-12`. A pair receipt is published only after native and LCTK arms have matching client versions and provider-reported actual models. Interrupted and failed attempts remain diagnostic artifacts but are never included in an aggregate.
 
-Resume validates every referenced digest and reuses a completed arm without calling the model again. Missing receipts cause a new attempt; malformed or modified receipts and artifacts are fatal. Progress reports are immutable snapshots rebuilt from receipts. They keep Codex and Claude separate and include all official means, all paired deltas, deterministic paired-bootstrap 95% intervals for the four primary metrics, elapsed time, token categories, LCTK calls, provider-specific cost and duration fields, and failed-attempt count. Raw traces and receipts remain the publication audit authority.
+Resume validates every referenced digest and reuses a completed arm without calling the model again. When all four arm receipts for an instance are valid, it also skips checkout and index preparation; a missing pair receipt or progress report is reconstructed from immutable arm evidence alone. Missing arm receipts cause a new attempt after normal preparation; malformed or modified receipts and artifacts are fatal before the shared workspace is touched. Progress reports are immutable snapshots rebuilt from receipts. They keep Codex and Claude separate and include all official means, all paired deltas, deterministic paired-bootstrap 95% intervals for the four primary metrics, elapsed time, token categories, LCTK calls, provider-specific cost and duration fields, and failed-attempt count. Raw traces and receipts remain the publication audit authority.
 
 One exact model and effort per provider is the primary campaign contract. Model-tier and effort comparisons are separate pre-registered sensitivity manifests so they cannot be selected after observing the primary result.
 
@@ -69,7 +69,7 @@ Mass testing is allowed only after all of these pass:
 
 - configuration, dataset join, duplicate detection, path validation, output parsing, tool-isolation checks, scorer parity, timeout handling, and repository-mutation detection pass automated tests;
 - a deterministic synthetic agent completes one native and one LCTK-shaped arm through the full artifact pipeline;
-- a synthetic campaign proves immutable receipts, all-metric aggregation, resume without rerunning completed arms, and fatal digest verification after artifact modification;
+- a synthetic campaign proves immutable receipts, all-metric aggregation, resume without rerunning completed arms or preparing their workspace, and fatal digest verification before workspace mutation after artifact modification;
 - each locally runnable real client completes one native arm and one authorized LCTK arm on the same single instance;
 - every treatment preflight records matching fresh generations and zero watcher pending paths;
 - the official scorer accepts the emitted prediction JSONL;

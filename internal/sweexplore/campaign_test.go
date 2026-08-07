@@ -101,13 +101,19 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 	}
 	outputRoot := filepath.Join(root, "campaign")
 	runs := 0
+	prepares := 0
 	operations := fixtureCampaignOperations(t, &runs)
+	fixturePrepare := operations.prepare
+	operations.prepare = func(ctx context.Context, config Config, selected CampaignInstance) (PrepareRecord, error) {
+		prepares++
+		return fixturePrepare(ctx, config, selected)
+	}
 	report, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runs != 4 || report.Providers[ProviderCodex].CompletedPairs != 1 || report.Providers[ProviderClaude].CompletedPairs != 1 {
-		t.Fatalf("runs = %d, report = %+v", runs, report)
+	if runs != 4 || prepares != 1 || report.Providers[ProviderCodex].CompletedPairs != 1 || report.Providers[ProviderClaude].CompletedPairs != 1 {
+		t.Fatalf("runs = %d, prepares = %d, report = %+v", runs, prepares, report)
 	}
 	if len(report.Providers[ProviderCodex].Native.MeanMetrics) != 17 || len(report.Providers[ProviderCodex].PrimaryBootstrap95CI) != 4 {
 		t.Fatalf("incomplete metric report: %+v", report.Providers[ProviderCodex])
@@ -116,8 +122,8 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 		return Result{}, errors.New("completed arm was rerun")
 	}
 	report, err = runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations)
-	if err != nil || runs != 4 || report.Providers[ProviderClaude].CompletedPairs != 1 {
-		t.Fatalf("resume reran evidence: runs=%d report=%+v err=%v", runs, report, err)
+	if err != nil || runs != 4 || prepares != 1 || report.Providers[ProviderClaude].CompletedPairs != 1 {
+		t.Fatalf("resume repeated work: runs=%d prepares=%d report=%+v err=%v", runs, prepares, report, err)
 	}
 	receiptPath := filepath.Join(outputRoot, "instances", "fixture__repo-1", "receipts", "codex-native.json")
 	var receipt ArmReceipt
@@ -131,6 +137,9 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 	}
 	if _, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("tampered trace was accepted: %v", err)
+	}
+	if prepares != 1 {
+		t.Fatalf("tampered receipt triggered workspace preparation: prepares=%d", prepares)
 	}
 }
 

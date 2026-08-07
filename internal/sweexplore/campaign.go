@@ -161,17 +161,24 @@ func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, 
 		if err != nil {
 			return CampaignReport{}, err
 		}
-		prepare, err := operations.prepare(ctx, config, selected)
+		needsPreparation, err := campaignInstanceNeedsPreparation(config, manifest, instance, outputRoot)
 		if err != nil {
-			_ = writeCampaignFailure(outputRoot, CampaignFailure{SchemaVersion: CampaignSchemaVersion, CampaignID: manifest.CampaignID, InstanceID: selected.InstanceID, Stage: "prepare", FailedAt: time.Now().UTC().Format(time.RFC3339Nano), Error: err.Error()})
 			report, _ := buildCampaignReport(manifest, config, outputRoot)
 			return report, err
 		}
-		prepare.CampaignID = manifest.CampaignID
-		preparePath := filepath.Join(outputRoot, "instances", selected.InstanceID, "prepare-attempts", uniqueArtifactName("prepare", ".json"))
-		if err := WriteJSONAtomic(preparePath, prepare); err != nil {
-			report, _ := buildCampaignReport(manifest, config, outputRoot)
-			return report, err
+		if needsPreparation {
+			prepare, err := operations.prepare(ctx, config, selected)
+			if err != nil {
+				_ = writeCampaignFailure(outputRoot, CampaignFailure{SchemaVersion: CampaignSchemaVersion, CampaignID: manifest.CampaignID, InstanceID: selected.InstanceID, Stage: "prepare", FailedAt: time.Now().UTC().Format(time.RFC3339Nano), Error: err.Error()})
+				report, _ := buildCampaignReport(manifest, config, outputRoot)
+				return report, err
+			}
+			prepare.CampaignID = manifest.CampaignID
+			preparePath := filepath.Join(outputRoot, "instances", selected.InstanceID, "prepare-attempts", uniqueArtifactName("prepare", ".json"))
+			if err := WriteJSONAtomic(preparePath, prepare); err != nil {
+				report, _ := buildCampaignReport(manifest, config, outputRoot)
+				return report, err
+			}
 		}
 		for _, provider := range []Provider{ProviderCodex, ProviderClaude} {
 			if _, err := runCampaignPair(ctx, config, manifest, instance, provider, outputRoot, python, operations); err != nil {
@@ -189,6 +196,29 @@ func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, 
 		}
 	}
 	return buildCampaignReport(manifest, config, outputRoot)
+}
+
+// campaignInstanceNeedsPreparation validates every existing arm receipt before
+// touching the shared workspace. A fully paid instance can reconstruct a
+// missing pair receipt and progress report from immutable evidence alone, so a
+// resume must not spend hours indexing it again.
+func campaignInstanceNeedsPreparation(config Config, manifest CampaignManifest, instance Instance, outputRoot string) (bool, error) {
+	for _, provider := range []Provider{ProviderCodex, ProviderClaude} {
+		native, treatment, err := config.Pair(provider)
+		if err != nil {
+			return false, err
+		}
+		for _, arm := range []ArmConfig{native, treatment} {
+			receiptPath := filepath.Join(outputRoot, "instances", instance.InstanceID, "receipts", arm.ID+".json")
+			if _, _, err := loadArmReceipt(outputRoot, receiptPath, manifest, instance, arm); err != nil {
+				if os.IsNotExist(rootCause(err)) {
+					return true, nil
+				}
+				return false, err
+			}
+		}
+	}
+	return false, nil
 }
 
 func runCampaignPair(ctx context.Context, config Config, manifest CampaignManifest, instance Instance, provider Provider, outputRoot, python string, operations campaignOperations) (PairReceipt, error) {
