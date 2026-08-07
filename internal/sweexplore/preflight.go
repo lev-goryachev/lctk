@@ -136,14 +136,32 @@ func PreflightLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessPro
 // errors such as a wrong registration, version, or non-empty memory fail on the
 // first observation.
 func WaitForLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessProof, error) {
+	return waitForLCTK(ctx, workspace, 0, false)
+}
+
+// WaitForLCTKAfterGeneration prevents a checkout race in which the watcher has
+// not observed a Git switch yet and the service still reports the preceding
+// checkout as fresh. A changed checkout is eligible only after every index and
+// the watcher converge on a strictly newer generation.
+func WaitForLCTKAfterGeneration(ctx context.Context, workspace WorkspaceConfig, previousGeneration uint64) (FreshnessProof, error) {
+	if previousGeneration == 0 {
+		return FreshnessProof{}, errors.New("previous LCTK generation must be positive")
+	}
+	return waitForLCTK(ctx, workspace, previousGeneration, true)
+}
+
+func waitForLCTK(ctx context.Context, workspace WorkspaceConfig, previousGeneration uint64, requireAdvance bool) (FreshnessProof, error) {
 	deadline := time.Duration(workspace.FreshnessTimeoutSeconds) * time.Second
 	bounded, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	var last error
 	for {
 		proof, err := PreflightLCTK(bounded, workspace)
-		if err == nil {
+		if err == nil && generationIsEligible(proof, previousGeneration, requireAdvance) {
 			return proof, nil
+		}
+		if err == nil {
+			err = &NotReadyError{detail: fmt.Sprintf("watcher has not advanced beyond generation %d", previousGeneration)}
 		}
 		var pending *NotReadyError
 		if !errors.As(err, &pending) {
@@ -156,6 +174,13 @@ func WaitForLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessProof
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// generationIsEligible centralizes the checkout barrier: ordinary preflight
+// accepts any complete proof, while post-checkout preflight requires a proof
+// from a generation created after the recorded baseline.
+func generationIsEligible(proof FreshnessProof, previousGeneration uint64, requireAdvance bool) bool {
+	return !requireAdvance || proof.ExactGeneration > previousGeneration
 }
 
 func commandOutput(ctx context.Context, directory, executable string, args ...string) (string, error) {

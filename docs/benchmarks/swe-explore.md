@@ -55,7 +55,7 @@ swe-explore-benchmark manifest --config CONFIG --campaign-id ID --count 20 --see
 swe-explore-benchmark campaign --config CONFIG --manifest MANIFEST --output-dir OUTPUT --python PYTHON
 ```
 
-The manifest pins the exact configuration, datasets, harness, clients, models, efforts, repositories, and base commits. Campaign startup rejects any digest, version, model, or effort drift before a paid arm starts.
+The manifest pins the exact configuration, datasets, harness, clients, models, efforts, repositories, and base commits. Campaign startup rejects any digest, version, model, or effort drift before a paid arm starts. Before changing a checkout, preparation records a settled baseline generation. A changed commit is eligible only after exact, semantic, graph, and watcher state converge on a strictly newer generation; this prevents a fast Git switch from temporarily reusing the preceding checkout's still-fresh status.
 
 Each paid arm writes into a unique attempt directory. Its raw machine-readable trace, normalized result, and official score become complete only when an immutable arm receipt references all three SHA-256 digests and the repository-owned parity scorer matches all 17 official metrics within `1e-12`. A pair receipt is published only after native and LCTK arms have matching client versions and provider-reported actual models. Interrupted and failed attempts remain diagnostic artifacts but are never included in an aggregate.
 

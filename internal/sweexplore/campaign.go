@@ -70,6 +70,7 @@ type PrepareRecord struct {
 	Repository    string         `json:"repository"`
 	BaseCommit    string         `json:"base_commit"`
 	StartedAt     string         `json:"started_at"`
+	BaselineMS    int64          `json:"baseline_settlement_ms"`
 	MaterializeMS int64          `json:"materialize_ms"`
 	FreshnessMS   int64          `json:"freshness_ms"`
 	Freshness     FreshnessProof `json:"freshness"`
@@ -288,17 +289,34 @@ func runCampaignPair(ctx context.Context, config Config, manifest CampaignManife
 
 func prepareCampaignInstance(ctx context.Context, config Config, selected CampaignInstance) (PrepareRecord, error) {
 	started := time.Now().UTC()
+	currentCommit, err := commandOutput(ctx, config.Workspace.Root, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return PrepareRecord{}, err
+	}
+	currentCommit = strings.TrimSpace(currentCommit)
+	baselineStarted := time.Now()
+	baseline, err := WaitForLCTK(ctx, config.Workspace)
+	if err != nil {
+		return PrepareRecord{}, fmt.Errorf("settle baseline LCTK generation before checkout: %w", err)
+	}
+	baselineMS := time.Since(baselineStarted).Milliseconds()
+	if strings.EqualFold(currentCommit, selected.BaseCommit) {
+		if err := VerifyRepository(ctx, config.Workspace.Root, selected.BaseCommit); err != nil {
+			return PrepareRecord{}, err
+		}
+		return PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, Freshness: baseline}, nil
+	}
 	materializeStarted := time.Now()
 	if err := Materialize(ctx, config.Workspace.Root, selected.Repository, selected.BaseCommit); err != nil {
 		return PrepareRecord{}, err
 	}
 	materializeMS := time.Since(materializeStarted).Milliseconds()
 	freshnessStarted := time.Now()
-	proof, err := WaitForLCTK(ctx, config.Workspace)
+	proof, err := WaitForLCTKAfterGeneration(ctx, config.Workspace, baseline.ExactGeneration)
 	if err != nil {
 		return PrepareRecord{}, err
 	}
-	return PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), MaterializeMS: materializeMS, FreshnessMS: time.Since(freshnessStarted).Milliseconds(), Freshness: proof}, nil
+	return PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, MaterializeMS: materializeMS, FreshnessMS: time.Since(freshnessStarted).Milliseconds(), Freshness: proof}, nil
 }
 
 func ensureCampaignSnapshot(source, destination string) error {

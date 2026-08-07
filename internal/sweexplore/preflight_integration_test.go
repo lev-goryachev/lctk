@@ -29,3 +29,33 @@ func TestInstalledLCTKPreflight(t *testing.T) {
 		t.Fatalf("freshness proof = %+v", proof)
 	}
 }
+
+func TestFreshnessAdvanceRequiresStrictlyNewerGeneration(t *testing.T) {
+	workspace := WorkspaceConfig{FreshnessTimeoutSeconds: 1}
+	if _, err := WaitForLCTKAfterGeneration(context.Background(), workspace, 0); err == nil {
+		t.Fatal("zero baseline generation was accepted")
+	}
+}
+
+func TestFreshnessAdvanceRejectsOldAndEqualGenerations(t *testing.T) {
+	tests := []struct {
+		name       string
+		generation uint64
+		eligible   bool
+	}{
+		{name: "older", generation: 6, eligible: false},
+		{name: "equal", generation: 7, eligible: false},
+		{name: "newer", generation: 8, eligible: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proof := FreshnessProof{ExactGeneration: test.generation}
+			if actual := generationIsEligible(proof, 7, true); actual != test.eligible {
+				t.Fatalf("generation %d eligibility = %t, want %t", test.generation, actual, test.eligible)
+			}
+		})
+	}
+	if !generationIsEligible(FreshnessProof{}, 7, false) {
+		t.Fatal("ordinary preflight unexpectedly required a generation advance")
+	}
+}
