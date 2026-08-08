@@ -140,8 +140,9 @@ func WaitForLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessProof
 	return waitForLCTK(ctx, workspace, 0, false, "", nil)
 }
 
-// WaitForLCTKObserved preserves every two-second preparation observation while
-// applying the same strict warm-index eligibility contract as WaitForLCTK.
+// WaitForLCTKObserved preserves every preparation observation after each
+// two-second retry delay while applying the same strict warm-index eligibility
+// contract as WaitForLCTK. Probe duration is intentionally not hidden.
 func WaitForLCTKObserved(ctx context.Context, workspace WorkspaceConfig, phase string, observer func(PreparationSample) error) (FreshnessProof, error) {
 	if observer == nil {
 		return FreshnessProof{}, errors.New("preparation observer is required")

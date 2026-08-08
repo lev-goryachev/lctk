@@ -78,3 +78,11 @@ Mass testing is allowed only after all of these pass:
 An unavailable client or unapproved OAuth connection is a failed readiness gate, not a skipped success.
 
 The accepted 2026-08-07 gate evidence is recorded in [the single-run readiness report](swe-explore-single-run.md).
+
+## NVIDIA GPU one-instance campaign gate
+
+Installed local `0.1.14` and campaign `swe-explore-sol-opus5-high-20-v6` passed the first immutable instance on 2026-08-08. The selected instance was `astropy__astropy-13453` at commit `19cc80471739bcb67b7e8099246b391c355023ee`. Preparation published 20,622 semantic chunks and converged exact, semantic, graph, and watcher state at generation 12 with zero pending paths. The SHA-256-bound JSONL contains 288 durable observations, including 261 advancing-counter samples, 147 samples at or above 80% GPU utilization, a 100% GPU peak, and an 87 C maximum. Settlement took 2,488.363 seconds and remains outside measured agent time.
+
+The first preparation attempt failed fast before any paid client because the dedicated project stack was stopped. After starting that exact registered project, preparation completed without relaxing a gate. Native receipts were explicitly re-attested from the preceding immutable campaign; treatment receipts were produced only by `codex-cli 0.147.0` with requested `gpt-5.6-sol`/high and Claude Code `2.1.224` with reported `claude-opus-5`/high. Native traces contain zero LCTK calls; treatment traces contain 15 Codex and four Claude LCTK calls. All four arm receipts preserve matching raw/result/official-score SHA-256 values, both pair receipts reference the exact arm receipts, and an independent rerun of both scorers matched all 17 metrics and every predicted region.
+
+This single instance validates the GPU/progress observability and full paid artifact pipeline, not product benefit. Its treatment-minus-native deltas were mixed or negative: Codex context efficiency `-0.152984`, recall@300 `-0.003124`, and weighted core coverage `-0.000887`; Claude context efficiency `0`, recall@300 `-0.020973`, and weighted core coverage `+0.005488`. Statistical interpretation starts only after the preregistered 20-instance campaign completes.

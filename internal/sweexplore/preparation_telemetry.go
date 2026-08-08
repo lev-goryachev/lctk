@@ -90,7 +90,7 @@ func newPreparationTelemetryWriter(path string) *preparationTelemetryWriter {
 // Observe derives rate and ETA from counter deltas, appends one JSONL record,
 // and synchronizes it before the next potentially long indexing wait.
 func (writer *preparationTelemetryWriter) Observe(sample PreparationSample) error {
-	completed := sample.Semantic.ChunksEmbedded + sample.Semantic.ChunksReused
+	completed := completedSemanticChunks(sample.Semantic)
 	if sample.Semantic.ChunksTotal > 0 {
 		sample.CompletionPercent = math.Min(100, 100*float64(completed)/float64(sample.Semantic.ChunksTotal))
 	}
@@ -138,6 +138,19 @@ func (writer *preparationTelemetryWriter) Observe(sample PreparationSample) erro
 		return fmt.Errorf("synchronize preparation telemetry: %w", err)
 	}
 	return nil
+}
+
+// completedSemanticChunks preserves the live in-flight counters while an
+// index is advancing, then uses the committed chunk count after publication.
+// The status API intentionally clears transient embedded/reused counters when
+// indexing closes, so treating that reset as zero would erase proven progress
+// from the immutable preparation summary.
+func completedSemanticChunks(status PreparationSemanticStatus) int {
+	completed := status.ChunksEmbedded + status.ChunksReused
+	if status.Ready && !status.Indexing && status.ChunksTotal == 0 && status.ChunkCount > completed {
+		return status.ChunkCount
+	}
+	return completed
 }
 
 func (writer *preparationTelemetryWriter) Summary() PreparationTelemetrySummary {
