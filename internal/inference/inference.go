@@ -7,6 +7,7 @@ package inference
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +44,7 @@ const (
 	Dimensions             = 768
 	// ConfigRevision forces replacement when runtime arguments change while the
 	// immutable image and model remain the same.
-	ConfigRevision = "8"
+	ConfigRevision = "9"
 
 	// ProjectEndpoint is reached after the inference container joins the one
 	// requesting project's isolated network. No Windows host port is involved.
@@ -106,8 +108,21 @@ type Status struct {
 	Distribution    Distribution       `json:"distribution"`
 	Backend         string             `json:"backend"`
 	GPU             *nvidiainstall.GPU `json:"gpu,omitempty"`
+	GPUTelemetry    *GPUTelemetry      `json:"gpu_telemetry,omitempty"`
 	OffloadedLayers string             `json:"offloaded_layers,omitempty"`
 	Detail          string             `json:"detail,omitempty"`
+}
+
+// GPUTelemetry is a live, point-in-time device sample taken from the same CUDA
+// container whose immutable identity and complete layer offload are verified.
+// It proves active computation separately from process liveness.
+type GPUTelemetry struct {
+	SampledAt          string  `json:"sampled_at"`
+	UtilizationPercent int     `json:"utilization_percent"`
+	MemoryUsedMiB      int     `json:"memory_used_mib"`
+	MemoryTotalMiB     int     `json:"memory_total_mib"`
+	PowerWatts         float64 `json:"power_watts"`
+	TemperatureCelsius int     `json:"temperature_celsius"`
 }
 
 // ModelPath returns the installation-owned model location without creating it.
@@ -406,12 +421,19 @@ func (m *Manager) startContainer(ctx context.Context, name string) error {
 		args = append(args, "--device", nvidiainstall.CDIDevice,
 			"--log-driver", "k8s-file", "--log-opt", "max-size=32mb")
 	}
+	batchSize := "4096"
+	if m.distribution == DistributionNVIDIAGPU {
+		// The pinned CUDA image accepts the full 8192-token physical batch on the
+		// supported Pascal floor. This keeps the embedding tensor work resident
+		// enough to saturate the GPU instead of feeding it in CPU-bound bursts.
+		batchSize = "8192"
+	}
 	args = append(args,
 		"--mount", mount, m.image,
 		"--model", "/models/"+ModelName, "--alias", ModelAlias,
 		"--embedding", "--pooling", "mean", "--host", "0.0.0.0",
 		"--parallel", "8", "--port", fmt.Sprint(ContainerPort), "--ctx-size", "32768",
-		"--batch-size", "4096", "--ubatch-size", "4096",
+		"--batch-size", batchSize, "--ubatch-size", batchSize,
 	)
 	if m.distribution == DistributionNVIDIAGPU {
 		// b10257 emits its measured CUDA device and exact offloaded-layer count
@@ -507,12 +529,12 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 		return nil
 	}
 	stdout, stderr, err := m.runner.Run(ctx, "exec", name, "nvidia-smi",
-		"--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits")
+		"--query-gpu=name,driver_version,memory.total,compute_cap,utilization.gpu,memory.used,power.draw,temperature.gpu", "--format=csv,noheader,nounits")
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing,
 			Detail: "CUDA container cannot query the NVIDIA adapter: " + firstLine(stderr, err)}
 	}
-	gpu, err := nvidiainstall.ParseHostProbe(stdout)
+	gpu, telemetry, err := parseGPUStatusProbe(stdout, time.Now().UTC())
 	if err != nil {
 		return &nvidiainstall.Failure{Code: nvidiainstall.FailureCUDADeviceMissing, Detail: err.Error()}
 	}
@@ -536,6 +558,7 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 		if found && stored.matches(identity) {
 			status.Backend = "cuda"
 			status.GPU = &gpu
+			status.GPUTelemetry = &telemetry
 			status.OffloadedLayers = stored.OffloadedLayers
 			return nil
 		}
@@ -571,8 +594,51 @@ func (m *Manager) attachBackendEvidence(ctx context.Context, name string, status
 	}
 	status.Backend = "cuda"
 	status.GPU = &gpu
+	status.GPUTelemetry = &telemetry
 	status.OffloadedLayers = evidence.OffloadedLayers
 	return nil
+}
+
+// parseGPUStatusProbe validates both immutable adapter identity and every live
+// measurement. Missing or non-numeric telemetry is a hard observability
+// failure because a zero/unknown sample must never be presented as proof of
+// CUDA work.
+func parseGPUStatusProbe(output string, sampledAt time.Time) (nvidiainstall.GPU, GPUTelemetry, error) {
+	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(output)))
+	reader.TrimLeadingSpace = true
+	records, err := reader.ReadAll()
+	if err != nil || len(records) != 1 || len(records[0]) != 8 {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA runtime telemetry is malformed")
+	}
+	record := records[0]
+	for index := range record {
+		record[index] = strings.TrimSpace(record[index])
+		if record[index] == "" {
+			return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA runtime telemetry contains an empty field")
+		}
+	}
+	gpu, err := nvidiainstall.ParseHostProbe(strings.Join(record[:4], ","))
+	if err != nil {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, err
+	}
+	utilization, err := strconv.Atoi(record[4])
+	if err != nil || utilization < 0 || utilization > 100 {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA GPU utilization %q is invalid", record[4])
+	}
+	memoryUsed, err := strconv.Atoi(record[5])
+	if err != nil || memoryUsed < 0 || memoryUsed > gpu.VRAMMiB {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA GPU memory use %q is invalid", record[5])
+	}
+	power, err := strconv.ParseFloat(record[6], 64)
+	if err != nil || power < 0 {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA GPU power draw %q is invalid", record[6])
+	}
+	temperature, err := strconv.Atoi(record[7])
+	if err != nil || temperature < 0 || temperature > 120 {
+		return nvidiainstall.GPU{}, GPUTelemetry{}, fmt.Errorf("NVIDIA GPU temperature %q is invalid", record[7])
+	}
+	return gpu, GPUTelemetry{SampledAt: sampledAt.Format(time.RFC3339Nano), UtilizationPercent: utilization,
+		MemoryUsedMiB: memoryUsed, MemoryTotalMiB: gpu.VRAMMiB, PowerWatts: power, TemperatureCelsius: temperature}, nil
 }
 
 func isNoSuchContainer(stdout, stderr string) bool {

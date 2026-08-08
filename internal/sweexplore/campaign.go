@@ -36,17 +36,32 @@ type ArtifactReference struct {
 // ArmReceipt is published only after the raw trace, normalized result,
 // official score, and local parity score all agree.
 type ArmReceipt struct {
-	SchemaVersion int               `json:"schema_version"`
-	CampaignID    string            `json:"campaign_id"`
-	ConfigSHA256  string            `json:"config_sha256"`
-	InstanceID    string            `json:"instance_id"`
-	ArmID         string            `json:"arm_id"`
-	Provider      Provider          `json:"provider"`
-	Mode          Mode              `json:"mode"`
-	CompletedAt   string            `json:"completed_at"`
-	RawTrace      ArtifactReference `json:"raw_trace"`
-	Result        ArtifactReference `json:"result"`
-	OfficialScore ArtifactReference `json:"official_score"`
+	SchemaVersion int                      `json:"schema_version"`
+	CampaignID    string                   `json:"campaign_id"`
+	ConfigSHA256  string                   `json:"config_sha256"`
+	InstanceID    string                   `json:"instance_id"`
+	ArmID         string                   `json:"arm_id"`
+	Provider      Provider                 `json:"provider"`
+	Mode          Mode                     `json:"mode"`
+	CompletedAt   string                   `json:"completed_at"`
+	RawTrace      ArtifactReference        `json:"raw_trace"`
+	Result        ArtifactReference        `json:"result"`
+	OfficialScore ArtifactReference        `json:"official_score"`
+	ImportedFrom  *ReceiptImportProvenance `json:"imported_from,omitempty"`
+}
+
+// ReceiptImportProvenance makes native-control reuse an explicit re-attested
+// operation instead of silently treating evidence from another product
+// identity as if it had been produced by the current campaign.
+type ReceiptImportProvenance struct {
+	SourceCampaignID    string            `json:"source_campaign_id"`
+	SourceConfigSHA256  string            `json:"source_config_sha256"`
+	SourceRoot          string            `json:"source_root"`
+	SourceReceipt       ArtifactReference `json:"source_receipt"`
+	SourceRawTrace      ArtifactReference `json:"source_raw_trace"`
+	SourceResult        ArtifactReference `json:"source_result"`
+	SourceOfficialScore ArtifactReference `json:"source_official_score"`
+	ImportedAt          string            `json:"imported_at"`
 }
 
 // PairReceipt proves that both arms use the same client and actual model. It
@@ -64,16 +79,18 @@ type PairReceipt struct {
 // PrepareRecord retains indexing time and the exact freshness generations. It
 // is telemetry only and is never added to measured agent latency.
 type PrepareRecord struct {
-	SchemaVersion int            `json:"schema_version"`
-	CampaignID    string         `json:"campaign_id"`
-	InstanceID    string         `json:"instance_id"`
-	Repository    string         `json:"repository"`
-	BaseCommit    string         `json:"base_commit"`
-	StartedAt     string         `json:"started_at"`
-	BaselineMS    int64          `json:"baseline_settlement_ms"`
-	MaterializeMS int64          `json:"materialize_ms"`
-	FreshnessMS   int64          `json:"freshness_ms"`
-	Freshness     FreshnessProof `json:"freshness"`
+	SchemaVersion    int                         `json:"schema_version"`
+	CampaignID       string                      `json:"campaign_id"`
+	InstanceID       string                      `json:"instance_id"`
+	Repository       string                      `json:"repository"`
+	BaseCommit       string                      `json:"base_commit"`
+	StartedAt        string                      `json:"started_at"`
+	BaselineMS       int64                       `json:"baseline_settlement_ms"`
+	MaterializeMS    int64                       `json:"materialize_ms"`
+	FreshnessMS      int64                       `json:"freshness_ms"`
+	Freshness        FreshnessProof              `json:"freshness"`
+	Telemetry        ArtifactReference           `json:"telemetry"`
+	TelemetrySummary PreparationTelemetrySummary `json:"telemetry_summary"`
 }
 
 // CampaignFailure keeps failed attempts auditable while fail-fast stops the
@@ -126,21 +143,24 @@ type CampaignReport struct {
 }
 
 type campaignOperations struct {
-	prepare       func(context.Context, Config, CampaignInstance) (PrepareRecord, error)
+	prepare       func(context.Context, Config, CampaignInstance, string, string) (PrepareRecord, error)
 	runArm        func(context.Context, Config, ArmConfig, Instance, string) (Result, error)
 	officialScore func(context.Context, string, Config, string) (string, error)
 }
 
 // RunCampaign executes sequentially, resumes only from validated receipts, and
 // stops at the first invalid state or failed paid arm.
-func RunCampaign(ctx context.Context, config Config, manifest CampaignManifest, configPath, manifestPath, outputRoot, python string) (CampaignReport, error) {
+func RunCampaign(ctx context.Context, config Config, manifest CampaignManifest, configPath, manifestPath, outputRoot, python string, maxInstances int, prepareOnly bool) (CampaignReport, error) {
 	operations := campaignOperations{prepare: prepareCampaignInstance, runArm: RunArm, officialScore: OfficialScore}
-	return runCampaign(ctx, config, manifest, configPath, manifestPath, outputRoot, python, operations)
+	return runCampaign(ctx, config, manifest, configPath, manifestPath, outputRoot, python, maxInstances, prepareOnly, operations)
 }
 
-func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, configPath, manifestPath, outputRoot, python string, operations campaignOperations) (CampaignReport, error) {
+func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, configPath, manifestPath, outputRoot, python string, maxInstances int, prepareOnly bool, operations campaignOperations) (CampaignReport, error) {
 	if python == "" {
 		return CampaignReport{}, errors.New("Python executable is required for official scoring")
+	}
+	if maxInstances < 0 || maxInstances > len(manifest.Instances) {
+		return CampaignReport{}, fmt.Errorf("maximum instances must be between 0 and %d", len(manifest.Instances))
 	}
 	absoluteOutput, err := filepath.Abs(outputRoot)
 	if err != nil {
@@ -156,7 +176,11 @@ func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, 
 	if err := ensureCampaignSnapshot(manifestPath, filepath.Join(outputRoot, "manifest.json")); err != nil {
 		return CampaignReport{}, err
 	}
-	for _, selected := range manifest.Instances {
+	selectedInstances := manifest.Instances
+	if maxInstances > 0 {
+		selectedInstances = selectedInstances[:maxInstances]
+	}
+	for _, selected := range selectedInstances {
 		instance, err := LoadInstance(config.Benchmark, selected.InstanceID)
 		if err != nil {
 			return CampaignReport{}, err
@@ -167,18 +191,25 @@ func runCampaign(ctx context.Context, config Config, manifest CampaignManifest, 
 			return report, err
 		}
 		if needsPreparation {
-			prepare, err := operations.prepare(ctx, config, selected)
+			prepareRoot := filepath.Join(outputRoot, "instances", selected.InstanceID, "prepare-attempts", uniqueArtifactName("prepare", ""))
+			if err := os.MkdirAll(prepareRoot, 0o755); err != nil {
+				return CampaignReport{}, err
+			}
+			prepare, err := operations.prepare(ctx, config, selected, outputRoot, prepareRoot)
 			if err != nil {
 				_ = writeCampaignFailure(outputRoot, CampaignFailure{SchemaVersion: CampaignSchemaVersion, CampaignID: manifest.CampaignID, InstanceID: selected.InstanceID, Stage: "prepare", FailedAt: time.Now().UTC().Format(time.RFC3339Nano), Error: err.Error()})
 				report, _ := buildCampaignReport(manifest, config, outputRoot)
 				return report, err
 			}
 			prepare.CampaignID = manifest.CampaignID
-			preparePath := filepath.Join(outputRoot, "instances", selected.InstanceID, "prepare-attempts", uniqueArtifactName("prepare", ".json"))
+			preparePath := filepath.Join(prepareRoot, "prepare.json")
 			if err := WriteJSONAtomic(preparePath, prepare); err != nil {
 				report, _ := buildCampaignReport(manifest, config, outputRoot)
 				return report, err
 			}
+		}
+		if prepareOnly {
+			continue
 		}
 		for _, provider := range []Provider{ProviderCodex, ProviderClaude} {
 			if _, err := runCampaignPair(ctx, config, manifest, instance, provider, outputRoot, python, operations); err != nil {
@@ -317,15 +348,17 @@ func runCampaignPair(ctx context.Context, config Config, manifest CampaignManife
 	return pair, nil
 }
 
-func prepareCampaignInstance(ctx context.Context, config Config, selected CampaignInstance) (PrepareRecord, error) {
+func prepareCampaignInstance(ctx context.Context, config Config, selected CampaignInstance, outputRoot, attemptRoot string) (PrepareRecord, error) {
 	started := time.Now().UTC()
+	telemetryPath := filepath.Join(attemptRoot, "preparation-telemetry.jsonl")
+	telemetry := newPreparationTelemetryWriter(telemetryPath)
 	currentCommit, err := commandOutput(ctx, config.Workspace.Root, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return PrepareRecord{}, err
 	}
 	currentCommit = strings.TrimSpace(currentCommit)
 	baselineStarted := time.Now()
-	baseline, err := WaitForLCTK(ctx, config.Workspace)
+	baseline, err := WaitForLCTKObserved(ctx, config.Workspace, "baseline", telemetry.Observe)
 	if err != nil {
 		return PrepareRecord{}, fmt.Errorf("settle baseline LCTK generation before checkout: %w", err)
 	}
@@ -334,7 +367,7 @@ func prepareCampaignInstance(ctx context.Context, config Config, selected Campai
 		if err := VerifyRepository(ctx, config.Workspace.Root, selected.BaseCommit); err != nil {
 			return PrepareRecord{}, err
 		}
-		return PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, Freshness: baseline}, nil
+		return completedPrepareRecord(outputRoot, telemetryPath, telemetry, PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, Freshness: baseline})
 	}
 	materializeStarted := time.Now()
 	if err := Materialize(ctx, config.Workspace.Root, selected.Repository, selected.BaseCommit); err != nil {
@@ -342,11 +375,20 @@ func prepareCampaignInstance(ctx context.Context, config Config, selected Campai
 	}
 	materializeMS := time.Since(materializeStarted).Milliseconds()
 	freshnessStarted := time.Now()
-	proof, err := WaitForLCTKAfterGeneration(ctx, config.Workspace, baseline.ExactGeneration)
+	proof, err := WaitForLCTKAfterGenerationObserved(ctx, config.Workspace, baseline.ExactGeneration, "freshness", telemetry.Observe)
 	if err != nil {
 		return PrepareRecord{}, err
 	}
-	return PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, MaterializeMS: materializeMS, FreshnessMS: time.Since(freshnessStarted).Milliseconds(), Freshness: proof}, nil
+	return completedPrepareRecord(outputRoot, telemetryPath, telemetry, PrepareRecord{SchemaVersion: CampaignSchemaVersion, CampaignID: "", InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, StartedAt: started.Format(time.RFC3339Nano), BaselineMS: baselineMS, MaterializeMS: materializeMS, FreshnessMS: time.Since(freshnessStarted).Milliseconds(), Freshness: proof})
+}
+
+func completedPrepareRecord(outputRoot, telemetryPath string, telemetry *preparationTelemetryWriter, record PrepareRecord) (PrepareRecord, error) {
+	record.Telemetry = artifactReference(outputRoot, telemetryPath)
+	if record.Telemetry.SHA256 == "" {
+		return PrepareRecord{}, errors.New("hash durable preparation telemetry")
+	}
+	record.TelemetrySummary = telemetry.Summary()
+	return record, nil
 }
 
 func ensureCampaignSnapshot(source, destination string) error {

@@ -29,7 +29,8 @@ const usage = `Usage:
   swe-explore-benchmark score --config FILE --result FILE
   swe-explore-benchmark official-score --config FILE --result FILE --python EXE
   swe-explore-benchmark manifest --config FILE --campaign-id ID --count N --seed TEXT --harness-commit SHA --output FILE
-  swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE
+  swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE [--max-instances N] [--prepare-only]
+  swe-explore-benchmark campaign-import-native --config FILE --manifest FILE --source-config FILE --source-manifest FILE --source-harness FILE --source-dir DIR --output-dir DIR --instance ID --python EXE
 `
 
 func main() {
@@ -62,6 +63,8 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return manifestCommand(ctx, args[1:], stdout)
 	case "campaign":
 		return campaignCommand(ctx, args[1:], stdout)
+	case "campaign-import-native":
+		return campaignImportNativeCommand(ctx, args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -111,8 +114,10 @@ func campaignCommand(ctx context.Context, args []string, stdout io.Writer) error
 	manifestPath := flags.String("manifest", "", "immutable campaign manifest")
 	outputDir := flags.String("output-dir", "", "campaign artifact root")
 	python := flags.String("python", "python", "Python 3.12+ executable")
+	maxInstances := flags.Int("max-instances", 0, "run only the first N immutable manifest instances; zero means all")
+	prepareOnly := flags.Bool("prepare-only", false, "materialize and verify indexes without invoking paid clients")
 	if err := flags.Parse(args); err != nil || *configPath == "" || *manifestPath == "" || *outputDir == "" || *python == "" || flags.NArg() != 0 {
-		return errors.New("usage: swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE")
+		return errors.New("usage: swe-explore-benchmark campaign --config FILE --manifest FILE --output-dir DIR --python EXE [--max-instances N] [--prepare-only]")
 	}
 	config, err := sweexplore.LoadConfig(*configPath)
 	if err != nil {
@@ -133,7 +138,49 @@ func campaignCommand(ctx context.Context, args []string, stdout io.Writer) error
 	if !strings.EqualFold(strings.TrimSpace(currentCommit), manifest.HarnessCommit) {
 		return fmt.Errorf("harness source is at %s, manifest pins %s", strings.TrimSpace(currentCommit), manifest.HarnessCommit)
 	}
-	report, err := sweexplore.RunCampaign(ctx, config, manifest, *configPath, *manifestPath, *outputDir, *python)
+	report, err := sweexplore.RunCampaign(ctx, config, manifest, *configPath, *manifestPath, *outputDir, *python, *maxInstances, *prepareOnly)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
+}
+
+func campaignImportNativeCommand(ctx context.Context, args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("campaign-import-native", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "target campaign configuration")
+	manifestPath := flags.String("manifest", "", "target immutable campaign manifest")
+	sourceConfigPath := flags.String("source-config", "", "source campaign configuration")
+	sourceManifestPath := flags.String("source-manifest", "", "source immutable campaign manifest")
+	sourceHarness := flags.String("source-harness", "", "source campaign harness executable")
+	sourceDir := flags.String("source-dir", "", "source campaign artifact root")
+	outputDir := flags.String("output-dir", "", "target campaign artifact root")
+	instanceID := flags.String("instance", "", "exact checked-out instance to re-attest")
+	python := flags.String("python", "python", "Python 3.12+ executable")
+	if err := flags.Parse(args); err != nil || *configPath == "" || *manifestPath == "" || *sourceConfigPath == "" || *sourceManifestPath == "" || *sourceHarness == "" || *sourceDir == "" || *outputDir == "" || *instanceID == "" || *python == "" || flags.NArg() != 0 {
+		return errors.New("usage: swe-explore-benchmark campaign-import-native --config FILE --manifest FILE --source-config FILE --source-manifest FILE --source-harness FILE --source-dir DIR --output-dir DIR --instance ID --python EXE")
+	}
+	targetConfig, err := sweexplore.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	sourceConfig, err := sweexplore.LoadConfig(*sourceConfigPath)
+	if err != nil {
+		return err
+	}
+	harness, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	targetManifest, err := sweexplore.LoadCampaignManifest(ctx, *manifestPath, *configPath, harness, targetConfig)
+	if err != nil {
+		return err
+	}
+	sourceManifest, err := sweexplore.LoadCampaignManifest(ctx, *sourceManifestPath, *sourceConfigPath, *sourceHarness, sourceConfig)
+	if err != nil {
+		return err
+	}
+	report, err := sweexplore.ImportNativeReceipts(ctx, targetConfig, targetManifest, sourceConfig, sourceManifest, *sourceDir, *outputDir, *instanceID, *python)
 	if err != nil {
 		return err
 	}

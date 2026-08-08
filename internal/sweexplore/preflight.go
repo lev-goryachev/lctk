@@ -12,6 +12,7 @@ import (
 
 	"github.com/lev-goryachev/lctk/internal/changejournal"
 	"github.com/lev-goryachev/lctk/internal/codeintel"
+	"github.com/lev-goryachev/lctk/internal/inference"
 	"github.com/lev-goryachev/lctk/internal/machinetunnel"
 	"github.com/lev-goryachev/lctk/internal/projectregistry"
 	"github.com/lev-goryachev/lctk/internal/projectstack"
@@ -136,7 +137,16 @@ func PreflightLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessPro
 // errors such as a wrong registration, version, or non-empty memory fail on the
 // first observation.
 func WaitForLCTK(ctx context.Context, workspace WorkspaceConfig) (FreshnessProof, error) {
-	return waitForLCTK(ctx, workspace, 0, false)
+	return waitForLCTK(ctx, workspace, 0, false, "", nil)
+}
+
+// WaitForLCTKObserved preserves every two-second preparation observation while
+// applying the same strict warm-index eligibility contract as WaitForLCTK.
+func WaitForLCTKObserved(ctx context.Context, workspace WorkspaceConfig, phase string, observer func(PreparationSample) error) (FreshnessProof, error) {
+	if observer == nil {
+		return FreshnessProof{}, errors.New("preparation observer is required")
+	}
+	return waitForLCTK(ctx, workspace, 0, false, phase, observer)
 }
 
 // WaitForLCTKAfterGeneration prevents a checkout race in which the watcher has
@@ -147,16 +157,37 @@ func WaitForLCTKAfterGeneration(ctx context.Context, workspace WorkspaceConfig, 
 	if previousGeneration == 0 {
 		return FreshnessProof{}, errors.New("previous LCTK generation must be positive")
 	}
-	return waitForLCTK(ctx, workspace, previousGeneration, true)
+	return waitForLCTK(ctx, workspace, previousGeneration, true, "", nil)
 }
 
-func waitForLCTK(ctx context.Context, workspace WorkspaceConfig, previousGeneration uint64, requireAdvance bool) (FreshnessProof, error) {
+// WaitForLCTKAfterGenerationObserved records the post-checkout index and GPU
+// time series without weakening the generation-advance barrier.
+func WaitForLCTKAfterGenerationObserved(ctx context.Context, workspace WorkspaceConfig, previousGeneration uint64, phase string, observer func(PreparationSample) error) (FreshnessProof, error) {
+	if previousGeneration == 0 {
+		return FreshnessProof{}, errors.New("previous LCTK generation must be positive")
+	}
+	if observer == nil {
+		return FreshnessProof{}, errors.New("preparation observer is required")
+	}
+	return waitForLCTK(ctx, workspace, previousGeneration, true, phase, observer)
+}
+
+func waitForLCTK(ctx context.Context, workspace WorkspaceConfig, previousGeneration uint64, requireAdvance bool, phase string, observer func(PreparationSample) error) (FreshnessProof, error) {
 	deadline := time.Duration(workspace.FreshnessTimeoutSeconds) * time.Second
 	bounded, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	var last error
 	for {
 		proof, err := PreflightLCTK(bounded, workspace)
+		if observer != nil {
+			sample, sampleErr := observePreparation(bounded, workspace, phase, err)
+			if sampleErr != nil {
+				return FreshnessProof{}, fmt.Errorf("collect preparation telemetry: %w", sampleErr)
+			}
+			if sampleErr := observer(sample); sampleErr != nil {
+				return FreshnessProof{}, fmt.Errorf("persist preparation telemetry: %w", sampleErr)
+			}
+		}
 		if err == nil && generationIsEligible(proof, previousGeneration, requireAdvance) {
 			return proof, nil
 		}
@@ -174,6 +205,46 @@ func waitForLCTK(ctx context.Context, workspace WorkspaceConfig, previousGenerat
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// observePreparation reads project progress and live inference state from their
+// authoritative APIs. The preflight error is retained as the current not-ready
+// reason; it is never substituted for the progress counters.
+func observePreparation(ctx context.Context, workspace WorkspaceConfig, phase string, preflightErr error) (PreparationSample, error) {
+	registry, err := projectregistry.Load()
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	project, err := registry.Resolve(workspace.ProjectID)
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	manager := projectstack.NewManager()
+	stack, err := manager.Status(ctx, project)
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	defer machinetunnel.Default.Close(project.ID)
+	if stack.ServiceAddress == "" {
+		return PreparationSample{}, fmt.Errorf("project stack has no service address: %s/%s", stack.State, stack.Health)
+	}
+	index, err := codeintel.New(stack.ServiceAddress).Status(ctx)
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	inferenceManager, err := inference.NewRuntimeManager()
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	inferenceStatus, err := inferenceManager.Status(ctx)
+	if err != nil {
+		return PreparationSample{}, err
+	}
+	reason := ""
+	if preflightErr != nil {
+		reason = preflightErr.Error()
+	}
+	return newPreparationSample(phase, index, inferenceStatus, reason, time.Now().UTC()), nil
 }
 
 // generationIsEligible centralizes the checkout barrier: ordinary preflight

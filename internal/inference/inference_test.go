@@ -215,11 +215,11 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		{stderr: "No such container", err: errors.New("exit 1")},
 		{stderr: "No such container", err: errors.New("exit 1")},
 		{stdout: "candidate\n"},
-		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{args: []string{"exec", CandidateContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap,utilization.gpu,memory.used,power.draw,temperature.gpu", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 94, 4480, 132.5, 82\n"},
 		{args: []string{"inspect", CandidateContainerName, "--format", `{{.Id}}|{{.Image}}|{{.State.StartedAt}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: identity},
 		{args: []string{"logs", "--since", "2026-08-07T00:07:42.409325154+02:00", "--until", "2026-08-07T00:09:42.409325154+02:00", CandidateContainerName}, stderr: "ggml_cuda_init: found 1 CUDA devices\nload_tensors: offloaded 13/13 layers to GPU\nCUDA0 compute buffer"},
 		{args: []string{"rename", CandidateContainerName, ContainerName}},
-		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{args: []string{"exec", ContainerName, "nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap,utilization.gpu,memory.used,power.draw,temperature.gpu", "--format=csv,noheader,nounits"}, stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 94, 4480, 132.5, 82\n"},
 		{args: []string{"inspect", ContainerName, "--format", `{{.Id}}|{{.Image}}|{{.State.StartedAt}}|{{index .Config.Labels "tech.lctk.inference-config"}}|{{index .Config.Labels "tech.lctk.inference-distribution"}}`}, stdout: identity},
 	}}
 	manager := NewManagerForTest(runner, nvidiainstall.Image, model, server.URL)
@@ -229,7 +229,7 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.Backend != "cuda" || status.GPU == nil || status.OffloadedLayers != "13/13" {
+	if !status.Ready || status.Backend != "cuda" || status.GPU == nil || status.GPUTelemetry == nil || status.GPUTelemetry.UtilizationPercent != 94 || status.OffloadedLayers != "13/13" {
 		t.Fatalf("unexpected GPU status: %+v", status)
 	}
 	run := strings.Join(runner.seen[4], " ")
@@ -238,6 +238,7 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 		"--log-driver k8s-file --log-opt max-size=32mb",
 		"--n-gpu-layers 99",
 		"tech.lctk.inference-distribution=nvidia_gpu",
+		"--batch-size 8192 --ubatch-size 8192",
 	} {
 		if !strings.Contains(run, wanted) {
 			t.Errorf("GPU candidate args omit %q: %s", wanted, run)
@@ -247,7 +248,7 @@ func TestNVIDIACandidateRequiresDeviceOffloadAndMeasuredBackend(t *testing.T) {
 
 func TestNVIDIABackendRejectsPartialLayerOffload(t *testing.T) {
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
-		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 0, 4096, 52.0, 74\n"},
 		{stdout: "0123456789abcdef|sha256:gpu|2026-08-07 00:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"},
 		{stdout: "CUDA0\nload_tensors: offloaded 12/13 layers to GPU\n"},
 	}}
@@ -263,12 +264,12 @@ func TestNVIDIAEvidenceIsReusedOnlyForTheSameContainerStart(t *testing.T) {
 	firstIdentity := "0123456789abcdef|sha256:gpu|2026-08-07 00:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"
 	restartedIdentity := "0123456789abcdef|sha256:gpu|2026-08-07 01:07:42.409325154 +0200 CEST|" + ConfigRevision + "|nvidia_gpu\n"
 	runner := &scriptedRunner{t: t, calls: []runnerCall{
-		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 0, 4096, 52.0, 74\n"},
 		{stdout: firstIdentity},
 		{stderr: "CUDA0\nload_tensors: offloaded 13/13 layers to GPU\n"},
-		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 91, 4480, 129.0, 81\n"},
 		{stdout: firstIdentity},
-		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1\n"},
+		{stdout: "NVIDIA GeForce GTX 1070, 582.53, 8192, 6.1, 0, 4096, 52.0, 74\n"},
 		{stdout: restartedIdentity},
 		{stdout: "CUDA0\nload_tensors: offloaded 12/13 layers to GPU\n"},
 	}}

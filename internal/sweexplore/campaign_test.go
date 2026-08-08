@@ -104,11 +104,11 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 	prepares := 0
 	operations := fixtureCampaignOperations(t, &runs)
 	fixturePrepare := operations.prepare
-	operations.prepare = func(ctx context.Context, config Config, selected CampaignInstance) (PrepareRecord, error) {
+	operations.prepare = func(ctx context.Context, config Config, selected CampaignInstance, outputRoot, attemptRoot string) (PrepareRecord, error) {
 		prepares++
-		return fixturePrepare(ctx, config, selected)
+		return fixturePrepare(ctx, config, selected, outputRoot, attemptRoot)
 	}
-	report, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations)
+	report, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", 0, false, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 	operations.runArm = func(context.Context, Config, ArmConfig, Instance, string) (Result, error) {
 		return Result{}, errors.New("completed arm was rerun")
 	}
-	report, err = runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations)
+	report, err = runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", 0, false, operations)
 	if err != nil || runs != 4 || prepares != 1 || report.Providers[ProviderClaude].CompletedPairs != 1 {
 		t.Fatalf("resume repeated work: runs=%d prepares=%d report=%+v err=%v", runs, prepares, report, err)
 	}
@@ -135,7 +135,7 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 	if err := os.WriteFile(rawPath, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", operations); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if _, err := runCampaign(context.Background(), config, manifest, configPath, manifestPath, outputRoot, "python", 0, false, operations); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("tampered trace was accepted: %v", err)
 	}
 	if prepares != 1 {
@@ -146,7 +146,7 @@ func TestCampaignPublishesHashedReceiptsAndResumesWithoutRerun(t *testing.T) {
 func fixtureCampaignOperations(t *testing.T, runs *int) campaignOperations {
 	t.Helper()
 	return campaignOperations{
-		prepare: func(_ context.Context, _ Config, selected CampaignInstance) (PrepareRecord, error) {
+		prepare: func(_ context.Context, _ Config, selected CampaignInstance, _, _ string) (PrepareRecord, error) {
 			return PrepareRecord{InstanceID: selected.InstanceID, Repository: selected.Repository, BaseCommit: selected.BaseCommit, Freshness: FreshnessProof{ExactGeneration: 1, SemanticGeneration: 1, GraphGeneration: 1}}, nil
 		},
 		runArm: func(_ context.Context, _ Config, arm ArmConfig, instance Instance, output string) (Result, error) {
